@@ -54,7 +54,7 @@ class ESPNCollector(BaseCollector):
                     data = resp.json()
                     tour_events = data.get("events", [])
                     events.extend(tour_events)
-                    log.debug("espn_fetched", tour=tour, count=len(tour_events))
+                    log.info("espn_fetched", tour=tour, count=len(tour_events))
                 except Exception:
                     log.exception("espn_fetch_failed", tour=tour)
 
@@ -73,8 +73,7 @@ class ESPNCollector(BaseCollector):
             if state.match_id.startswith("espn_") and state.match_id not in live_ids:
                 await self.store.remove(state.match_id)
 
-        if live_ids:
-            log.info("espn_collector_done", live_matches=len(live_ids))
+        log.info("espn_collector_done", live_matches=len(live_ids))
 
     async def _parse_event(self, event: dict) -> MatchState | None:
         status_type = event.get("status", {}).get("type", {}).get("name", "")
