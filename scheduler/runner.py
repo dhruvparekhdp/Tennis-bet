@@ -17,6 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from analysis.engine import AnalysisEngine
 from analysis.state_store import MatchStateStore
 from collectors.espn import ESPNCollector
+from collectors.flashscore import FlashscoreCollector
 from collectors.sofascore import SofascoreCollector
 from collectors.thesportsdb import TheSportsDBCollector
 from config.settings import settings
@@ -30,6 +31,7 @@ log = structlog.get_logger()
 class AppRunner:
     def __init__(self) -> None:
         self.store = MatchStateStore()
+        self.flashscore = FlashscoreCollector(self.store)
         self.espn = ESPNCollector(self.store)
         self.sofascore = SofascoreCollector(self.store)
         self.thesportsdb = TheSportsDBCollector(api_key=settings.thesportsdb_api_key)
@@ -37,11 +39,14 @@ class AppRunner:
         self.scheduler = AsyncIOScheduler()
 
     async def _data_poll_job(self) -> None:
-        # ESPN is primary — works reliably from cloud IPs
-        await self.espn.fetch()
+        # Flashscore: primary — covers ATP, WTA, Challengers, ITF
+        await self.flashscore.fetch()
 
-        # Sofascore enriches serve stats when not blocked (works locally, blocked on cloud)
-        # Runs silently — if blocked, ESPN data alone drives all signals except serve_degradation
+        # ESPN: supplement for ATP/WTA main draw when Flashscore is blocked
+        if self.flashscore._consecutive_failures >= 5:
+            await self.espn.fetch()
+
+        # Sofascore: serve stats enrichment only (blocked on most cloud IPs)
         if self.sofascore._consecutive_failures < 5:
             await self.sofascore.fetch()
 
@@ -122,7 +127,7 @@ class AppRunner:
             "🎾 Tennis-bet monitor started.\n"
             f"Polling every {settings.sofascore_poll_interval}s | "
             f"Min confidence: {settings.min_confidence} | "
-            "Data: ESPN (primary) + Sofascore (serve stats)"
+            "Data: Flashscore → ESPN → Sofascore (serve stats)"
         )
         log.info("scheduler_started")
 
