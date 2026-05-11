@@ -125,12 +125,17 @@ _HTML = """<!DOCTYPE html>
   .mc-set-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#475569;font-weight:600}
   .mc-game-score{font-size:26px;font-weight:900;color:#f1f5f9;letter-spacing:2px}
   .mc-set-tag{font-size:11px;color:#94a3b8;background:#0f172a;padding:2px 8px;border-radius:4px}
-  .mc-sets-row{display:grid;grid-template-columns:1fr repeat(var(--cols),36px) 1fr;gap:0;background:#162032;border-top:1px solid #1e3a5f}
-  .mc-sets-row .sh{font-size:10px;color:#475569;text-align:center;padding:5px 0;font-weight:600;text-transform:uppercase}
-  .mc-sets-row .sv{font-size:13px;font-weight:700;text-align:center;padding:5px 0}
-  .mc-sets-row .sv.won{color:#38bdf8}.mc-sets-row .sv.cur{color:#f1f5f9}.mc-sets-row .sv.lost{color:#64748b}
-  .mc-sets-row .pname{font-size:11px;color:#94a3b8;padding:5px 14px;font-weight:500}
-  .mc-sets-row .pname.right{text-align:right}
+  .mc-sets-wrap{background:#162032;border-top:1px solid #1e3a5f;padding:0 14px}
+  .mc-sets-table{width:100%;border-collapse:collapse;font-size:12px}
+  .mc-sets-table th{color:#475569;font-weight:600;text-transform:uppercase;font-size:10px;letter-spacing:.06em;padding:6px 8px;text-align:center}
+  .mc-sets-table td{padding:5px 8px;text-align:center;font-weight:700;font-size:14px}
+  .mc-sets-table td.won{color:#38bdf8}
+  .mc-sets-table td.cur{color:#f1f5f9}
+  .mc-sets-table td.lost{color:#475569}
+  .mc-sets-table .pn{text-align:left;font-size:11px;color:#94a3b8;font-weight:500;padding-left:0}
+  .mc-sets-table .tot{font-size:16px;font-weight:900}
+  .mc-sets-table thead tr{border-bottom:1px solid #1e3a5f}
+  .mc-sets-table tbody tr:first-child{border-bottom:1px solid #1e293b}
   .mc-odds-row{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#0f172a;border-top:1px solid #334155}
   .mc-odds-box{padding:10px 14px;text-align:center;background:#1e293b}
   .mc-odds-box:hover{background:#243554;cursor:pointer}
