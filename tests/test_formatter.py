@@ -37,7 +37,8 @@ def test_format_contains_player_name():
 def test_format_contains_odds():
     sig = _make_signal()
     msg = format_signal(sig)
-    assert "1.72" in msg
+    # MarkdownV2 escapes dots, so 1.72 becomes 1\.72 in the output
+    assert "1\\.72" in msg
 
 
 def test_format_contains_confidence():

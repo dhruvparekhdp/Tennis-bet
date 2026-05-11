@@ -132,6 +132,10 @@ class AnalysisEngine:
                 fair_odds=sig.fair_odds,
                 edge_pct=sig.edge_pct,
                 stake_pct=sig.stake_pct,
+                player_name=sig.player_name,
+                opponent_name=sig.opponent_name,
+                tournament=sig.tournament,
+                surface=sig.surface,
             )
         except Exception:
             log.exception("failed_to_log_signal", signal_type=sig.signal_type)

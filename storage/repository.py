@@ -59,9 +59,13 @@ class Repository:
         self, match_id: str, signal_type: str, player_to_back: int,
         trigger_description: str, confidence: float, recommended_market: str,
         current_odds: float, fair_odds: float, edge_pct: float, stake_pct: float,
+        player_name: str = "", opponent_name: str = "",
+        tournament: str = "", surface: str = "hard",
     ) -> None:
         self.session.add(SignalLog(
             match_id=match_id, signal_type=signal_type, player_to_back=player_to_back,
+            player_name=player_name, opponent_name=opponent_name,
+            tournament=tournament, surface=surface,
             trigger_description=trigger_description, confidence=confidence,
             recommended_market=recommended_market, current_odds=current_odds,
             fair_odds=fair_odds, edge_pct=edge_pct, stake_pct=stake_pct,
