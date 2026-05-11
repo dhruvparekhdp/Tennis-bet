@@ -228,20 +228,29 @@ async def run_import(session: AsyncSession, force: bool = False) -> None:
         follow_redirects=True,
     ) as client:
         for url, tour, year in _ATP_URLS + _WTA_URLS:
-            rows = await _download_csv(client, url)
-            if not rows:
-                continue
+            try:
+                rows = await _download_csv(client, url)
+                if not rows:
+                    continue
 
-            batch: list[MatchRecord] = []
-            for row in rows:
-                record = _process_row(row, tour, year, accum)
-                if record:
-                    batch.append(record)
+                batch: list[MatchRecord] = []
+                for row in rows:
+                    try:
+                        record = _process_row(row, tour, year, accum)
+                        if record:
+                            batch.append(record)
+                    except Exception:
+                        pass  # skip malformed rows silently
 
-            if batch:
-                session.add_all(batch)
-                await session.flush()  # write each year without holding all in memory
-                total_records += len(batch)
+                if batch:
+                    session.add_all(batch)
+                    await session.flush()
+                    total_records += len(batch)
+
+            except Exception:
+                log.exception("historical_year_failed_non_fatal",
+                              tour=tour, year=year)
+                await session.rollback()  # clear bad state, continue with next year
 
             log.info("historical_csv_processed",
                      file=url.split("/")[-1], rows=len(rows), records=len(batch))
