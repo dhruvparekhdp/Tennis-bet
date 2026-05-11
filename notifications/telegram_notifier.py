@@ -12,7 +12,12 @@ log = structlog.get_logger()
 
 class TelegramNotifier:
     def __init__(self) -> None:
-        self._bot = Bot(token=settings.telegram_bot_token.get_secret_value())
+        token = settings.telegram_bot_token
+        if token is None:
+            raise RuntimeError(
+                "TELEGRAM_BOT_TOKEN is not set — copy .env.example to .env and fill it in"
+            )
+        self._bot = Bot(token=token.get_secret_value())
 
     async def send_signal(self, sig: Signal) -> bool:
         message = format_signal(sig)

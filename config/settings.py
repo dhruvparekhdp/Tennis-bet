@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -5,9 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    # Telegram
-    telegram_bot_token: SecretStr
-    telegram_chat_id: str
+    # Telegram — optional so non-notification modules can import without credentials
+    telegram_bot_token: SecretStr | None = None
+    telegram_chat_id: str | None = None
 
     # Strategy
     min_confidence: float = 0.65
