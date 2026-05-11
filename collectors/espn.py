@@ -10,7 +10,7 @@ Limitations vs Sofascore:
 - No live odds
 - Score data is slightly less granular (no point-level)
 """
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 import structlog
@@ -21,10 +21,13 @@ from collectors.base import BaseCollector
 
 log = structlog.get_logger()
 
-_TOURS = {
-    "atp": "https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard",
-    "wta": "https://site.api.espn.com/apis/site/v2/sports/tennis/wta/scoreboard",
-}
+# Main tours + secondary circuits — ESPN covers all of these with the same API shape
+_TOUR_URLS = [
+    "https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard",
+    "https://site.api.espn.com/apis/site/v2/sports/tennis/wta/scoreboard",
+    "https://site.api.espn.com/apis/site/v2/sports/tennis/atp-challenger/scoreboard",
+    "https://site.api.espn.com/apis/site/v2/sports/tennis/wta-125/scoreboard",
+]
 
 _SURFACE_MAP = {
     "clay": "clay",
@@ -46,17 +49,21 @@ class ESPNCollector(BaseCollector):
 
     async def fetch(self) -> None:
         events: list[dict] = []
+        today = datetime.now(timezone.utc).strftime("%Y%m%d")
         async with httpx.AsyncClient(timeout=15.0) as client:
-            for tour, url in _TOURS.items():
+            for url in _TOUR_URLS:
                 try:
-                    resp = await client.get(url)
+                    resp = await client.get(url, params={"dates": today, "limit": "100"})
+                    if resp.status_code == 404:
+                        continue  # tour not active right now
                     resp.raise_for_status()
                     data = resp.json()
                     tour_events = data.get("events", [])
                     events.extend(tour_events)
-                    log.info("espn_fetched", tour=tour, count=len(tour_events))
+                    tour_name = url.split("/tennis/")[1].split("/")[0]
+                    log.info("espn_fetched", tour=tour_name, count=len(tour_events))
                 except Exception:
-                    log.exception("espn_fetch_failed", tour=tour)
+                    log.exception("espn_fetch_failed", url=url)
 
         # Log all statuses for diagnostics
         status_counts: dict[str, int] = {}
@@ -83,7 +90,11 @@ class ESPNCollector(BaseCollector):
 
         log.info("espn_collector_done", live_matches=len(live_ids))
 
-    _LIVE_STATUSES = {"STATUS_IN_PROGRESS", "STATUS_LIVE", "STATUS_PLAY"}
+    _LIVE_STATUSES = {
+        "STATUS_IN_PROGRESS", "STATUS_LIVE", "STATUS_PLAY",
+        "STATUS_HALFTIME", "STATUS_OVERTIME",  # rare but seen in ESPN data
+        "IN_PROGRESS", "LIVE", "PLAYING",       # alternative formats
+    }
 
     async def _parse_event(self, event: dict) -> MatchState | None:
         status_obj = event.get("status", {}).get("type", {})
