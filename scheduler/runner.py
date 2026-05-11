@@ -113,6 +113,9 @@ class AppRunner:
         )
 
     async def start(self) -> None:
+        # Verify Telegram credentials before starting — logs exact error if wrong
+        await self.notifier.verify()
+
         self.setup_jobs()
         self.scheduler.start()
         await self.notifier.send_text(

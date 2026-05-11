@@ -1,7 +1,7 @@
 import structlog
 from telegram import Bot
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
+from telegram.error import Forbidden, InvalidToken, TelegramError
 
 from analysis.signal import Signal
 from config.settings import settings
@@ -30,8 +30,9 @@ class TelegramNotifier:
                 odds=sig.current_odds,
             )
             return True
-        except TelegramError:
-            log.exception("telegram_send_failed", signal_type=sig.signal_type)
+        except TelegramError as e:
+            log.error("telegram_send_failed", signal_type=sig.signal_type,
+                      error=str(e), error_type=type(e).__name__)
             return False
 
     async def send_text(self, text: str) -> bool:
@@ -42,6 +43,30 @@ class TelegramNotifier:
                 text=text,
             )
             return True
-        except TelegramError:
-            log.exception("telegram_text_send_failed")
+        except InvalidToken as e:
+            log.error("telegram_invalid_token",
+                      hint="Bot token is wrong — regenerate via @BotFather",
+                      error=str(e))
+        except Forbidden as e:
+            log.error("telegram_forbidden",
+                      hint="Chat ID wrong, or you haven't sent /start to your bot yet",
+                      chat_id=settings.telegram_chat_id,
+                      error=str(e))
+        except TelegramError as e:
+            log.error("telegram_text_send_failed", error=str(e), error_type=type(e).__name__,
+                      chat_id=settings.telegram_chat_id)
+        return False
+
+    async def verify(self) -> bool:
+        """Called at startup to validate credentials before anything else runs."""
+        try:
+            me = await self._bot.get_me()
+            log.info("telegram_bot_verified", bot_username=me.username, bot_id=me.id)
+            return True
+        except InvalidToken:
+            log.error("telegram_invalid_token",
+                      hint="TELEGRAM_BOT_TOKEN is wrong — go to @BotFather and get a fresh token")
+            return False
+        except TelegramError as e:
+            log.error("telegram_verify_failed", error=str(e))
             return False
