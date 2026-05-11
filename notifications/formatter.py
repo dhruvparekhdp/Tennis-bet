@@ -11,6 +11,7 @@ _SIGNAL_EMOJI = {
     "serve_degradation": "🎯",
     "set_pattern": "📊",
     "fatigue": "😤",
+    "ml_value": "🤖",
 }
 
 _MARKET_LABEL = {
