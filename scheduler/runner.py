@@ -131,7 +131,7 @@ class AppRunner:
         self.scheduler.add_job(
             self._odds_job,
             "interval",
-            minutes=5,
+            seconds=settings.odds_poll_interval_seconds,
             id="odds_poll",
             max_instances=1,
         )
