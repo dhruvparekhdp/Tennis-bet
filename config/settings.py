@@ -31,5 +31,8 @@ class Settings(BaseSettings):
     odds_api_key: str | None = None  # https://the-odds-api.com
     odds_poll_interval_seconds: int = 300  # 5 min default — ~8,640 req/month for 2 sports
 
+    # BetsAPI — https://betsapi.com (live scores + in-play odds, cloud-safe)
+    bets_api_token: str | None = None
+
 
 settings = Settings()  # type: ignore[call-arg]

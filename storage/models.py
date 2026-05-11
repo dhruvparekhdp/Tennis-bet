@@ -78,6 +78,101 @@ class PlayerStats(Base):
     avg_dfs_per_game: Mapped[float] = mapped_column(Float, default=0.2)
 
 
+class MatchRecord(Base):
+    """
+    Individual historical match from Sackmann ATP/WTA CSVs.
+    One row per match — full stats for both players.
+    Used for ML training and pattern analysis.
+    """
+
+    __tablename__ = "match_records"
+    __table_args__ = (
+        Index("ix_mr_winner", "winner_name"),
+        Index("ix_mr_loser", "loser_name"),
+        Index("ix_mr_year_surface", "year", "surface"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tour: Mapped[str] = mapped_column(String)           # atp / wta
+    year: Mapped[int] = mapped_column(Integer)
+    tourney_id: Mapped[str] = mapped_column(String, default="")
+    tourney_name: Mapped[str] = mapped_column(String)
+    surface: Mapped[str] = mapped_column(String)
+    tourney_level: Mapped[str] = mapped_column(String, default="")  # G=slam, M=masters, etc.
+    round: Mapped[str] = mapped_column(String, default="")
+    best_of: Mapped[int] = mapped_column(Integer, default=3)
+    winner_name: Mapped[str] = mapped_column(String)
+    loser_name: Mapped[str] = mapped_column(String)
+    winner_rank: Mapped[int] = mapped_column(Integer, default=0)
+    loser_rank: Mapped[int] = mapped_column(Integer, default=0)
+    score: Mapped[str] = mapped_column(String, default="")
+    minutes: Mapped[int] = mapped_column(Integer, default=0)
+    # Winner serve stats
+    w_ace: Mapped[int] = mapped_column(Integer, default=0)
+    w_df: Mapped[int] = mapped_column(Integer, default=0)
+    w_svpt: Mapped[int] = mapped_column(Integer, default=0)
+    w_1st_in: Mapped[int] = mapped_column(Integer, default=0)
+    w_1st_won: Mapped[int] = mapped_column(Integer, default=0)
+    w_2nd_won: Mapped[int] = mapped_column(Integer, default=0)
+    w_svc_games: Mapped[int] = mapped_column(Integer, default=0)
+    w_bp_saved: Mapped[int] = mapped_column(Integer, default=0)
+    w_bp_faced: Mapped[int] = mapped_column(Integer, default=0)
+    # Loser serve stats
+    l_ace: Mapped[int] = mapped_column(Integer, default=0)
+    l_df: Mapped[int] = mapped_column(Integer, default=0)
+    l_svpt: Mapped[int] = mapped_column(Integer, default=0)
+    l_1st_in: Mapped[int] = mapped_column(Integer, default=0)
+    l_1st_won: Mapped[int] = mapped_column(Integer, default=0)
+    l_2nd_won: Mapped[int] = mapped_column(Integer, default=0)
+    l_svc_games: Mapped[int] = mapped_column(Integer, default=0)
+    l_bp_saved: Mapped[int] = mapped_column(Integer, default=0)
+    l_bp_faced: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class SlamPoint(Base):
+    """
+    Individual point from Jeff Sackmann's slam point-by-point data.
+    Covers Australian Open, Roland Garros, Wimbledon, US Open from 2011.
+    Primary source for momentum / psychological pattern analysis.
+    """
+
+    __tablename__ = "slam_points"
+    __table_args__ = (
+        Index("ix_sp_match", "match_id"),
+        Index("ix_sp_slam_year", "slam", "year"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slam: Mapped[str] = mapped_column(String)           # ausopen/frenchopen/wimbledon/usopen
+    year: Mapped[int] = mapped_column(Integer)
+    match_id: Mapped[str] = mapped_column(String)
+    player1: Mapped[str] = mapped_column(String, default="")
+    player2: Mapped[str] = mapped_column(String, default="")
+    set_no: Mapped[int] = mapped_column(Integer)
+    game_no: Mapped[int] = mapped_column(Integer)
+    point_no: Mapped[int] = mapped_column(Integer)
+    server: Mapped[int] = mapped_column(Integer)        # 1 or 2
+    point_winner: Mapped[int] = mapped_column(Integer)  # 1 or 2
+    p1_score: Mapped[str] = mapped_column(String, default="")  # "0","15","30","40","A"
+    p2_score: Mapped[str] = mapped_column(String, default="")
+    p1_games: Mapped[int] = mapped_column(Integer, default=0)
+    p2_games: Mapped[int] = mapped_column(Integer, default=0)
+    p1_sets: Mapped[int] = mapped_column(Integer, default=0)
+    p2_sets: Mapped[int] = mapped_column(Integer, default=0)
+    is_break_point: Mapped[bool] = mapped_column(default=False)
+    is_set_point: Mapped[bool] = mapped_column(default=False)
+    is_match_point: Mapped[bool] = mapped_column(default=False)
+    p1_ace: Mapped[bool] = mapped_column(default=False)
+    p2_ace: Mapped[bool] = mapped_column(default=False)
+    p1_double_fault: Mapped[bool] = mapped_column(default=False)
+    p2_double_fault: Mapped[bool] = mapped_column(default=False)
+    serve_no: Mapped[int] = mapped_column(Integer, default=1)   # 1 = first, 2 = second
+    rally_length: Mapped[int] = mapped_column(Integer, default=0)
+    game_winner: Mapped[int] = mapped_column(Integer, default=0)    # 0 = game ongoing
+    set_winner: Mapped[int] = mapped_column(Integer, default=0)
+    match_winner: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class MatchSnapshot(Base):
     """
     Periodic snapshot of live match state — primary source for ML training.
@@ -162,3 +257,4 @@ class MatchResult(Base):
     p1_opening_implied: Mapped[float] = mapped_column(Float)
     winner: Mapped[int] = mapped_column(Integer)
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
