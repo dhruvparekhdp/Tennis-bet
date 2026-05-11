@@ -12,6 +12,7 @@ Jobs:
   - heartbeat:      every 10m  → log status
 """
 import os
+from datetime import datetime, timezone
 
 import httpx
 import structlog
@@ -148,6 +149,7 @@ class AppRunner:
             seconds=settings.odds_poll_interval_seconds,
             id="odds_poll",
             max_instances=1,
+            next_run_time=datetime.now(timezone.utc),  # fire immediately on startup
         )
         self.scheduler.add_job(
             self._ml_retrain_job,
@@ -190,6 +192,25 @@ class AppRunner:
             "Data: Flashscore + ESPN (parallel) → Sofascore (serve stats)"
         )
         log.info("scheduler_started")
+
+    def get_status(self) -> dict:
+        from config.settings import settings
+        return {
+            "flashscore": {
+                "http_ok": self.flashscore._consecutive_failures == 0,
+                "consecutive_failures": self.flashscore._consecutive_failures,
+                "consecutive_zeros": self.flashscore._consecutive_zero_matches,
+            },
+            "espn": {"ok": True},
+            "sofascore": {
+                "blocked": self.sofascore._consecutive_failures >= 5,
+                "consecutive_failures": self.sofascore._consecutive_failures,
+            },
+            "odds_api": {
+                "key_set": bool(settings.odds_api_key),
+                "poll_interval_secs": settings.odds_poll_interval_seconds,
+            },
+        }
 
     async def stop(self) -> None:
         self.scheduler.shutdown(wait=False)

@@ -32,7 +32,7 @@ async def main() -> None:
     port = int(os.environ.get("PORT", 8080))
 
     runner = AppRunner()
-    health_runner = await start_health_server(runner.store, port=port)
+    health_runner = await start_health_server(runner, port=port)
 
     stop_event = asyncio.Event()
 
