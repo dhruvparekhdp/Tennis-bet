@@ -1,0 +1,154 @@
+"""
+ESPN public tennis API collector — fallback when Sofascore is blocked.
+
+ESPN exposes a public scoreboard API used by their own website.
+No authentication, not blocked from cloud IPs, updated every ~30s.
+Covers ATP, WTA, and Grand Slams.
+
+Limitations vs Sofascore:
+- No serve stats (1st serve %, aces, double faults)
+- No live odds
+- Score data is slightly less granular (no point-level)
+"""
+from datetime import datetime
+
+import httpx
+import structlog
+
+from analysis.match_state import MatchState, ServeStats
+from analysis.state_store import MatchStateStore
+from collectors.base import BaseCollector
+
+log = structlog.get_logger()
+
+_TOURS = {
+    "atp": "https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard",
+    "wta": "https://site.api.espn.com/apis/site/v2/sports/tennis/wta/scoreboard",
+}
+
+_SURFACE_MAP = {
+    "clay": "clay",
+    "grass": "grass",
+    "hard": "hard",
+    "indoor hard": "indoor_hard",
+    "carpet": "indoor_hard",
+}
+
+
+class ESPNCollector(BaseCollector):
+    """
+    Fallback collector using ESPN's public tennis scoreboard API.
+    Activated automatically by the scheduler when Sofascore is unavailable.
+    """
+
+    def __init__(self, store: MatchStateStore) -> None:
+        self.store = store
+
+    async def fetch(self) -> None:
+        events: list[dict] = []
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for tour, url in _TOURS.items():
+                try:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    tour_events = data.get("events", [])
+                    events.extend(tour_events)
+                    log.debug("espn_fetched", tour=tour, count=len(tour_events))
+                except Exception:
+                    log.exception("espn_fetch_failed", tour=tour)
+
+        live_ids: set[str] = set()
+        for event in events:
+            try:
+                state = self._parse_event(event)
+                if state:
+                    await self.store.update(state)
+                    live_ids.add(state.match_id)
+            except Exception:
+                log.exception("espn_parse_failed", event_id=event.get("id"))
+
+        # Remove finished matches
+        for state in await self.store.get_all():
+            if state.match_id.startswith("espn_") and state.match_id not in live_ids:
+                await self.store.remove(state.match_id)
+
+        if live_ids:
+            log.info("espn_collector_done", live_matches=len(live_ids))
+
+    def _parse_event(self, event: dict) -> MatchState | None:
+        status_type = event.get("status", {}).get("type", {}).get("name", "")
+        if status_type != "STATUS_IN_PROGRESS":
+            return None
+
+        match_id = f"espn_{event.get('id', '')}"
+        competitions = event.get("competitions", [])
+        if not competitions:
+            return None
+
+        comp = competitions[0]
+        competitors = comp.get("competitors", [])
+        if len(competitors) < 2:
+            return None
+
+        # ESPN puts home first
+        home = competitors[0].get("athlete", {}).get("displayName", "Unknown")
+        away = competitors[1].get("athlete", {}).get("displayName", "Unknown")
+
+        tournament = event.get("name", "Unknown Tournament")
+
+        # Surface — ESPN sometimes includes venue surface
+        venue = comp.get("venue", {})
+        surface_raw = venue.get("grass", False)
+        if surface_raw:
+            surface = "grass"
+        else:
+            surface_name = venue.get("surface", "hard").lower()
+            surface = _SURFACE_MAP.get(surface_name, "hard")
+
+        # Score — ESPN provides linescores per set
+        home_linescores = competitors[0].get("linescores", [])
+        away_linescores = competitors[1].get("linescores", [])
+
+        home_sets = int(competitors[0].get("score", "0") or 0)
+        away_sets = int(competitors[1].get("score", "0") or 0)
+
+        current_set_idx = len(home_linescores) - 1
+        if current_set_idx < 0:
+            current_set_idx = 0
+
+        games_p1 = 0
+        games_p2 = 0
+        if home_linescores and current_set_idx < len(home_linescores):
+            games_p1 = int(home_linescores[current_set_idx].get("value", 0) or 0)
+        if away_linescores and current_set_idx < len(away_linescores):
+            games_p2 = int(away_linescores[current_set_idx].get("value", 0) or 0)
+
+        # Reconstruct game_log from linescores (set winners only, not game-level)
+        existing_state = None  # ESPN doesn't give game-by-game log
+        game_log: list[int] = []
+
+        current_set = home_sets + away_sets + 1
+
+        return MatchState(
+            match_id=match_id,
+            player1_name=home,
+            player2_name=away,
+            surface=surface,
+            tournament=tournament,
+            current_server=0,   # ESPN doesn't expose current server
+            sets_p1=home_sets,
+            sets_p2=away_sets,
+            games_in_set_p1=games_p1,
+            games_in_set_p2=games_p2,
+            current_set=current_set,
+            is_tiebreak=games_p1 >= 6 and games_p2 >= 6 and abs(games_p1 - games_p2) < 2,
+            serve_stats_p1=ServeStats(),   # ESPN doesn't provide serve stats
+            serve_stats_p2=ServeStats(),
+            odds_p1=0.0,
+            odds_p2=0.0,
+            odds_history=[],
+            game_log=game_log,
+            match_duration_mins=0,
+            timestamp=datetime.utcnow(),
+        )
