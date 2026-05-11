@@ -2,10 +2,11 @@
 Sofascore unofficial API collector.
 
 Polls the Sofascore internal JSON API for live tennis matches every N seconds.
-No authentication required — uses the same endpoints the website uses.
-Rate-limited to ~1 req/30s per endpoint to avoid blocks.
+Uses full browser-grade headers to avoid data-center IP blocks.
+Falls back gracefully when Sofascore returns 403/429.
 """
 import asyncio
+import random
 from datetime import datetime
 
 import httpx
@@ -17,18 +18,30 @@ from collectors.base import BaseCollector
 
 log = structlog.get_logger()
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Referer": "https://www.sofascore.com/",
-    "Accept": "application/json",
-}
-
 _BASE = "https://api.sofascore.com/api/v1"
 
-# Surface name normalisation
+# Full browser headers — essential for avoiding Cloudflare/WAF blocks on cloud IPs
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://www.sofascore.com/",
+    "Origin": "https://www.sofascore.com",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+    "Connection": "keep-alive",
+}
+
 _SURFACE_MAP = {
     "Hard": "hard",
     "Clay": "clay",
@@ -37,23 +50,45 @@ _SURFACE_MAP = {
     "Carpet": "indoor_hard",
 }
 
+# Consecutive failure counter — if Sofascore is consistently blocked we back off
+_MAX_CONSECUTIVE_FAILURES = 5
+_BACKOFF_SECONDS = [10, 30, 60, 120, 300]  # escalating wait after each failure
+
 
 class SofascoreCollector(BaseCollector):
     def __init__(self, store: MatchStateStore) -> None:
         self.store = store
         self._client: httpx.AsyncClient | None = None
+        self._consecutive_failures = 0
+        self._blocked_until: datetime | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(headers=_HEADERS, timeout=15.0, follow_redirects=True)
+            self._client = httpx.AsyncClient(
+                headers=_HEADERS,
+                timeout=20.0,
+                follow_redirects=True,
+                http2=True,        # Sofascore prefers HTTP/2
+            )
         return self._client
 
     async def fetch(self) -> None:
         """Fetch all live tennis events and update the state store."""
+        # Respect back-off window
+        if self._blocked_until and datetime.utcnow() < self._blocked_until:
+            remaining = (self._blocked_until - datetime.utcnow()).seconds
+            log.debug("sofascore_backoff_active", wait_secs=remaining)
+            return
+
         try:
             events = await self._get_live_events()
-        except Exception:
-            log.exception("sofascore_live_events_failed")
+            self._consecutive_failures = 0   # reset on success
+            self._blocked_until = None
+        except httpx.HTTPStatusError as exc:
+            self._on_failure(exc.response.status_code)
+            return
+        except Exception as exc:
+            self._on_failure(error=str(exc))
             return
 
         for event in events:
@@ -64,19 +99,49 @@ class SofascoreCollector(BaseCollector):
             except Exception:
                 log.exception("sofascore_build_state_failed", event_id=event.get("id"))
 
-        # Clean up finished matches from store
+        # Remove matches that are no longer live
         current_ids = {str(e["id"]) for e in events}
         for state in await self.store.get_all():
             if state.match_id not in current_ids:
                 await self.store.remove(state.match_id)
-                log.info("match_removed_from_store", match_id=state.match_id)
+
+        if events:
+            log.info("sofascore_fetched", live_matches=len(events))
+
+    def _on_failure(self, status_code: int | None = None, error: str | None = None) -> None:
+        self._consecutive_failures += 1
+        wait = _BACKOFF_SECONDS[min(self._consecutive_failures - 1, len(_BACKOFF_SECONDS) - 1)]
+        self._blocked_until = datetime.utcnow().__class__.utcnow()
+        import datetime as dt
+        self._blocked_until = dt.datetime.utcnow() + dt.timedelta(seconds=wait)
+
+        if status_code == 403:
+            log.warning(
+                "sofascore_blocked_403",
+                hint="Cloud IP blocked by WAF — retrying with backoff",
+                backoff_secs=wait,
+                consecutive_failures=self._consecutive_failures,
+            )
+        elif status_code == 429:
+            log.warning(
+                "sofascore_rate_limited_429",
+                backoff_secs=wait,
+            )
+        else:
+            log.error(
+                "sofascore_fetch_failed",
+                status_code=status_code,
+                error=error,
+                backoff_secs=wait,
+            )
 
     async def _get_live_events(self) -> list[dict]:
         client = await self._get_client()
+        # Small random jitter to avoid fingerprinting by request timing
+        await asyncio.sleep(random.uniform(0.5, 2.0))
         resp = await client.get(f"{_BASE}/sport/tennis/events/live")
         resp.raise_for_status()
-        data = resp.json()
-        return data.get("events", [])
+        return resp.json().get("events", [])
 
     async def _build_match_state(self, event: dict) -> MatchState | None:
         match_id = str(event.get("id", ""))
@@ -84,37 +149,34 @@ class SofascoreCollector(BaseCollector):
             return None
 
         status = event.get("status", {}).get("type", "")
-        if status not in ("inprogress",):
+        if status != "inprogress":
             return None
 
         home = event.get("homeTeam", {}).get("name", "Unknown")
         away = event.get("awayTeam", {}).get("name", "Unknown")
-        tournament = (event.get("tournament", {}).get("name", "") or
-                      event.get("tournament", {}).get("uniqueTournament", {}).get("name", "Unknown"))
+        tournament = (
+            event.get("tournament", {}).get("name", "")
+            or event.get("tournament", {}).get("uniqueTournament", {}).get("name", "Unknown")
+        )
         ground = event.get("groundType") or event.get("tournament", {}).get("groundType", "Hard")
         surface = _SURFACE_MAP.get(ground, "hard")
 
-        score_data = event.get("homeScore", {}), event.get("awayScore", {})
-        sets_p1 = score_data[0].get("current", 0)
-        sets_p2 = score_data[1].get("current", 0)
+        home_score = event.get("homeScore", {})
+        away_score = event.get("awayScore", {})
+        sets_p1 = home_score.get("current", 0)
+        sets_p2 = away_score.get("current", 0)
 
-        # Current set games
         current_set = sets_p1 + sets_p2 + 1
-        games_p1 = score_data[0].get(f"period{current_set}", 0)
-        games_p2 = score_data[1].get(f"period{current_set}", 0)
+        games_p1 = home_score.get(f"period{current_set}", 0)
+        games_p2 = away_score.get(f"period{current_set}", 0)
 
-        # Serving player (1 = home, 2 = away, 0 = unknown)
         serving = event.get("serving", 0)
         current_server = 1 if serving == 1 else (2 if serving == 2 else 0)
 
-        # Fetch detailed statistics (serve %, aces, DFs)
         stats = await self._get_match_stats(match_id)
         serve_stats_p1, serve_stats_p2 = self._parse_serve_stats(stats)
-
-        # Fetch odds from Sofascore
         odds_p1, odds_p2 = await self._get_odds(match_id)
 
-        # Build/merge with existing state for odds history
         existing = await self.store.get(match_id)
         odds_history: list[OddsPoint] = []
         game_log: list[int] = []
@@ -123,17 +185,14 @@ class SofascoreCollector(BaseCollector):
         if existing:
             odds_history = existing.odds_history.copy()
             game_log = existing.game_log.copy()
-            # Infer new game winner from score change
             prev_total = existing.games_in_set_p1 + existing.games_in_set_p2
             curr_total = games_p1 + games_p2
             if curr_total > prev_total:
-                # A game was won — determine winner
                 if games_p1 > existing.games_in_set_p1:
                     game_log.append(1)
                 elif games_p2 > existing.games_in_set_p2:
                     game_log.append(2)
 
-        # Append current odds snapshot (max keep 40 points)
         if odds_p1 > 1.0 and odds_p2 > 1.0:
             odds_history.append(OddsPoint(odds_p1=odds_p1, odds_p2=odds_p2, timestamp=datetime.utcnow()))
             if len(odds_history) > 40:
@@ -165,9 +224,11 @@ class SofascoreCollector(BaseCollector):
     async def _get_match_stats(self, match_id: str) -> dict:
         try:
             client = await self._get_client()
+            await asyncio.sleep(random.uniform(0.2, 0.8))
             resp = await client.get(f"{_BASE}/event/{match_id}/statistics")
             if resp.status_code == 200:
                 return resp.json()
+            log.debug("sofascore_stats_non_200", status=resp.status_code, match_id=match_id)
         except Exception:
             log.debug("sofascore_stats_fetch_failed", match_id=match_id)
         return {}
@@ -178,8 +239,7 @@ class SofascoreCollector(BaseCollector):
             resp = await client.get(f"{_BASE}/event/{match_id}/odds/1/all")
             if resp.status_code != 200:
                 return 0.0, 0.0
-            data = resp.json()
-            markets = data.get("markets", [])
+            markets = resp.json().get("markets", [])
             for market in markets:
                 if "winner" in market.get("marketName", "").lower():
                     choices = market.get("choices", [])
@@ -196,14 +256,11 @@ class SofascoreCollector(BaseCollector):
         try:
             groups = data.get("statistics", [{}])[0].get("groups", [])
             for group in groups:
-                name = group.get("groupName", "").lower()
-                if "serve" not in name:
+                if "serve" not in group.get("groupName", "").lower():
                     continue
                 for item in group.get("statisticsItems", []):
                     key = item.get("name", "").lower()
-                    h = item.get("home", "0")
-                    a = item.get("away", "0")
-
+                    h, a = item.get("home", "0"), item.get("away", "0")
                     if "1st serve" in key and "%" in key:
                         s1.first_serve_pct = _pct(h)
                         s2.first_serve_pct = _pct(a)
@@ -214,7 +271,7 @@ class SofascoreCollector(BaseCollector):
                         s1.double_faults = _int(h)
                         s2.double_faults = _int(a)
         except Exception:
-            log.debug("sofascore_parse_stats_failed")
+            pass
         return s1, s2
 
     async def close(self) -> None:

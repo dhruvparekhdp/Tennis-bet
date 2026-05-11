@@ -1,4 +1,5 @@
-httpx[asyncio]>=0.27
+httpx[asyncio,http2]>=0.27
+h2>=4.0
 aiohttp>=3.9
 beautifulsoup4>=4.12
 sqlalchemy[asyncio]>=2.0

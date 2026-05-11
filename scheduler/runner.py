@@ -2,10 +2,11 @@
 APScheduler-based 24/7 job runner.
 
 Jobs:
-  - sofascore_poll:    every 30s  → fetch live match data + run analysis
-  - schedule_poll:     every 5min → fetch today's tennis schedule
-  - db_cleanup:        daily      → delete old odds snapshots
-  - heartbeat:         every 10m  → send Telegram alive message
+  - data_poll:      every 30s  → fetch live match data + run analysis
+                                 (Sofascore primary, ESPN fallback)
+  - schedule_poll:  every 5min → fetch today's tennis schedule
+  - db_cleanup:     daily      → delete old odds snapshots
+  - heartbeat:      every 10m  → log status
 """
 import asyncio
 
@@ -14,6 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from analysis.engine import AnalysisEngine
 from analysis.state_store import MatchStateStore
+from collectors.espn import ESPNCollector
 from collectors.sofascore import SofascoreCollector
 from collectors.thesportsdb import TheSportsDBCollector
 from config.settings import settings
@@ -23,19 +25,39 @@ from storage.repository import Repository
 
 log = structlog.get_logger()
 
+# If Sofascore has this many consecutive failures, switch to ESPN fallback
+_SOFASCORE_FAILURE_THRESHOLD = 3
+
 
 class AppRunner:
     def __init__(self) -> None:
         self.store = MatchStateStore()
         self.sofascore = SofascoreCollector(self.store)
+        self.espn = ESPNCollector(self.store)
         self.thesportsdb = TheSportsDBCollector(api_key=settings.thesportsdb_api_key)
         self.notifier = TelegramNotifier()
         self.scheduler = AsyncIOScheduler()
 
-    async def _sofascore_job(self) -> None:
-        await self.sofascore.fetch()
-        # After updating states, run analysis on each live match
+    async def _data_poll_job(self) -> None:
+        # Use Sofascore first; fall back to ESPN if it's consistently blocked
+        if self.sofascore._consecutive_failures >= _SOFASCORE_FAILURE_THRESHOLD:
+            log.warning(
+                "sofascore_unavailable_using_espn",
+                failures=self.sofascore._consecutive_failures,
+            )
+            await self.espn.fetch()
+        else:
+            await self.sofascore.fetch()
+            # If Sofascore returned 0 matches and ESPN might have data, top up from ESPN
+            if await self.store.count() == 0:
+                await self.espn.fetch()
+
+        await self._run_analysis()
+
+    async def _run_analysis(self) -> None:
         states = await self.store.get_all()
+        if not states:
+            return
         async with AsyncSessionFactory() as session:
             repo = Repository(session)
             engine = AnalysisEngine(repo)
@@ -65,14 +87,15 @@ class AppRunner:
 
     async def _heartbeat_job(self) -> None:
         count = await self.store.count()
-        log.info("heartbeat", matches_tracked=count)
+        source = "espn" if self.sofascore._consecutive_failures >= _SOFASCORE_FAILURE_THRESHOLD else "sofascore"
+        log.info("heartbeat", matches_tracked=count, data_source=source)
 
     def setup_jobs(self) -> None:
         self.scheduler.add_job(
-            self._sofascore_job,
+            self._data_poll_job,
             "interval",
             seconds=settings.sofascore_poll_interval,
-            id="sofascore_poll",
+            id="data_poll",
             max_instances=1,
         )
         self.scheduler.add_job(
@@ -100,9 +123,10 @@ class AppRunner:
         self.setup_jobs()
         self.scheduler.start()
         await self.notifier.send_text(
-            "Tennis-bet monitor started.\n"
+            "🎾 Tennis-bet monitor started.\n"
             f"Polling every {settings.sofascore_poll_interval}s | "
-            f"Min confidence: {settings.min_confidence}"
+            f"Min confidence: {settings.min_confidence} | "
+            f"Data: Sofascore → ESPN fallback"
         )
         log.info("scheduler_started")
 
