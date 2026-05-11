@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: tennis-bet
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Render's free tier — always keep "free"
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false          # you'll fill this in the Render dashboard
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: BANK_SIZE
+        value: "10000"
+      - key: MIN_CONFIDENCE
+        value: "0.65"
+      - key: MAX_STAKE_PCT
+        value: "0.03"
+      - key: SIGNAL_COOLDOWN_MINUTES
+        value: "10"
+      - key: SOFASCORE_POLL_INTERVAL
+        value: "30"
+      - key: THESPORTSDB_API_KEY
+        value: "3"
+      - key: DATABASE_URL
+        value: "sqlite+aiosqlite:///./tennis_bet.db"

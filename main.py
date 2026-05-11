@@ -8,6 +8,7 @@ Environment:
     Copy .env.example to .env and fill in your credentials.
 """
 import asyncio
+import os
 import signal
 
 import structlog
@@ -27,8 +28,11 @@ async def main() -> None:
     await init_db()
     log.info("database_initialised")
 
+    # Render injects PORT; fall back to 8080 locally
+    port = int(os.environ.get("PORT", 8080))
+
     runner = AppRunner()
-    health_runner = await start_health_server(runner.store, port=8080)
+    health_runner = await start_health_server(runner.store, port=port)
 
     stop_event = asyncio.Event()
 
@@ -41,7 +45,7 @@ async def main() -> None:
         loop.add_signal_handler(sig, _handle_signal)
 
     await runner.start()
-    log.info("monitor_running", health_url="http://localhost:8080/health")
+    log.info("monitor_running", health_url=f"http://localhost:{port}/health")
 
     await stop_event.wait()
 
