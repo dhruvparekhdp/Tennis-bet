@@ -45,6 +45,8 @@ class AppRunner:
         self.ml_predictor = MLPredictor()
         self.notifier = TelegramNotifier()
         self.scheduler = AsyncIOScheduler()
+        # Persistent engine so _cooldowns dict survives across poll cycles
+        self._engine: AnalysisEngine | None = None
 
     async def _data_poll_job(self) -> None:
         # Flashscore: primary — covers ATP, WTA, Challengers, ITF
@@ -66,10 +68,13 @@ class AppRunner:
             return
         async with AsyncSessionFactory() as session:
             repo = Repository(session)
-            engine = AnalysisEngine(repo)
+            if self._engine is None:
+                self._engine = AnalysisEngine(repo)
+            else:
+                self._engine.repository = repo
             for state in states:
                 try:
-                    signals = await engine.process(state)
+                    signals = await self._engine.process(state)
                     for sig in signals:
                         await self.notifier.send_signal(sig)
                         log.info(

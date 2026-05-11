@@ -60,7 +60,10 @@ async def _api_signals(runner, request: web.Request) -> web.Response:
         {
             "match_id": r.match_id,
             "signal_type": r.signal_type,
-            "player_to_back": r.player_to_back,
+            "player_name": r.player_name or "",
+            "opponent_name": r.opponent_name or "",
+            "tournament": r.tournament or "",
+            "surface": r.surface or "hard",
             "trigger": r.trigger_description,
             "confidence": round(r.confidence * 100),
             "market": r.recommended_market,
@@ -123,7 +126,8 @@ _HTML = """<!DOCTYPE html>
   .odds-val{font-size:22px;font-weight:800;color:#38bdf8}
   .odds-val.no-odds{color:#475569;font-size:16px}
   .source-tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:4px;background:#1e3a5f;color:#7dd3fc;font-weight:600}
-  .signal-row{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px;margin-bottom:8px;display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center}
+  .signal-row{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px;margin-bottom:8px;display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:start}
+  .sig-left{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
   .sig-type{font-size:12px;font-weight:700;padding:3px 8px;border-radius:6px;white-space:nowrap}
   .sig-momentum{background:#1d4ed8;color:#bfdbfe}
   .sig-odds_value{background:#7c3aed;color:#ddd6fe}
@@ -132,13 +136,16 @@ _HTML = """<!DOCTYPE html>
   .sig-fatigue{background:#9f1239;color:#fecdd3}
   .sig-ml_value{background:#155e75;color:#a5f3fc}
   .sig-body{min-width:0}
-  .sig-match{font-size:13px;font-weight:600;color:#f1f5f9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .sig-desc{font-size:11px;color:#94a3b8;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sig-match{font-size:14px;font-weight:600;color:#f1f5f9}
+  .sig-match .vs{color:#475569;font-weight:400;margin:0 4px;font-size:12px}
+  .sig-tourn{font-size:11px;color:#64748b;margin-top:3px}
+  .sig-desc{font-size:11px;color:#94a3b8;margin-top:4px;line-height:1.4}
   .sig-meta{text-align:right;white-space:nowrap}
-  .sig-conf{font-size:18px;font-weight:800;color:#f1f5f9}
-  .sig-edge{font-size:11px;color:#22c55e;margin-top:2px}
-  .sig-odds-display{font-size:11px;color:#94a3b8}
-  .sig-time{font-size:11px;color:#475569;margin-top:4px}
+  .sig-conf{font-size:20px;font-weight:800;color:#f1f5f9}
+  .sig-edge{font-size:11px;color:#22c55e;margin-top:2px;font-weight:600}
+  .sig-odds-display{font-size:11px;color:#94a3b8;margin-top:2px}
+  .sig-stake{display:inline-block;font-size:10px;background:#1d4736;color:#34d399;padding:2px 6px;border-radius:4px;margin-top:4px;font-weight:600}
+  .sig-time{font-size:11px;color:#475569}
   .empty{color:#475569;font-size:14px;padding:24px 0;text-align:center}
   .status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
   .status-card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:12px}
@@ -223,23 +230,36 @@ function renderMatches(matches){
   }).join('');
 }
 
+const MARKET_LABEL={'match_winner':'Match Winner','next_game':'Next Game','next_set':'Next Set'};
+const SURFACE_DOT={'clay':'🟤','grass':'🟢','hard':'🔵','indoor_hard':'🔵'};
+
 function renderSignals(signals){
   const el=document.getElementById('signals');
   if(!signals.length){el.innerHTML='<div class="empty">No signals in the last 24 hours</div>';return;}
   el.innerHTML=signals.map(s=>{
     const emoji=SIG_EMOJI[s.signal_type]||'&#127934;';
-    const label=s.signal_type.replace(/_/g,' ');
+    const label=s.signal_type.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+    const player=s.player_name||'—';
+    const opp=s.opponent_name||'—';
+    const tourn=s.tournament||'';
+    const surf=SURFACE_DOT[s.surface]||'⚪';
+    const mkt=MARKET_LABEL[s.market]||s.market;
+    const stake=s.stake_pct>0?`<span class="sig-stake">Stake ${s.stake_pct}%</span>`:'';
     return `<div class="signal-row">
-      <div><span class="sig-type sig-${s.signal_type}">${emoji} ${label}</span></div>
-      <div class="sig-body">
-        <div class="sig-match">${s.match_id.replace(/^(espn|fs|ss)_/,'')}</div>
-        <div class="sig-desc">${s.trigger}</div>
+      <div class="sig-left">
+        <span class="sig-type sig-${s.signal_type}">${emoji} ${label}</span>
         <div class="sig-time">${fmtTime(s.timestamp)}</div>
+      </div>
+      <div class="sig-body">
+        <div class="sig-match">&#127934; <strong>${player}</strong> <span class="vs">vs</span> ${opp}</div>
+        <div class="sig-tourn">${surf} ${tourn} &middot; ${mkt}</div>
+        <div class="sig-desc">${s.trigger}</div>
       </div>
       <div class="sig-meta">
         <div class="sig-conf">${s.confidence}%</div>
         <div class="sig-edge">+${s.edge_pct}% edge</div>
-        <div class="sig-odds-display">@ ${s.odds} (fair ${s.fair_odds})</div>
+        <div class="sig-odds-display">@ ${s.odds} &nbsp;fair&nbsp;${s.fair_odds}</div>
+        ${stake}
       </div>
     </div>`;
   }).join('');
