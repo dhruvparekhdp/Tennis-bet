@@ -49,8 +49,8 @@ class AnalysisEngine:
         ]
 
         # ML value signal: fire when model probability differs from market by >15%
-        # Raised from 12% to reduce false positives — ML model needs sufficient evidence
-        if state.odds_p1 > 1.30 and state.odds_p2 > 1.30:
+        # Min odds 1.20 per player — don't second-guess near-certainties
+        if state.odds_p1 > 1.20 and state.odds_p2 > 1.20:
             for player, model_prob, market_odds, player_name, opponent_name in [
                 (1, p1_prob, state.odds_p1, state.player1_name, state.player2_name),
                 (2, p2_prob, state.odds_p2, state.player2_name, state.player1_name),

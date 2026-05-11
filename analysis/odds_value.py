@@ -4,26 +4,20 @@ from analysis.signal import Signal, compute_fair_odds, compute_stake
 
 class OddsValueAnalyzer:
     """
-    Signal: odds drifted >30% in under 5 minutes with no games scored.
+    Signal: odds drifted >25% in under 5 minutes with no games scored.
     Market overreaction — fade the move by backing the drifter.
-
-    Raised threshold from 25% to 30% to reduce false signals.
-    Fixed: pre-move odds now correctly uses the last odds point BEFORE the window,
-    not the first odds point ever recorded.
     """
 
     SIGNAL_TYPE = "odds_value"
-    MOVE_THRESHOLD = 0.30           # raised from 0.25 — require larger, clearer moves
+    MOVE_THRESHOLD = 0.25           # 25% drift in the window
     WINDOW_MINUTES = 5
     MIN_MATCH_DURATION = 20
-    MIN_SIGNAL_ODDS = 1.30          # don't signal on near-certainties
+    MIN_SIGNAL_ODDS = 1.30          # checked per-player inside loop, not at entry
 
     def analyze(self, state: MatchState) -> Signal | None:
         if state.match_duration_mins < self.MIN_MATCH_DURATION:
             return None
         if state.odds_p1 <= 1.01 or state.odds_p2 <= 1.01:
-            return None
-        if state.odds_p1 < self.MIN_SIGNAL_ODDS or state.odds_p2 < self.MIN_SIGNAL_ODDS:
             return None
 
         for player in (1, 2):
@@ -32,16 +26,17 @@ class OddsValueAnalyzer:
             if move > -self.MOVE_THRESHOLD:
                 continue
 
+            current_odds = state.odds_p1 if player == 1 else state.odds_p2
+            if current_odds < self.MIN_SIGNAL_ODDS:
+                continue  # only check the player being backed
+
             # Verify no games were won by this player during the drift window
             g1, g2 = state.games_won_last_n_minutes(self.WINDOW_MINUTES)
             games_won_by_player = g1 if player == 1 else g2
             if games_won_by_player > 0:
                 continue  # legitimate odds move (player lost games)
 
-            current_odds = state.odds_p1 if player == 1 else state.odds_p2
-
-            # Pre-move odds: last odds snapshot BEFORE the window opened
-            # (not old_points[0] which was the start of all history — that's a bug)
+            # Pre-move odds: last snapshot BEFORE the window opened
             now = state.timestamp
             cutoff = now.timestamp() - self.WINDOW_MINUTES * 60
             pre_window = [p for p in state.odds_history if p.timestamp.timestamp() < cutoff]
@@ -51,18 +46,18 @@ class OddsValueAnalyzer:
             if pre_move_odds <= 1.01:
                 continue
 
-            # Check if odds are already partially reverting
+            # Check if odds are already partially reverting (good confirming sign)
             partial_revert = state.odds_change_pct_last_n_minutes(player, minutes=2)
             reverting = partial_revert > 0.03
 
             confidence = self._confidence(move, reverting)
-            if confidence < 0.60:
+            if confidence < 0.65:
                 continue
 
             fair_implied = 1.0 / pre_move_odds
             fair_odds = compute_fair_odds(fair_implied)
             edge = (current_odds - fair_odds) / fair_odds
-            if edge <= 0.05:
+            if edge <= 0.03:
                 continue
 
             player_name = state.player1_name if player == 1 else state.player2_name
@@ -78,7 +73,7 @@ class OddsValueAnalyzer:
                 opponent_name=opponent,
                 trigger_description=(
                     f"Odds on {player_name} drifted {abs(move)*100:.1f}% in {self.WINDOW_MINUTES} mins "
-                    f"with no games scored — apparent market overreaction. "
+                    f"with no games scored — market overreaction. "
                     f"{'Odds already reverting.' if reverting else ''}"
                 ),
                 confidence=confidence,
@@ -96,11 +91,11 @@ class OddsValueAnalyzer:
         return None
 
     def _confidence(self, move: float, reverting: bool) -> float:
-        conf = 0.60
+        conf = 0.65                 # base above global threshold
         if abs(move) > 0.40:
             conf += 0.07
-        elif abs(move) > 0.35:
+        elif abs(move) > 0.30:
             conf += 0.04
         if reverting:
-            conf += 0.10
-        return min(conf, 0.80)
+            conf += 0.08
+        return min(conf, 0.82)
