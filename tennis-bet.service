@@ -1,0 +1,17 @@
+[Unit]
+Description=Tennis Bet Prediction Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/tennis-bet
+ExecStart=/home/ubuntu/tennis-bet/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
