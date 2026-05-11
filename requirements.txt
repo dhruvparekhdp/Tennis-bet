@@ -1,0 +1,12 @@
+httpx[asyncio]>=0.27
+aiohttp>=3.9
+beautifulsoup4>=4.12
+sqlalchemy[asyncio]>=2.0
+aiosqlite>=0.20
+apscheduler>=3.10
+pydantic-settings>=2.0
+structlog>=24.0
+alembic>=1.13
+python-telegram-bot>=21.0
+scikit-learn>=1.4
+pandas>=2.0
