@@ -67,7 +67,7 @@ class FlashscoreCollector(BaseCollector):
     def __init__(self, store: MatchStateStore) -> None:
         self.store = store
         self._consecutive_failures = 0
-        self._first_fetch = True
+        self._consecutive_zero_matches = 0
 
     async def fetch(self) -> None:
         if self._consecutive_failures >= 5:
@@ -96,20 +96,23 @@ class FlashscoreCollector(BaseCollector):
 
         self._consecutive_failures = 0
 
-        # Log a snippet of the raw format on first successful fetch for debugging
-        if self._first_fetch:
-            self._first_fetch = False
-            log.info("flashscore_raw_sample", sample=raw[:300])
-
         live_ids: set[str] = set()
         matches_found = 0
 
-        # Records are separated by ~ ; each record is a ¬÷ key-value block
-        for block in raw.split("~"):
-            record = _parse_record(block)
-            if not record:
-                continue
+        all_blocks = [b for b in raw.split("~") if b.strip()]
+        all_records = [_parse_record(b) for b in all_blocks]
+        non_empty_records = [r for r in all_records if r]
 
+        # Collect diagnostic info across all records
+        all_statuses: set[str] = set()
+        has_aa: int = 0
+        for r in non_empty_records:
+            if "AE" in r:
+                all_statuses.add(r["AE"])
+            if "AA" in r:
+                has_aa += 1
+
+        for record in non_empty_records:
             match_id = record.get("AA", "")
             status = record.get("AE", "")
 
@@ -127,6 +130,26 @@ class FlashscoreCollector(BaseCollector):
         for state in await self.store.get_all():
             if state.match_id.startswith("fs_") and state.match_id not in live_ids:
                 await self.store.remove(state.match_id)
+
+        if matches_found == 0:
+            self._consecutive_zero_matches += 1
+            # Log full diagnostics every time we get zero matches so we can debug
+            sample_blocks = all_blocks[:3]
+            sample_records = non_empty_records[:3]
+            log.warning(
+                "flashscore_zero_matches",
+                raw_len=len(raw),
+                total_blocks=len(all_blocks),
+                non_empty_records=len(non_empty_records),
+                records_with_AA=has_aa,
+                all_AE_values_seen=sorted(all_statuses),
+                in_progress_statuses_expected=sorted(_IN_PROGRESS_STATUSES),
+                sample_raw=raw[:500],
+                sample_records=sample_records[:2],
+                consecutive_zeros=self._consecutive_zero_matches,
+            )
+        else:
+            self._consecutive_zero_matches = 0
 
         log.info("flashscore_collector_done", live_matches=len(live_ids),
                  total_records=matches_found)
@@ -171,7 +194,6 @@ class FlashscoreCollector(BaseCollector):
             current_server = 0
 
             # Carry over game_log from existing state
-            existing = None  # sync — we'll update async callers handle this
             game_log: list[int] = []
 
             is_tiebreak = (

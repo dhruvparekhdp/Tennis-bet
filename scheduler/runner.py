@@ -42,9 +42,9 @@ class AppRunner:
         # Flashscore: primary — covers ATP, WTA, Challengers, ITF
         await self.flashscore.fetch()
 
-        # ESPN: supplement for ATP/WTA main draw when Flashscore is blocked
-        if self.flashscore._consecutive_failures >= 5:
-            await self.espn.fetch()
+        # ESPN: always run — covers ATP/WTA main draw and acts as safety net
+        # when Flashscore returns zero matches (format change / parsing issue)
+        await self.espn.fetch()
 
         # Sofascore: serve stats enrichment only (blocked on most cloud IPs)
         if self.sofascore._consecutive_failures < 5:
@@ -86,7 +86,14 @@ class AppRunner:
     async def _heartbeat_job(self) -> None:
         count = await self.store.count()
         sofascore_ok = self.sofascore._consecutive_failures == 0
-        log.info("heartbeat", matches_tracked=count, sofascore_available=sofascore_ok)
+        flashscore_ok = self.flashscore._consecutive_failures == 0
+        log.info(
+            "heartbeat",
+            matches_tracked=count,
+            sofascore_available=sofascore_ok,
+            flashscore_http_ok=flashscore_ok,
+            flashscore_consecutive_zeros=self.flashscore._consecutive_zero_matches,
+        )
 
     def setup_jobs(self) -> None:
         self.scheduler.add_job(
@@ -127,7 +134,7 @@ class AppRunner:
             "🎾 Tennis-bet monitor started.\n"
             f"Polling every {settings.sofascore_poll_interval}s | "
             f"Min confidence: {settings.min_confidence} | "
-            "Data: Flashscore → ESPN → Sofascore (serve stats)"
+            "Data: Flashscore + ESPN (parallel) → Sofascore (serve stats)"
         )
         log.info("scheduler_started")
 
