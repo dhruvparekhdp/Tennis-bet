@@ -58,6 +58,14 @@ class ESPNCollector(BaseCollector):
                 except Exception:
                     log.exception("espn_fetch_failed", tour=tour)
 
+        # Log all statuses for diagnostics
+        status_counts: dict[str, int] = {}
+        for event in events:
+            s = event.get("status", {}).get("type", {}).get("name", "UNKNOWN")
+            status_counts[s] = status_counts.get(s, 0) + 1
+        if status_counts:
+            log.info("espn_event_statuses", counts=status_counts)
+
         live_ids: set[str] = set()
         for event in events:
             try:
@@ -75,9 +83,20 @@ class ESPNCollector(BaseCollector):
 
         log.info("espn_collector_done", live_matches=len(live_ids))
 
+    _LIVE_STATUSES = {"STATUS_IN_PROGRESS", "STATUS_LIVE", "STATUS_PLAY"}
+
     async def _parse_event(self, event: dict) -> MatchState | None:
-        status_type = event.get("status", {}).get("type", {}).get("name", "")
-        if status_type != "STATUS_IN_PROGRESS":
+        status_obj = event.get("status", {}).get("type", {})
+        status_type = status_obj.get("name", "")
+        status_detail = status_obj.get("description", "")
+        if status_type not in self._LIVE_STATUSES:
+            log.info(
+                "espn_event_skipped",
+                event_id=event.get("id"),
+                name=event.get("name", "")[:60],
+                status=status_type,
+                detail=status_detail,
+            )
             return None
 
         match_id = f"espn_{event.get('id', '')}"
@@ -90,9 +109,17 @@ class ESPNCollector(BaseCollector):
         if len(competitors) < 2:
             return None
 
-        # ESPN puts home first
-        home = competitors[0].get("athlete", {}).get("displayName", "Unknown")
-        away = competitors[1].get("athlete", {}).get("displayName", "Unknown")
+        # ESPN puts home first; player name may be under athlete or directly on competitor
+        def _player_name(comp: dict) -> str:
+            return (
+                comp.get("athlete", {}).get("displayName")
+                or comp.get("displayName")
+                or comp.get("team", {}).get("displayName")
+                or "Unknown"
+            )
+
+        home = _player_name(competitors[0])
+        away = _player_name(competitors[1])
 
         tournament = event.get("name", "Unknown Tournament")
 
