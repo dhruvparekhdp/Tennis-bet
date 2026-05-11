@@ -16,7 +16,7 @@ from analysis.server_performance import ServerPerformanceAnalyzer
 from analysis.set_patterns import SetPatternAnalyzer
 from analysis.signal import Signal, compute_stake
 from analysis.win_probability import model_fair_odds
-from config.settings import settings
+from config.settings import is_tier1, settings
 from storage.models import PlayerStats
 from storage.repository import Repository
 
@@ -41,6 +41,10 @@ class AnalysisEngine:
     async def process(self, state: MatchState) -> list[Signal]:
         """Run all analyzers against the given match state, return signals that pass
         confidence threshold and cooldown checks."""
+        if settings.tournament_tier == "tier1" and not is_tier1(state.tournament):
+            log.debug("tournament_filtered", tournament=state.tournament, match_id=state.match_id)
+            return []
+
         player_stats = await self._load_player_stats(state)
 
         p1_prob, p2_prob = self.ml.predict(state)
