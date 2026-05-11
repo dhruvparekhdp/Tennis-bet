@@ -1,15 +1,16 @@
 """
 APScheduler-based 24/7 job runner.
 
+Data strategy:
+  - ESPN (primary)     → always works from cloud IPs, covers ATP + WTA live scores
+  - Sofascore (enrich) → attempted for serve stats only; silently skipped if blocked
+
 Jobs:
-  - data_poll:      every 30s  → fetch live match data + run analysis
-                                 (Sofascore primary, ESPN fallback)
-  - schedule_poll:  every 5min → fetch today's tennis schedule
+  - data_poll:      every 30s  → ESPN fetch + optional Sofascore enrichment + analysis
+  - schedule_poll:  every 5min → TheSportsDB schedule
   - db_cleanup:     daily      → delete old odds snapshots
   - heartbeat:      every 10m  → log status
 """
-import asyncio
-
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -25,32 +26,24 @@ from storage.repository import Repository
 
 log = structlog.get_logger()
 
-# If Sofascore has this many consecutive failures, switch to ESPN fallback
-_SOFASCORE_FAILURE_THRESHOLD = 3
-
 
 class AppRunner:
     def __init__(self) -> None:
         self.store = MatchStateStore()
-        self.sofascore = SofascoreCollector(self.store)
         self.espn = ESPNCollector(self.store)
+        self.sofascore = SofascoreCollector(self.store)
         self.thesportsdb = TheSportsDBCollector(api_key=settings.thesportsdb_api_key)
         self.notifier = TelegramNotifier()
         self.scheduler = AsyncIOScheduler()
 
     async def _data_poll_job(self) -> None:
-        # Use Sofascore first; fall back to ESPN if it's consistently blocked
-        if self.sofascore._consecutive_failures >= _SOFASCORE_FAILURE_THRESHOLD:
-            log.warning(
-                "sofascore_unavailable_using_espn",
-                failures=self.sofascore._consecutive_failures,
-            )
-            await self.espn.fetch()
-        else:
+        # ESPN is primary — works reliably from cloud IPs
+        await self.espn.fetch()
+
+        # Sofascore enriches serve stats when not blocked (works locally, blocked on cloud)
+        # Runs silently — if blocked, ESPN data alone drives all signals except serve_degradation
+        if self.sofascore._consecutive_failures < 5:
             await self.sofascore.fetch()
-            # If Sofascore returned 0 matches and ESPN might have data, top up from ESPN
-            if await self.store.count() == 0:
-                await self.espn.fetch()
 
         await self._run_analysis()
 
@@ -87,8 +80,8 @@ class AppRunner:
 
     async def _heartbeat_job(self) -> None:
         count = await self.store.count()
-        source = "espn" if self.sofascore._consecutive_failures >= _SOFASCORE_FAILURE_THRESHOLD else "sofascore"
-        log.info("heartbeat", matches_tracked=count, data_source=source)
+        sofascore_ok = self.sofascore._consecutive_failures == 0
+        log.info("heartbeat", matches_tracked=count, sofascore_available=sofascore_ok)
 
     def setup_jobs(self) -> None:
         self.scheduler.add_job(
@@ -126,7 +119,7 @@ class AppRunner:
             "🎾 Tennis-bet monitor started.\n"
             f"Polling every {settings.sofascore_poll_interval}s | "
             f"Min confidence: {settings.min_confidence} | "
-            f"Data: Sofascore → ESPN fallback"
+            "Data: ESPN (primary) + Sofascore (serve stats)"
         )
         log.info("scheduler_started")
 
