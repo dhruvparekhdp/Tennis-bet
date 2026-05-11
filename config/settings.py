@@ -27,5 +27,8 @@ class Settings(BaseSettings):
     # TheSportsDB
     thesportsdb_api_key: str = "3"
 
+    # Odds API
+    odds_api_key: str | None = None  # https://the-odds-api.com — free 500 req/month
+
 
 settings = Settings()  # type: ignore[call-arg]

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Float, Index, Integer, String, Text
+from sqlalchemy import DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from storage.database import Base
@@ -62,3 +62,26 @@ class PlayerStats(Base):
     avg_first_serve_pct: Mapped[float] = mapped_column(Float, default=0.60)
     avg_aces_per_game: Mapped[float] = mapped_column(Float, default=0.5)
     avg_dfs_per_game: Mapped[float] = mapped_column(Float, default=0.2)
+
+
+class MatchResult(Base):
+    """Training data row for the ML win predictor, recorded at match completion."""
+
+    __tablename__ = "match_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    match_id: Mapped[str] = mapped_column(String, index=True)
+    # Feature columns matching MatchFeatures fields
+    p1_sets_lead: Mapped[int] = mapped_column(Integer)
+    p1_games_lead: Mapped[int] = mapped_column(Integer)
+    current_set: Mapped[int] = mapped_column(Integer)
+    p1_momentum: Mapped[int] = mapped_column(Integer)
+    p1_serve_pct: Mapped[float] = mapped_column(Float)
+    p2_serve_pct: Mapped[float] = mapped_column(Float)
+    surface_clay: Mapped[int] = mapped_column(Integer)
+    surface_grass: Mapped[int] = mapped_column(Integer)
+    surface_indoor: Mapped[int] = mapped_column(Integer)
+    match_progress: Mapped[float] = mapped_column(Float)
+    p1_opening_implied: Mapped[float] = mapped_column(Float)
+    winner: Mapped[int] = mapped_column(Integer)   # 1 or 2
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
