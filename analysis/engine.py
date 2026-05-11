@@ -1,14 +1,18 @@
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 
 import structlog
 
 from analysis.fatigue import FatigueAnalyzer
 from analysis.match_state import MatchState
+from analysis.ml_predictor import MLPredictor
 from analysis.momentum import MomentumAnalyzer
 from analysis.odds_value import OddsValueAnalyzer
 from analysis.server_performance import ServerPerformanceAnalyzer
 from analysis.set_patterns import SetPatternAnalyzer
-from analysis.signal import Signal
+from analysis.signal import Signal, compute_stake
+from analysis.win_probability import model_fair_odds
 from config.settings import settings
 from storage.models import PlayerStats
 from storage.repository import Repository
@@ -24,6 +28,7 @@ class AnalysisEngine:
         self.server_perf = ServerPerformanceAnalyzer()
         self.set_patterns = SetPatternAnalyzer()
         self.fatigue = FatigueAnalyzer()
+        self.ml = MLPredictor()
         # In-memory cooldown cache: (match_id, signal_type) → last_sent datetime
         self._cooldowns: dict[tuple[str, str], datetime] = {}
 
@@ -32,6 +37,9 @@ class AnalysisEngine:
         confidence threshold and cooldown checks."""
         player_stats = await self._load_player_stats(state)
 
+        p1_prob, p2_prob = self.ml.predict(state)
+        model_p1_fair, model_p2_fair = model_fair_odds(state)
+
         candidates: list[Signal | None] = [
             self.momentum.analyze(state),
             self.odds_value.analyze(state),
@@ -39,6 +47,46 @@ class AnalysisEngine:
             self.set_patterns.analyze(state, player_stats),
             self.fatigue.analyze(state),
         ]
+
+        # ML value signal: fire when model probability differs from market by >12%
+        if state.odds_p1 > 1.01 and state.odds_p2 > 1.01:
+            for player, model_prob, market_odds, player_name, opponent_name in [
+                (1, p1_prob, state.odds_p1, state.player1_name, state.player2_name),
+                (2, p2_prob, state.odds_p2, state.player2_name, state.player1_name),
+            ]:
+                market_prob = 1.0 / market_odds
+                edge = model_prob - market_prob
+                if edge > 0.12:
+                    fair_odds = round(1.0 / model_prob, 3) if model_prob > 0 else 999.0
+                    edge_pct = edge
+                    confidence = min(0.5 + edge * 2, 0.85)
+                    from analysis.signal import compute_stake
+                    stake_pct = compute_stake(edge_pct, market_odds)
+                    candidates.append(Signal(
+                        match_id=state.match_id,
+                        signal_type="ml_value",
+                        player_to_back=player,
+                        player_name=player_name,
+                        opponent_name=opponent_name,
+                        trigger_description=(
+                            f"ML model gives {model_prob:.1%} win prob vs "
+                            f"market implied {market_prob:.1%} (edge {edge:.1%})"
+                        ),
+                        confidence=confidence,
+                        recommended_market="match_winner",
+                        current_odds=market_odds,
+                        fair_odds=fair_odds,
+                        edge_pct=edge_pct,
+                        stake_pct=stake_pct,
+                        tournament=state.tournament,
+                        surface=state.surface,
+                        score_summary=(
+                            f"{state.sets_p1}-{state.sets_p2}, "
+                            f"{state.games_in_set_p1}-{state.games_in_set_p2}"
+                        ),
+                        match_duration_mins=state.match_duration_mins,
+                        timestamp=state.timestamp,
+                    ))
 
         fired: list[Signal] = []
         for sig in candidates:

@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 
+import numpy as np
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from storage.models import Match, OddsSnapshot, PlayerStats, SignalLog
+from storage.models import Match, MatchResult, OddsSnapshot, PlayerStats, SignalLog
 
 
 class Repository:
@@ -86,6 +89,50 @@ class Repository:
             .where(PlayerStats.surface == surface)
         )
         return result.scalar_one_or_none()
+
+    # ── MatchResult (ML training data) ────────────────────────────────────
+
+    async def save_match_result(
+        self,
+        match_id: str,
+        features: "MatchFeatures",  # noqa: F821 — imported at call site
+        winner: int,
+    ) -> None:
+        self.session.add(MatchResult(
+            match_id=match_id,
+            p1_sets_lead=features.p1_sets_lead,
+            p1_games_lead=features.p1_games_lead,
+            current_set=features.current_set,
+            p1_momentum=features.p1_momentum,
+            p1_serve_pct=features.p1_serve_pct,
+            p2_serve_pct=features.p2_serve_pct,
+            surface_clay=features.surface_clay,
+            surface_grass=features.surface_grass,
+            surface_indoor=features.surface_indoor,
+            match_progress=features.match_progress,
+            p1_opening_implied=features.p1_opening_implied,
+            winner=winner,
+            recorded_at=datetime.utcnow(),
+        ))
+        await self.session.commit()
+
+    async def get_training_data(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return X (n_samples, n_features) and y (n_samples,) from MatchResult rows."""
+        result = await self.session.execute(select(MatchResult))
+        rows = list(result.scalars())
+        if not rows:
+            return np.empty((0, 11)), np.empty((0,))
+
+        X = np.array([
+            [
+                r.p1_sets_lead, r.p1_games_lead, r.current_set, r.p1_momentum,
+                r.p1_serve_pct, r.p2_serve_pct, r.surface_clay, r.surface_grass,
+                r.surface_indoor, r.match_progress, r.p1_opening_implied,
+            ]
+            for r in rows
+        ], dtype=float)
+        y = np.array([r.winner for r in rows], dtype=int)
+        return X, y
 
     # ── Maintenance ────────────────────────────────────────────────────────
 

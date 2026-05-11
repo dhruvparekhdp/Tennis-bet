@@ -27,5 +27,9 @@ class Settings(BaseSettings):
     # TheSportsDB
     thesportsdb_api_key: str = "3"
 
+    # Odds API
+    odds_api_key: str | None = None  # https://the-odds-api.com
+    odds_poll_interval_seconds: int = 300  # 5 min default — ~8,640 req/month for 2 sports
+
 
 settings = Settings()  # type: ignore[call-arg]

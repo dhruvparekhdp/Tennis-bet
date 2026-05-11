@@ -11,13 +11,18 @@ Jobs:
   - db_cleanup:     daily      → delete old odds snapshots
   - heartbeat:      every 10m  → log status
 """
+import os
+
+import httpx
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from analysis.engine import AnalysisEngine
+from analysis.ml_predictor import MLPredictor
 from analysis.state_store import MatchStateStore
 from collectors.espn import ESPNCollector
 from collectors.flashscore import FlashscoreCollector
+from collectors.odds_api import OddsApiCollector
 from collectors.sofascore import SofascoreCollector
 from collectors.thesportsdb import TheSportsDBCollector
 from config.settings import settings
@@ -35,6 +40,8 @@ class AppRunner:
         self.espn = ESPNCollector(self.store)
         self.sofascore = SofascoreCollector(self.store)
         self.thesportsdb = TheSportsDBCollector(api_key=settings.thesportsdb_api_key)
+        self.odds_api = OddsApiCollector(self.store)
+        self.ml_predictor = MLPredictor()
         self.notifier = TelegramNotifier()
         self.scheduler = AsyncIOScheduler()
 
@@ -74,6 +81,20 @@ class AppRunner:
                 except Exception:
                     log.exception("analysis_job_failed", match_id=state.match_id)
 
+    async def _odds_job(self) -> None:
+        try:
+            await self.odds_api.fetch()
+        except Exception:
+            log.exception("odds_job_failed")
+
+    async def _ml_retrain_job(self) -> None:
+        try:
+            async with AsyncSessionFactory() as session:
+                repo = Repository(session)
+                await self.ml_predictor.maybe_retrain(repo)
+        except Exception:
+            log.exception("ml_retrain_job_failed")
+
     async def _schedule_job(self) -> None:
         await self.thesportsdb.fetch()
 
@@ -95,6 +116,17 @@ class AppRunner:
             flashscore_consecutive_zeros=self.flashscore._consecutive_zero_matches,
         )
 
+    async def _self_ping_job(self) -> None:
+        """Ping own /health endpoint to prevent Render free tier from spinning down."""
+        port = int(os.environ.get("PORT", 8080))
+        url = f"http://localhost:{port}/health"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url)
+            log.debug("self_ping_ok", status=resp.status_code)
+        except Exception as exc:
+            log.warning("self_ping_failed", error=str(exc))
+
     def setup_jobs(self) -> None:
         self.scheduler.add_job(
             self._data_poll_job,
@@ -111,6 +143,20 @@ class AppRunner:
             max_instances=1,
         )
         self.scheduler.add_job(
+            self._odds_job,
+            "interval",
+            seconds=settings.odds_poll_interval_seconds,
+            id="odds_poll",
+            max_instances=1,
+        )
+        self.scheduler.add_job(
+            self._ml_retrain_job,
+            "interval",
+            hours=6,
+            id="ml_retrain",
+            max_instances=1,
+        )
+        self.scheduler.add_job(
             self._cleanup_job,
             "cron",
             hour=3,
@@ -122,6 +168,13 @@ class AppRunner:
             "interval",
             minutes=10,
             id="heartbeat",
+        )
+        self.scheduler.add_job(
+            self._self_ping_job,
+            "interval",
+            minutes=5,
+            id="self_ping",
+            max_instances=1,
         )
 
     async def start(self) -> None:
