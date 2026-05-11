@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # Odds API
     odds_api_key: str | None = None  # https://the-odds-api.com
-    odds_poll_interval_seconds: int = 60  # 1 min default; free tier: raise to 300 to save quota
+    odds_poll_interval_seconds: int = 300  # 5 min default — ~8,640 req/month for 2 sports
 
 
 settings = Settings()  # type: ignore[call-arg]
