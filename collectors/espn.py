@@ -102,12 +102,26 @@ class ESPNCollector(BaseCollector):
         match_id = f"espn_{event.get('id', '')}"
         competitions = event.get("competitions", [])
         if not competitions:
+            log.info("espn_parse_no_competitions", event_id=event.get("id"),
+                     name=event.get("name", "")[:60])
             return None
 
         comp = competitions[0]
         competitors = comp.get("competitors", [])
         if len(competitors) < 2:
+            log.info("espn_parse_not_enough_competitors", event_id=event.get("id"),
+                     name=event.get("name", "")[:60], n=len(competitors))
             return None
+
+        # Log full structure of first live event so we can see exact field layout
+        log.info("espn_live_event_raw",
+                 event_id=event.get("id"),
+                 name=event.get("name", "")[:60],
+                 comp0_keys=list(comp.keys()),
+                 cmp0_keys=list(competitors[0].keys()),
+                 cmp0_score=competitors[0].get("score"),
+                 cmp0_athlete=bool(competitors[0].get("athlete")),
+                 cmp0_linescores=competitors[0].get("linescores", [])[:3])
 
         # ESPN puts home first; player name may be under athlete or directly on competitor
         def _player_name(comp: dict) -> str:
