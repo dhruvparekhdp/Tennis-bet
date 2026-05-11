@@ -15,7 +15,7 @@ from analysis.second_set import SecondSetFadeAnalyzer
 from analysis.server_performance import ServerPerformanceAnalyzer
 from analysis.set_patterns import SetPatternAnalyzer
 from analysis.signal import Signal, compute_stake
-from analysis.win_probability import compute_win_probability, model_fair_odds
+from analysis.win_probability import model_fair_odds
 from config.settings import settings
 from storage.models import PlayerStats
 from storage.repository import Repository
@@ -131,8 +131,8 @@ class AnalysisEngine:
 
     async def _log_signal(self, sig: Signal, state: MatchState) -> None:
         try:
-            model_p1, model_p2 = compute_win_probability(state)  # noqa: F811
-            model_prob = model_p1 if sig.player_to_back == 1 else model_p2
+            # fair_odds already encodes the model's win probability for the backed player
+            model_prob = round(1.0 / sig.fair_odds, 4) if sig.fair_odds > 1.0 else 0.0
             await self.repository.log_signal(
                 match_id=sig.match_id,
                 signal_type=sig.signal_type,
