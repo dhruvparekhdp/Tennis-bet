@@ -9,7 +9,7 @@ from storage.database import Base
 class Match(Base):
     __tablename__ = "matches"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)  # sofascore event id
+    id: Mapped[str] = mapped_column(String, primary_key=True)
     player1: Mapped[str] = mapped_column(String)
     player2: Mapped[str] = mapped_column(String)
     tournament: Mapped[str] = mapped_column(String)
@@ -48,6 +48,16 @@ class SignalLog(Base):
     fair_odds: Mapped[float] = mapped_column(Float)
     edge_pct: Mapped[float] = mapped_column(Float)
     stake_pct: Mapped[float] = mapped_column(Float)
+    # Model state at signal time
+    model_win_prob: Mapped[float] = mapped_column(Float, default=0.0)
+    score_at_signal: Mapped[str] = mapped_column(String, default="")   # e.g. "1-0, 3-2"
+    sets_p1_at_signal: Mapped[int] = mapped_column(Integer, default=0)
+    sets_p2_at_signal: Mapped[int] = mapped_column(Integer, default=0)
+    games_p1_at_signal: Mapped[int] = mapped_column(Integer, default=0)
+    games_p2_at_signal: Mapped[int] = mapped_column(Integer, default=0)
+    # Filled in when match completes
+    outcome: Mapped[str] = mapped_column(String, default="pending")    # pending/won/lost/void
+    match_winner: Mapped[int] = mapped_column(Integer, default=0)      # 1 or 2, 0 = unknown
     timestamp: Mapped[datetime] = mapped_column(index=True)
 
 
@@ -68,6 +78,70 @@ class PlayerStats(Base):
     avg_dfs_per_game: Mapped[float] = mapped_column(Float, default=0.2)
 
 
+class MatchSnapshot(Base):
+    """
+    Periodic snapshot of live match state — primary source for ML training.
+    One row every ~2 minutes per match while live.
+    winner column is NULL during play, filled in retroactively when match completes.
+    """
+
+    __tablename__ = "match_snapshots"
+    __table_args__ = (Index("ix_snap_match_ts", "match_id", "timestamp"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    match_id: Mapped[str] = mapped_column(String, index=True)
+    player1_name: Mapped[str] = mapped_column(String)
+    player2_name: Mapped[str] = mapped_column(String)
+    surface: Mapped[str] = mapped_column(String)
+    tournament: Mapped[str] = mapped_column(String)
+    # Score state
+    sets_p1: Mapped[int] = mapped_column(Integer)
+    sets_p2: Mapped[int] = mapped_column(Integer)
+    games_p1: Mapped[int] = mapped_column(Integer)
+    games_p2: Mapped[int] = mapped_column(Integer)
+    current_set: Mapped[int] = mapped_column(Integer)
+    total_games_played: Mapped[int] = mapped_column(Integer)
+    # Momentum: positive = p1 winning streak, negative = p2 winning streak
+    p1_momentum: Mapped[int] = mapped_column(Integer, default=0)
+    # Odds
+    odds_p1: Mapped[float] = mapped_column(Float)
+    odds_p2: Mapped[float] = mapped_column(Float)
+    # Model predictions at this moment
+    model_win_prob_p1: Mapped[float] = mapped_column(Float, default=0.0)
+    model_win_prob_p2: Mapped[float] = mapped_column(Float, default=0.0)
+    # Serve stats (0.0 if unavailable)
+    serve_pct_p1: Mapped[float] = mapped_column(Float, default=0.0)
+    serve_pct_p2: Mapped[float] = mapped_column(Float, default=0.0)
+    # Full game sequence as JSON array, e.g. [1,2,1,1,2]
+    game_log_json: Mapped[str] = mapped_column(Text, default="[]")
+    # Outcome — NULL until match completes, then set to 1 or 2
+    winner: Mapped[int] = mapped_column(Integer, default=0)    # 0 = not yet known
+    timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class MatchCompletion(Base):
+    """
+    Final result of a match — used to label MatchSnapshot and SignalLog rows.
+    Created when a match disappears from the live feed.
+    """
+
+    __tablename__ = "match_completions"
+
+    match_id: Mapped[str] = mapped_column(String, primary_key=True)
+    player1_name: Mapped[str] = mapped_column(String)
+    player2_name: Mapped[str] = mapped_column(String)
+    winner: Mapped[int] = mapped_column(Integer)               # 1 or 2
+    final_sets_p1: Mapped[int] = mapped_column(Integer)
+    final_sets_p2: Mapped[int] = mapped_column(Integer)
+    final_score_str: Mapped[str] = mapped_column(String)       # "6-3, 7-5"
+    tournament: Mapped[str] = mapped_column(String)
+    surface: Mapped[str] = mapped_column(String)
+    total_games: Mapped[int] = mapped_column(Integer)
+    total_signals_fired: Mapped[int] = mapped_column(Integer, default=0)
+    signals_correct: Mapped[int] = mapped_column(Integer, default=0)
+    completed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
 class MatchResult(Base):
     """Training data row for the ML win predictor, recorded at match completion."""
 
@@ -75,7 +149,6 @@ class MatchResult(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     match_id: Mapped[str] = mapped_column(String, index=True)
-    # Feature columns matching MatchFeatures fields
     p1_sets_lead: Mapped[int] = mapped_column(Integer)
     p1_games_lead: Mapped[int] = mapped_column(Integer)
     current_set: Mapped[int] = mapped_column(Integer)
@@ -87,5 +160,5 @@ class MatchResult(Base):
     surface_indoor: Mapped[int] = mapped_column(Integer)
     match_progress: Mapped[float] = mapped_column(Float)
     p1_opening_implied: Mapped[float] = mapped_column(Float)
-    winner: Mapped[int] = mapped_column(Integer)   # 1 or 2
+    winner: Mapped[int] = mapped_column(Integer)
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

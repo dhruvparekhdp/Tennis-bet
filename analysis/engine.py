@@ -49,8 +49,8 @@ class AnalysisEngine:
         ]
 
         # ML value signal: fire when model probability differs from market by >15%
-        # Raised from 12% to reduce false positives — ML model needs sufficient evidence
-        if state.odds_p1 > 1.30 and state.odds_p2 > 1.30:
+        # Min odds 1.20 per player — don't second-guess near-certainties
+        if state.odds_p1 > 1.20 and state.odds_p2 > 1.20:
             for player, model_prob, market_odds, player_name, opponent_name in [
                 (1, p1_prob, state.odds_p1, state.player1_name, state.player2_name),
                 (2, p2_prob, state.odds_p2, state.player2_name, state.player1_name),
@@ -104,7 +104,7 @@ class AnalysisEngine:
                 continue
 
             self._set_cooldown(state.match_id, sig.signal_type)
-            await self._log_signal(sig)
+            await self._log_signal(sig, state)
             fired.append(sig)
 
         return fired
@@ -120,8 +120,10 @@ class AnalysisEngine:
     def _set_cooldown(self, match_id: str, signal_type: str) -> None:
         self._cooldowns[(match_id, signal_type)] = datetime.utcnow()
 
-    async def _log_signal(self, sig: Signal) -> None:
+    async def _log_signal(self, sig: Signal, state: MatchState) -> None:
         try:
+            model_p1, model_p2 = compute_win_probability(state)
+            model_prob = model_p1 if sig.player_to_back == 1 else model_p2
             await self.repository.log_signal(
                 match_id=sig.match_id,
                 signal_type=sig.signal_type,
@@ -137,6 +139,12 @@ class AnalysisEngine:
                 opponent_name=sig.opponent_name,
                 tournament=sig.tournament,
                 surface=sig.surface,
+                model_win_prob=model_prob,
+                score_at_signal=f"{state.sets_p1}-{state.sets_p2}, {state.games_in_set_p1}-{state.games_in_set_p2}",
+                sets_p1=state.sets_p1,
+                sets_p2=state.sets_p2,
+                games_p1=state.games_in_set_p1,
+                games_p2=state.games_in_set_p2,
             )
         except Exception:
             log.exception("failed_to_log_signal", signal_type=sig.signal_type)

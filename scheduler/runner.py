@@ -1,16 +1,22 @@
 """
 APScheduler-based 24/7 job runner.
 
-Data strategy:
+Data collection strategy:
   - ESPN (primary)     → always works from cloud IPs, covers ATP + WTA live scores
   - Sofascore (enrich) → attempted for serve stats only; silently skipped if blocked
 
 Jobs:
-  - data_poll:      every 30s  → ESPN fetch + optional Sofascore enrichment + analysis
+  - data_poll:      every 30s  → ESPN fetch + optional Sofascore + analysis + snapshots
   - schedule_poll:  every 5min → TheSportsDB schedule
   - db_cleanup:     daily      → delete old odds snapshots
   - heartbeat:      every 10m  → log status
+
+Data storage:
+  - MatchSnapshot: saved every ~2 minutes per match (every 4 polls)
+  - MatchCompletion: saved when a match disappears from the live feed
+  - SignalLog: updated with outcome (won/lost) when match completes
 """
+import json
 import os
 from datetime import datetime, timezone
 
@@ -19,8 +25,10 @@ import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from analysis.engine import AnalysisEngine
+from analysis.match_state import MatchState
 from analysis.ml_predictor import MLPredictor
 from analysis.state_store import MatchStateStore
+from analysis.win_probability import compute_win_probability
 from collectors.espn import ESPNCollector
 from collectors.flashscore import FlashscoreCollector
 from collectors.odds_api import OddsApiCollector
@@ -32,6 +40,22 @@ from storage.database import AsyncSessionFactory
 from storage.repository import Repository
 
 log = structlog.get_logger()
+
+# Save a snapshot every this many data polls (30s * 4 = ~2 minutes)
+_SNAPSHOT_EVERY_N_POLLS = 4
+
+
+def _infer_winner(state: MatchState) -> int | None:
+    """Infer match winner from final sets score. Returns None if inconclusive."""
+    if state.sets_p1 > state.sets_p2:
+        return 1
+    if state.sets_p2 > state.sets_p1:
+        return 2
+    return None
+
+
+def _format_score(state: MatchState) -> str:
+    return f"{state.sets_p1}-{state.sets_p2} sets ({state.games_in_set_p1}-{state.games_in_set_p2} current)"
 
 
 class AppRunner:
@@ -47,24 +71,74 @@ class AppRunner:
         self.scheduler = AsyncIOScheduler()
         # Persistent engine so _cooldowns dict survives across poll cycles
         self._engine: AnalysisEngine | None = None
+        # Track last-seen match states to detect completions
+        self._last_states: dict[str, MatchState] = {}
+        # Per-match poll counter for snapshot throttling
+        self._poll_counters: dict[str, int] = {}
 
     async def _data_poll_job(self) -> None:
-        # Flashscore: primary — covers ATP, WTA, Challengers, ITF
         await self.flashscore.fetch()
-
-        # ESPN: always run — covers ATP/WTA main draw and acts as safety net
-        # when Flashscore returns zero matches (format change / parsing issue)
         await self.espn.fetch()
 
-        # Sofascore: serve stats enrichment only (blocked on most cloud IPs)
         if self.sofascore._consecutive_failures < 5:
             await self.sofascore.fetch()
 
-        await self._run_analysis()
+        current_states = {s.match_id: s for s in await self.store.get_all()}
 
-    async def _run_analysis(self) -> None:
-        states = await self.store.get_all()
-        if not states:
+        # Detect matches that just completed (were live last poll, gone now)
+        completed_ids = set(self._last_states) - set(current_states)
+        if completed_ids:
+            await self._handle_completions(completed_ids)
+
+        # Run analysis + take snapshots
+        await self._run_analysis(current_states)
+
+        self._last_states = current_states
+
+    async def _handle_completions(self, completed_ids: set[str]) -> None:
+        """Process matches that disappeared from the live feed."""
+        async with AsyncSessionFactory() as session:
+            repo = Repository(session)
+            for match_id in completed_ids:
+                state = self._last_states[match_id]
+                winner = _infer_winner(state)
+                if winner is None:
+                    log.info("match_completion_inconclusive", match_id=match_id,
+                             sets=f"{state.sets_p1}-{state.sets_p2}")
+                    continue
+
+                total_sigs, correct_sigs = await repo.update_signal_outcomes(match_id, winner)
+                await repo.label_match_snapshots(match_id, winner)
+                await repo.save_match_completion(
+                    match_id=match_id,
+                    player1_name=state.player1_name,
+                    player2_name=state.player2_name,
+                    winner=winner,
+                    final_sets_p1=state.sets_p1,
+                    final_sets_p2=state.sets_p2,
+                    final_score_str=_format_score(state),
+                    tournament=state.tournament,
+                    surface=state.surface,
+                    total_games=state.total_games_played(),
+                    total_signals=total_sigs,
+                    signals_correct=correct_sigs,
+                )
+                await repo.mark_match_finished(match_id)
+
+                winner_name = state.player1_name if winner == 1 else state.player2_name
+                accuracy = f"{correct_sigs}/{total_sigs}" if total_sigs > 0 else "no signals"
+                log.info(
+                    "match_completed",
+                    match_id=match_id,
+                    winner=winner_name,
+                    score=_format_score(state),
+                    signal_accuracy=accuracy,
+                )
+                # Clean up poll counter
+                self._poll_counters.pop(match_id, None)
+
+    async def _run_analysis(self, current_states: dict[str, MatchState]) -> None:
+        if not current_states:
             return
         async with AsyncSessionFactory() as session:
             repo = Repository(session)
@@ -72,8 +146,10 @@ class AppRunner:
                 self._engine = AnalysisEngine(repo)
             else:
                 self._engine.repository = repo
-            for state in states:
+
+            for match_id, state in current_states.items():
                 try:
+                    # Run signal analysis
                     signals = await self._engine.process(state)
                     for sig in signals:
                         await self.notifier.send_signal(sig)
@@ -84,8 +160,48 @@ class AppRunner:
                             player=sig.player_name,
                             confidence=sig.confidence,
                         )
+
+                    # Take periodic snapshot (every N polls per match)
+                    counter = self._poll_counters.get(match_id, 0) + 1
+                    self._poll_counters[match_id] = counter
+                    if counter % _SNAPSHOT_EVERY_N_POLLS == 0:
+                        await self._save_snapshot(repo, state)
+
                 except Exception:
-                    log.exception("analysis_job_failed", match_id=state.match_id)
+                    log.exception("analysis_job_failed", match_id=match_id)
+
+    async def _save_snapshot(self, repo: Repository, state: MatchState) -> None:
+        """Save a periodic match state snapshot for ML training."""
+        try:
+            model_p1, model_p2 = compute_win_probability(state)
+            # Momentum: positive = p1 streak, negative = p2 streak
+            p1_streak = state.consecutive_games_won_by(1)
+            p2_streak = state.consecutive_games_won_by(2)
+            momentum = p1_streak if p1_streak > 0 else -p2_streak
+
+            await repo.save_match_snapshot(
+                match_id=state.match_id,
+                player1_name=state.player1_name,
+                player2_name=state.player2_name,
+                surface=state.surface,
+                tournament=state.tournament,
+                sets_p1=state.sets_p1,
+                sets_p2=state.sets_p2,
+                games_p1=state.games_in_set_p1,
+                games_p2=state.games_in_set_p2,
+                current_set=state.current_set,
+                total_games_played=state.total_games_played(),
+                p1_momentum=momentum,
+                odds_p1=state.odds_p1,
+                odds_p2=state.odds_p2,
+                model_win_prob_p1=round(model_p1, 4),
+                model_win_prob_p2=round(model_p2, 4),
+                serve_pct_p1=state.serve_stats_p1.first_serve_pct,
+                serve_pct_p2=state.serve_stats_p2.first_serve_pct,
+                game_log=state.game_log,
+            )
+        except Exception:
+            log.exception("snapshot_save_failed", match_id=state.match_id)
 
     async def _odds_job(self) -> None:
         try:
@@ -123,7 +239,6 @@ class AppRunner:
         )
 
     async def _self_ping_job(self) -> None:
-        """Ping own /health endpoint to prevent Render free tier from spinning down."""
         port = int(os.environ.get("PORT", 8080))
         url = f"http://localhost:{port}/health"
         try:
@@ -154,7 +269,7 @@ class AppRunner:
             seconds=settings.odds_poll_interval_seconds,
             id="odds_poll",
             max_instances=1,
-            next_run_time=datetime.now(timezone.utc),  # fire immediately on startup
+            next_run_time=datetime.now(timezone.utc),
         )
         self.scheduler.add_job(
             self._ml_retrain_job,
@@ -185,9 +300,7 @@ class AppRunner:
         )
 
     async def start(self) -> None:
-        # Verify Telegram credentials before starting — logs exact error if wrong
         await self.notifier.verify()
-
         self.setup_jobs()
         self.scheduler.start()
         await self.notifier.send_text(
@@ -199,7 +312,6 @@ class AppRunner:
         log.info("scheduler_started")
 
     def get_status(self) -> dict:
-        from config.settings import settings
         return {
             "flashscore": {
                 "http_ok": self.flashscore._consecutive_failures == 0,
