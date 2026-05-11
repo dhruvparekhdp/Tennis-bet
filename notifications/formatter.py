@@ -41,6 +41,11 @@ def _escape_md(text: str) -> str:
     return text
 
 
+def _e(value) -> str:
+    """Convert any value to string and escape for MarkdownV2."""
+    return _escape_md(str(value))
+
+
 def format_signal(sig: Signal) -> str:
     emoji = _SIGNAL_EMOJI.get(sig.signal_type, "🎾")
     surface_emoji = _SURFACE_EMOJI.get(sig.surface, "⚪")
@@ -52,27 +57,28 @@ def format_signal(sig: Signal) -> str:
 
     signal_type_label = sig.signal_type.replace("_", " ").title()
 
+    edge_str = _e(round(sig.edge_pct * 100, 1))
     lines = [
         "🎾 *TENNIS TRADE SIGNAL*",
         "",
         f"📍 *{_escape_md(sig.player_name)} vs {_escape_md(sig.opponent_name)}*",
-        f"   {surface_emoji} {_escape_md(sig.tournament)} \\| {sig.surface.replace('_', ' ').title()}",
+        f"   {surface_emoji} {_escape_md(sig.tournament)} \\| {_e(sig.surface.replace('_', ' ').title())}",
         f"   Score: {_escape_md(sig.score_summary)}",
-        f"   Match time: {sig.match_duration_mins} mins",
+        f"   Match time: {_e(sig.match_duration_mins)} mins",
         "",
-        f"{emoji} *{signal_type_label} Detected*",
+        f"{emoji} *{_e(signal_type_label)} Detected*",
         f"   {_escape_md(sig.trigger_description)}",
         "",
-        f"💰 *TRADE SUGGESTION*",
+        "💰 *TRADE SUGGESTION*",
         f"   Back: *{_escape_md(sig.player_name)}*",
         f"   Market: {_escape_md(market_label)}",
-        f"   Odds: {sig.current_odds} \\(fair: \\~{sig.fair_odds}\\)",
-        f"   Edge: \\+{round(sig.edge_pct * 100, 1)}%",
+        f"   Odds: {_e(sig.current_odds)} \\(fair: \\~{_e(sig.fair_odds)}\\)",
+        f"   Edge: \\+{edge_str}%",
         "",
-        f"📊 Confidence: *{confidence_pct}%*  {bar}",
+        f"📊 Confidence: *{_e(confidence_pct)}%*  {bar}",
         "",
-        f"💵 *Stake Suggestion*",
-        f"   {stake_pct_display}% of bank ≈ ₹{stake_amount:,}",
-        f"   \\(Quarter\\-Kelly, capped at {round(settings.max_stake_pct*100)}%\\)",
+        "💵 *Stake Suggestion*",
+        f"   {_e(stake_pct_display)}% of bank ≈ ₹{_e(f'{stake_amount:,}')}",
+        f"   \\(Quarter\\-Kelly, capped at {_e(round(settings.max_stake_pct*100))}%\\)",
     ]
     return "\n".join(lines)
