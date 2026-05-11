@@ -80,6 +80,16 @@ class Repository:
         row = result.scalar_one_or_none()
         return row
 
+    async def get_recent_signals(self, hours: int = 24) -> list[SignalLog]:
+        since = datetime.utcnow() - timedelta(hours=hours)
+        result = await self.session.execute(
+            select(SignalLog)
+            .where(SignalLog.timestamp >= since)
+            .order_by(SignalLog.timestamp.desc())
+            .limit(50)
+        )
+        return list(result.scalars())
+
     # ── PlayerStats ────────────────────────────────────────────────────────
 
     async def get_player_stats(self, player_name: str, surface: str) -> PlayerStats | None:

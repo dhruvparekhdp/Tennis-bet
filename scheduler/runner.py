@@ -193,6 +193,25 @@ class AppRunner:
         )
         log.info("scheduler_started")
 
+    def get_status(self) -> dict:
+        from config.settings import settings
+        return {
+            "flashscore": {
+                "http_ok": self.flashscore._consecutive_failures == 0,
+                "consecutive_failures": self.flashscore._consecutive_failures,
+                "consecutive_zeros": self.flashscore._consecutive_zero_matches,
+            },
+            "espn": {"ok": True},
+            "sofascore": {
+                "blocked": self.sofascore._consecutive_failures >= 5,
+                "consecutive_failures": self.sofascore._consecutive_failures,
+            },
+            "odds_api": {
+                "key_set": bool(settings.odds_api_key),
+                "poll_interval_secs": settings.odds_poll_interval_seconds,
+            },
+        }
+
     async def stop(self) -> None:
         self.scheduler.shutdown(wait=False)
         await self.sofascore.close()
