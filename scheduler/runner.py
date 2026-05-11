@@ -226,13 +226,13 @@ class AppRunner:
         await self.thesportsdb.fetch()
 
     async def _historical_import_job(self) -> None:
+        # Only run match-level import on cloud — slam PBP (2.5M rows) is local-only
+        # Run scripts/scrape_history.py on your laptop for slam point-by-point data
         try:
             async with AsyncSessionFactory() as session:
                 await run_import(session)
-            async with AsyncSessionFactory() as session:
-                await run_slam_import(session)
         except Exception:
-            log.exception("historical_import_job_failed")
+            log.exception("historical_import_failed_non_fatal")
 
     async def _cleanup_job(self) -> None:
         async with AsyncSessionFactory() as session:

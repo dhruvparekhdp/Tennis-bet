@@ -190,23 +190,29 @@ async def run_slam_import(session: AsyncSession, force: bool = False) -> None:
     ) as client:
         for slam in _SLAMS:
             for year in _YEARS:
-                # Load player name map first (may 404 for some years — that's fine)
-                player_map = await _load_player_map(client, slam, year)
+                try:
+                    player_map = await _load_player_map(client, slam, year)
 
-                url = f"{_GITHUB_RAW}/{year}-{slam}-points.csv"
-                rows = await _download(client, url)
-                if not rows:
-                    continue
+                    url = f"{_GITHUB_RAW}/{year}-{slam}-points.csv"
+                    rows = await _download(client, url)
+                    if not rows:
+                        continue
 
-                batch: list[SlamPoint] = []
-                for row in rows:
-                    pt = _parse_point(row, slam, year, player_map)
-                    if pt:
-                        batch.append(pt)
+                    batch: list[SlamPoint] = []
+                    for row in rows:
+                        try:
+                            pt = _parse_point(row, slam, year, player_map)
+                            if pt:
+                                batch.append(pt)
+                        except Exception:
+                            pass  # skip malformed points silently
 
-                if batch:
-                    session.add_all(batch)
-                    await session.flush()
+                    if batch:
+                        session.add_all(batch)
+                        await session.flush()
+                except Exception:
+                    log.exception("slam_year_failed_non_fatal", slam=slam, year=year)
+                    await session.rollback()  # clear bad state, continue
                     total_points += len(batch)
 
                 log.info("slam_pbp_processed",
