@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 import structlog
 
+from analysis.endgame import EndgameAnalyzer
 from analysis.fatigue import FatigueAnalyzer
 from analysis.match_state import MatchState
 from analysis.ml_predictor import MLPredictor
@@ -28,6 +29,7 @@ class AnalysisEngine:
         self.server_perf = ServerPerformanceAnalyzer()
         self.set_patterns = SetPatternAnalyzer()
         self.fatigue = FatigueAnalyzer()
+        self.endgame = EndgameAnalyzer()
         self.ml = MLPredictor()
         # In-memory cooldown cache: (match_id, signal_type) → last_sent datetime
         self._cooldowns: dict[tuple[str, str], datetime] = {}
@@ -46,6 +48,7 @@ class AnalysisEngine:
             self.server_perf.analyze(state),
             self.set_patterns.analyze(state, player_stats),
             self.fatigue.analyze(state),
+            self.endgame.analyze(state),
         ]
 
         # ML value signal: fire when model probability differs from market by >15%
