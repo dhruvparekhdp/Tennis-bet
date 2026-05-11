@@ -51,6 +51,31 @@ class Base(DeclarativeBase):
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate_columns(conn)
+
+
+async def _migrate_columns(conn) -> None:
+    """
+    Idempotent column migrations — ADD COLUMN IF NOT EXISTS for every column
+    added after the initial table creation. Safe to run on every startup.
+    PostgreSQL 9.6+ supports IF NOT EXISTS on ADD COLUMN.
+    """
+    migrations = [
+        # signal_log columns added in data-collection PR
+        "ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS model_win_prob FLOAT DEFAULT 0.0",
+        "ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS score_at_signal VARCHAR DEFAULT ''",
+        "ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS sets_p1_at_signal INTEGER DEFAULT 0",
+        "ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS sets_p2_at_signal INTEGER DEFAULT 0",
+        "ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS games_p1_at_signal INTEGER DEFAULT 0",
+        "ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS games_p2_at_signal INTEGER DEFAULT 0",
+        "ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS outcome VARCHAR DEFAULT 'pending'",
+        "ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS match_winner INTEGER DEFAULT 0",
+    ]
+    for sql in migrations:
+        try:
+            await conn.execute(__import__("sqlalchemy").text(sql))
+        except Exception:
+            pass  # column may already exist on fresh DBs — silently skip
 
 
 async def get_session() -> AsyncSession:
