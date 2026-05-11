@@ -34,6 +34,7 @@ from collectors.espn import ESPNCollector
 from collectors.flashscore import FlashscoreCollector
 from collectors.historical_importer import run_import
 from collectors.odds_api import OddsApiCollector
+from collectors.slam_pbp_importer import run_slam_import
 from collectors.sofascore import SofascoreCollector
 from collectors.thesportsdb import TheSportsDBCollector
 from config.settings import settings
@@ -228,6 +229,8 @@ class AppRunner:
         try:
             async with AsyncSessionFactory() as session:
                 await run_import(session)
+            async with AsyncSessionFactory() as session:
+                await run_slam_import(session)
         except Exception:
             log.exception("historical_import_job_failed")
 
