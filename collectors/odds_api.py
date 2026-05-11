@@ -1,17 +1,18 @@
 """
-Collector for The Odds API (https://api.the-odds-api.com).
+Collector for The Odds API (https://api.the-odds-api.com) v4.
 
-Fetches pre-match / in-play odds for all active tennis tournaments,
-matches events to live MatchState entries by player last-name, updates
-odds in-memory and persists an OddsSnapshot to the database.
-
-Sport keys are fetched dynamically from /v4/sports/ — The Odds API uses
-tournament-specific keys (e.g. tennis_atp_french_open) rather than
-tour-wide keys, and the active set changes week to week.
+Key facts from docs:
+  - /v4/sports/          free, doesn't count against quota → call every poll
+  - /v4/sports/{s}/odds/ costs 1 request per sport per call
+  - commence_time < now  → event is live/in-play
+  - commenceTimeFrom/To  → filter to today's window to avoid future events
+  - regions=eu           → European bookmakers (Bet365, Pinnacle, etc.)
+  - tennis_atp / tennis_wta are valid generic keys when in-season;
+    tournament-specific keys (tennis_atp_french_open) also appear
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import structlog
@@ -32,7 +33,7 @@ def _last_name(full_name: str) -> str:
 
 
 def _best_odds(bookmakers: list[dict], idx: int) -> float:
-    """Best (lowest) decimal back price for outcome at position idx across all bookmakers."""
+    """Lowest decimal back price for outcome at position idx across all bookmakers."""
     best: float = 0.0
     for bm in bookmakers:
         for market in bm.get("markets", []):
@@ -40,7 +41,7 @@ def _best_odds(bookmakers: list[dict], idx: int) -> float:
                 continue
             outcomes = market.get("outcomes", [])
             if len(outcomes) > idx:
-                price: float = float(outcomes[idx].get("price", 0.0))
+                price = float(outcomes[idx].get("price", 0.0))
                 if price > 1.0 and (best == 0.0 or price < best):
                     best = price
     return best
@@ -51,48 +52,48 @@ class OddsApiCollector:
 
     def __init__(self, store: MatchStateStore) -> None:
         self.store = store
-        self._tennis_sports: list[str] = []  # cached from /v4/sports/
 
-    async def _fetch_tennis_sports(self, client: httpx.AsyncClient, api_key: str) -> list[str]:
-        """Return all active tennis sport keys from the API."""
+    async def _get_active_tennis_sports(self, client: httpx.AsyncClient, api_key: str) -> list[str]:
+        """
+        GET /v4/sports/ — free, doesn't count against quota.
+        Returns all currently active tennis sport keys.
+        """
         try:
-            resp = await client.get(
-                f"{_API_BASE}/sports/",
-                params={"apiKey": api_key},
-            )
+            resp = await client.get(f"{_API_BASE}/sports/", params={"apiKey": api_key})
             if resp.status_code != 200:
-                log.error("odds_api_sports_error", status=resp.status_code, body=resp.text[:200])
-                return self._tennis_sports  # reuse last known list
-
-            sports: list[dict] = resp.json()
+                log.error("odds_api_sports_error", status=resp.status_code, body=resp.text[:300])
+                return []
+            all_sports: list[dict] = resp.json()
             keys = [
-                s["key"] for s in sports
+                s["key"] for s in all_sports
                 if "tennis" in s.get("key", "").lower() and s.get("active", False)
             ]
-            log.info("odds_api_sports_fetched", tennis_sports=keys)
-            self._tennis_sports = keys
+            log.info("odds_api_sports_fetched", active_tennis=keys)
             return keys
         except Exception as exc:
             log.error("odds_api_sports_fetch_failed", error=str(exc))
-            return self._tennis_sports
+            return []
 
     async def fetch(self) -> None:
         api_key = settings.odds_api_key
         if not api_key:
-            log.warning("odds_api_key_missing", hint="Set ODDS_API_KEY env var")
+            log.warning("odds_api_key_missing", hint="Set ODDS_API_KEY in environment")
             return
+
+        now = datetime.now(timezone.utc)
+        # Fetch odds for matches starting up to 24h from now (covers today + tonight)
+        commence_time_to = (now + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        commence_time_from = (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         total_updated = 0
         total_fetched = 0
         quota_remaining: str | None = None
 
         async with httpx.AsyncClient(timeout=15.0) as client:
-            sports = await self._fetch_tennis_sports(client, api_key)
+            sports = await self._get_active_tennis_sports(client, api_key)
             if not sports:
-                log.warning("odds_api_no_tennis_sports", hint="No active tennis tournaments found")
+                log.warning("odds_api_no_active_tennis")
                 return
-
-            now = datetime.now(timezone.utc)
 
             for sport in sports:
                 try:
@@ -103,6 +104,8 @@ class OddsApiCollector:
                             "regions": "eu",
                             "markets": "h2h",
                             "oddsFormat": "decimal",
+                            "commenceTimeFrom": commence_time_from,
+                            "commenceTimeTo": commence_time_to,
                         },
                     )
                 except httpx.HTTPError as exc:
@@ -111,10 +114,11 @@ class OddsApiCollector:
 
                 if resp.status_code != 200:
                     log.error("odds_api_bad_status", sport=sport,
-                              status_code=resp.status_code, body=resp.text[:200])
+                              status_code=resp.status_code, body=resp.text[:300])
                     continue
 
                 quota_remaining = resp.headers.get("X-Requests-Remaining", quota_remaining)
+                quota_used = resp.headers.get("X-Requests-Used", "?")
 
                 try:
                     events: list[dict] = resp.json()
@@ -131,9 +135,13 @@ class OddsApiCollector:
                     try:
                         ct = datetime.fromisoformat(ct_str.replace("Z", "+00:00"))
                         mins_until = int((ct - now).total_seconds() / 60)
-                        status = "LIVE" if mins_until <= 0 else f"starts_in_{mins_until}m"
+                        if mins_until <= 0:
+                            status = f"LIVE ({-mins_until}m ago)"
+                        else:
+                            status = f"starts_in_{mins_until}m"
                     except Exception:
                         status = "unknown"
+
                     log.info(
                         "odds_api_event",
                         sport=sport,
@@ -150,14 +158,16 @@ class OddsApiCollector:
                         log.exception("odds_api_event_error",
                                       event_id=event.get("id"), error=str(exc))
 
-        log.info(
-            "odds_api_done",
-            matches_updated=total_updated,
-            events_fetched=total_fetched,
-            quota_remaining=quota_remaining,
-        )
+            log.info(
+                "odds_api_done",
+                matches_updated=total_updated,
+                events_fetched=total_fetched,
+                quota_remaining=quota_remaining,
+                quota_used=quota_used,
+            )
 
     async def _process_event(self, event: dict) -> bool:
+        """Match event to a live MatchState by player last-name and update odds."""
         home_team: str = event.get("home_team", "")
         away_team: str = event.get("away_team", "")
         bookmakers: list[dict] = event.get("bookmakers", [])
@@ -207,5 +217,7 @@ class OddsApiCollector:
         except Exception as exc:
             log.error("odds_api_db_error", match_id=match.match_id, error=str(exc))
 
-        log.info("odds_api_updated", match_id=match.match_id, odds_p1=new_p1, odds_p2=new_p2)
+        log.info("odds_api_updated", match_id=match.match_id,
+                 player1=match.player1_name, odds_p1=new_p1,
+                 player2=match.player2_name, odds_p2=new_p2)
         return True
