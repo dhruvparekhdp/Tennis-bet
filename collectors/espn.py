@@ -61,7 +61,7 @@ class ESPNCollector(BaseCollector):
         live_ids: set[str] = set()
         for event in events:
             try:
-                state = self._parse_event(event)
+                state = await self._parse_event(event)
                 if state:
                     await self.store.update(state)
                     live_ids.add(state.match_id)
@@ -76,7 +76,7 @@ class ESPNCollector(BaseCollector):
         if live_ids:
             log.info("espn_collector_done", live_matches=len(live_ids))
 
-    def _parse_event(self, event: dict) -> MatchState | None:
+    async def _parse_event(self, event: dict) -> MatchState | None:
         status_type = event.get("status", {}).get("type", {}).get("name", "")
         if status_type != "STATUS_IN_PROGRESS":
             return None
@@ -124,11 +124,19 @@ class ESPNCollector(BaseCollector):
         if away_linescores and current_set_idx < len(away_linescores):
             games_p2 = int(away_linescores[current_set_idx].get("value", 0) or 0)
 
-        # Reconstruct game_log from linescores (set winners only, not game-level)
-        existing_state = None  # ESPN doesn't give game-by-game log
-        game_log: list[int] = []
-
         current_set = home_sets + away_sets + 1
+
+        # Carry over game_log from previous state and infer new game winner from score delta
+        existing = await self.store.get(match_id)
+        game_log: list[int] = existing.game_log.copy() if existing else []
+        if existing:
+            prev_total = existing.games_in_set_p1 + existing.games_in_set_p2
+            curr_total = games_p1 + games_p2
+            if curr_total > prev_total:
+                if games_p1 > existing.games_in_set_p1:
+                    game_log.append(1)
+                elif games_p2 > existing.games_in_set_p2:
+                    game_log.append(2)
 
         return MatchState(
             match_id=match_id,
