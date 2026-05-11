@@ -48,15 +48,16 @@ class AnalysisEngine:
             self.fatigue.analyze(state),
         ]
 
-        # ML value signal: fire when model probability differs from market by >12%
-        if state.odds_p1 > 1.01 and state.odds_p2 > 1.01:
+        # ML value signal: fire when model probability differs from market by >15%
+        # Raised from 12% to reduce false positives — ML model needs sufficient evidence
+        if state.odds_p1 > 1.30 and state.odds_p2 > 1.30:
             for player, model_prob, market_odds, player_name, opponent_name in [
                 (1, p1_prob, state.odds_p1, state.player1_name, state.player2_name),
                 (2, p2_prob, state.odds_p2, state.player2_name, state.player1_name),
             ]:
                 market_prob = 1.0 / market_odds
                 edge = model_prob - market_prob
-                if edge > 0.12:
+                if edge > 0.15:
                     fair_odds = round(1.0 / model_prob, 3) if model_prob > 0 else 999.0
                     edge_pct = edge
                     confidence = min(0.5 + edge * 2, 0.85)
