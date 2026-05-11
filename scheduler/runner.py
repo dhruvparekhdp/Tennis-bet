@@ -11,6 +11,9 @@ Jobs:
   - db_cleanup:     daily      → delete old odds snapshots
   - heartbeat:      every 10m  → log status
 """
+import os
+
+import httpx
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -113,6 +116,17 @@ class AppRunner:
             flashscore_consecutive_zeros=self.flashscore._consecutive_zero_matches,
         )
 
+    async def _self_ping_job(self) -> None:
+        """Ping own /health endpoint to prevent Render free tier from spinning down."""
+        port = int(os.environ.get("PORT", 8080))
+        url = f"http://localhost:{port}/health"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url)
+            log.debug("self_ping_ok", status=resp.status_code)
+        except Exception as exc:
+            log.warning("self_ping_failed", error=str(exc))
+
     def setup_jobs(self) -> None:
         self.scheduler.add_job(
             self._data_poll_job,
@@ -154,6 +168,13 @@ class AppRunner:
             "interval",
             minutes=10,
             id="heartbeat",
+        )
+        self.scheduler.add_job(
+            self._self_ping_job,
+            "interval",
+            minutes=5,
+            id="self_ping",
+            max_instances=1,
         )
 
     async def start(self) -> None:
