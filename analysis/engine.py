@@ -4,16 +4,18 @@ from datetime import datetime, timedelta
 
 import structlog
 
+from analysis.break_momentum import BreakMomentumAnalyzer
 from analysis.endgame import EndgameAnalyzer
 from analysis.fatigue import FatigueAnalyzer
 from analysis.match_state import MatchState
 from analysis.ml_predictor import MLPredictor
 from analysis.momentum import MomentumAnalyzer
 from analysis.odds_value import OddsValueAnalyzer
+from analysis.second_set import SecondSetFadeAnalyzer
 from analysis.server_performance import ServerPerformanceAnalyzer
 from analysis.set_patterns import SetPatternAnalyzer
 from analysis.signal import Signal, compute_stake
-from analysis.win_probability import model_fair_odds
+from analysis.win_probability import compute_win_probability, model_fair_odds
 from config.settings import settings
 from storage.models import PlayerStats
 from storage.repository import Repository
@@ -30,6 +32,8 @@ class AnalysisEngine:
         self.set_patterns = SetPatternAnalyzer()
         self.fatigue = FatigueAnalyzer()
         self.endgame = EndgameAnalyzer()
+        self.break_momentum = BreakMomentumAnalyzer()
+        self.second_set = SecondSetFadeAnalyzer()
         self.ml = MLPredictor()
         # In-memory cooldown cache: (match_id, signal_type) → last_sent datetime
         self._cooldowns: dict[tuple[str, str], datetime] = {}
@@ -49,6 +53,8 @@ class AnalysisEngine:
             self.set_patterns.analyze(state, player_stats),
             self.fatigue.analyze(state),
             self.endgame.analyze(state),
+            self.break_momentum.analyze(state),
+            self.second_set.analyze(state),
         ]
 
         # ML value signal: fire when model probability differs from market by >15%
@@ -125,7 +131,7 @@ class AnalysisEngine:
 
     async def _log_signal(self, sig: Signal, state: MatchState) -> None:
         try:
-            model_p1, model_p2 = compute_win_probability(state)
+            model_p1, model_p2 = compute_win_probability(state)  # noqa: F811
             model_prob = model_p1 if sig.player_to_back == 1 else model_p2
             await self.repository.log_signal(
                 match_id=sig.match_id,

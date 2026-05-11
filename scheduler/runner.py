@@ -29,8 +29,10 @@ from analysis.match_state import MatchState
 from analysis.ml_predictor import MLPredictor
 from analysis.state_store import MatchStateStore
 from analysis.win_probability import compute_win_probability
+from collectors.bets_api import BetsAPICollector
 from collectors.espn import ESPNCollector
 from collectors.flashscore import FlashscoreCollector
+from collectors.historical_importer import run_import
 from collectors.odds_api import OddsApiCollector
 from collectors.sofascore import SofascoreCollector
 from collectors.thesportsdb import TheSportsDBCollector
@@ -66,6 +68,7 @@ class AppRunner:
         self.sofascore = SofascoreCollector(self.store)
         self.thesportsdb = TheSportsDBCollector(api_key=settings.thesportsdb_api_key)
         self.odds_api = OddsApiCollector(self.store)
+        self.bets_api = BetsAPICollector(self.store)
         self.ml_predictor = MLPredictor()
         self.notifier = TelegramNotifier()
         self.scheduler = AsyncIOScheduler()
@@ -79,6 +82,7 @@ class AppRunner:
     async def _data_poll_job(self) -> None:
         await self.flashscore.fetch()
         await self.espn.fetch()
+        await self.bets_api.fetch()
 
         if self.sofascore._consecutive_failures < 5:
             await self.sofascore.fetch()
@@ -220,6 +224,13 @@ class AppRunner:
     async def _schedule_job(self) -> None:
         await self.thesportsdb.fetch()
 
+    async def _historical_import_job(self) -> None:
+        try:
+            async with AsyncSessionFactory() as session:
+                await run_import(session)
+        except Exception:
+            log.exception("historical_import_job_failed")
+
     async def _cleanup_job(self) -> None:
         async with AsyncSessionFactory() as session:
             repo = Repository(session)
@@ -298,16 +309,26 @@ class AppRunner:
             id="self_ping",
             max_instances=1,
         )
+        # Historical import — runs immediately on startup, then weekly
+        self.scheduler.add_job(
+            self._historical_import_job,
+            "interval",
+            weeks=1,
+            id="historical_import",
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc),
+        )
 
     async def start(self) -> None:
         await self.notifier.verify()
         self.setup_jobs()
         self.scheduler.start()
+        bets_api_status = "BetsAPI: active" if settings.bets_api_token else "BetsAPI: no token"
         await self.notifier.send_text(
             "🎾 Tennis-bet monitor started.\n"
             f"Polling every {settings.sofascore_poll_interval}s | "
             f"Min confidence: {settings.min_confidence} | "
-            "Data: Flashscore + ESPN (parallel) → Sofascore (serve stats)"
+            f"Data: Flashscore + ESPN + {bets_api_status} → Sofascore (serve stats)"
         )
         log.info("scheduler_started")
 
@@ -326,6 +347,10 @@ class AppRunner:
             "odds_api": {
                 "key_set": bool(settings.odds_api_key),
                 "poll_interval_secs": settings.odds_poll_interval_seconds,
+            },
+            "bets_api": {
+                "token_set": bool(settings.bets_api_token),
+                "consecutive_failures": self.bets_api._consecutive_failures,
             },
         }
 
