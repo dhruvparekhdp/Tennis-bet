@@ -7,9 +7,10 @@ persists an OddsSnapshot to the database.
 """
 from __future__ import annotations
 
-import structlog
+from datetime import datetime, timezone
+
 import httpx
-from datetime import datetime
+import structlog
 
 from analysis.match_state import MatchState, OddsPoint
 from analysis.state_store import MatchStateStore
@@ -99,6 +100,27 @@ class OddsApiCollector:
                     continue
 
                 total_fetched += len(events)
+
+                # Log every event returned so we can see what the API has
+                now = datetime.now(timezone.utc)
+                for event in events:
+                    home = event.get("home_team", "?")
+                    away = event.get("away_team", "?")
+                    ct_str = event.get("commence_time", "")
+                    try:
+                        ct = datetime.fromisoformat(ct_str.replace("Z", "+00:00"))
+                        mins_until = int((ct - now).total_seconds() / 60)
+                        status = "LIVE" if mins_until <= 0 else f"starts in {mins_until}m"
+                    except Exception:
+                        status = "unknown time"
+                    bm_count = len(event.get("bookmakers", []))
+                    log.info(
+                        "odds_api_event",
+                        sport=sport,
+                        match=f"{home} vs {away}",
+                        status=status,
+                        bookmakers=bm_count,
+                    )
 
                 for event in events:
                     try:

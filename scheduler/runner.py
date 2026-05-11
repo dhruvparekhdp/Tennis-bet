@@ -12,6 +12,7 @@ Jobs:
   - heartbeat:      every 10m  → log status
 """
 import os
+from datetime import datetime, timezone
 
 import httpx
 import structlog
@@ -148,6 +149,7 @@ class AppRunner:
             seconds=settings.odds_poll_interval_seconds,
             id="odds_poll",
             max_instances=1,
+            next_run_time=datetime.now(timezone.utc),  # fire immediately on startup
         )
         self.scheduler.add_job(
             self._ml_retrain_job,
