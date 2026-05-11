@@ -135,6 +135,12 @@ class ESPNCollector(BaseCollector):
         home = _player_name(competitors[0])
         away = _player_name(competitors[1])
 
+        # Skip doubles matches — names contain "/" when two players form a team
+        if "/" in home or "/" in away:
+            log.info("espn_event_skipped_doubles", event_id=event.get("id"),
+                     home=home[:40], away=away[:40])
+            return None
+
         tournament = event.get("name", "Unknown Tournament")
 
         # Surface — ESPN sometimes includes venue surface

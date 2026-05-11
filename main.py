@@ -17,6 +17,7 @@ from config.logging_config import configure_logging
 from scheduler.health import start_health_server
 from scheduler.runner import AppRunner
 from storage.database import init_db
+import storage.models  # noqa: F401 — registers all tables on Base.metadata before create_all
 
 log = structlog.get_logger()
 

@@ -216,6 +216,11 @@ class OddsApiCollector:
         if not home_team or not away_team or not bookmakers:
             return None
 
+        # Skip doubles — Odds API represents doubles teams as "Player1 / Player2"
+        if "/" in home_team or "/" in away_team:
+            log.info("odds_api_skipped_doubles", home=home_team[:40], away=away_team[:40])
+            return None
+
         odds_home = _best_odds(bookmakers, 0)
         odds_away = _best_odds(bookmakers, 1)
         if odds_home <= 1.0 or odds_away <= 1.0:
