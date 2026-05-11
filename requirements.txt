@@ -4,6 +4,7 @@ aiohttp>=3.9
 beautifulsoup4>=4.12
 sqlalchemy[asyncio]>=2.0
 aiosqlite>=0.20
+asyncpg>=0.29
 apscheduler>=3.10
 pydantic-settings>=2.0
 structlog>=24.0
