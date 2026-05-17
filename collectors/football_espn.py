@@ -126,9 +126,8 @@ class FootballESPNCollector:
                 )
                 try:
                     resp = await client.get(url, params={"dates": today, "limit": "100"})
-                    if resp.status_code == 404:
-                        continue
-                    resp.raise_for_status()
+                    if resp.status_code >= 400:
+                        continue  # silently skip 404/403/400/etc
                     data = resp.json()
                     events = data.get("events", [])
                     total_fetched += len(events)
@@ -159,6 +158,10 @@ class FootballESPNCollector:
         status_name = type_obj.get("name", "")
 
         if status_name not in _LIVE_STATUSES:
+            log.debug("football_event_skipped",
+                      event_id=event.get("id"),
+                      status=status_name,
+                      league=event.get("_league_key", ""))
             return None
 
         is_halftime = status_name in _HALFTIME_STATUSES
