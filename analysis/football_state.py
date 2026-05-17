@@ -33,6 +33,8 @@ class FootballMatchState:
     is_halftime: bool = False
     is_extra_time: bool = False
     period: int = 1      # 1=first half, 2=second half, 3+=ET
+    is_scheduled: bool = False   # True = upcoming, not yet live
+    kickoff_time: datetime | None = None
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
     @property

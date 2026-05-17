@@ -11,7 +11,7 @@ Limitations:
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import structlog
@@ -58,10 +58,15 @@ _LEAGUES = [
 
 _LIVE_STATUSES = {
     "STATUS_IN_PROGRESS", "STATUS_LIVE", "STATUS_PLAY",
-    "STATUS_HALFTIME", "IN_PROGRESS", "LIVE", "PLAYING",
+    "STATUS_HALFTIME", "STATUS_SECOND_HALF", "STATUS_FIRST_HALF",
+    "IN_PROGRESS", "LIVE", "PLAYING",
 }
 
 _HALFTIME_STATUSES = {"STATUS_HALFTIME", "HALFTIME"}
+
+_SCHEDULED_STATUSES = {"STATUS_SCHEDULED", "SCHEDULED", "STATUS_PRE", "PRE"}
+
+_SOON_HOURS = 3  # show scheduled matches starting within this many hours
 
 
 def _parse_minute(status: dict) -> int:
@@ -114,9 +119,11 @@ class FootballESPNCollector:
         self.store = store
 
     async def fetch(self) -> None:
-        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        now_utc = datetime.now(timezone.utc)
+        today = now_utc.strftime("%Y%m%d")
         live_ids: set[str] = set()
         total_fetched = 0
+        all_events: list[dict] = []
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             for league in _LEAGUES:
@@ -133,41 +140,76 @@ class FootballESPNCollector:
                     total_fetched += len(events)
                     for ev in events:
                         ev["_league_key"] = league
-                        try:
-                            state = self._parse_event(ev)
-                            if state:
-                                await self.store.update(state)
-                                live_ids.add(state.match_id)
-                        except Exception:
-                            log.exception("football_espn_parse_failed",
-                                          event_id=ev.get("id"), league=league)
+                    all_events.extend(events)
                 except Exception:
                     log.exception("football_espn_fetch_failed", league=league)
 
-        # Remove matches that disappeared from the live feed
+        # Log status breakdown so we can diagnose what ESPN is returning
+        status_counts: dict[str, int] = {}
+        for ev in all_events:
+            s = ((ev.get("status") or {}).get("type") or {}).get("name", "UNKNOWN")
+            status_counts[s] = status_counts.get(s, 0) + 1
+        if status_counts:
+            log.info("football_espn_statuses", counts=status_counts)
+
+        for ev in all_events:
+            try:
+                state = self._parse_event(ev, now_utc)
+                if state:
+                    await self.store.update(state)
+                    live_ids.add(state.match_id)
+            except Exception:
+                log.exception("football_espn_parse_failed",
+                              event_id=ev.get("id"), league=ev.get("_league_key"))
+
+        # Remove matches that disappeared from feed
         for state in await self.store.get_all():
             if state.match_id.startswith("fb_") and state.match_id not in live_ids:
                 await self.store.remove(state.match_id)
 
+        live_count = sum(1 for s in await self.store.get_all() if not s.is_scheduled)
+        soon_count = sum(1 for s in await self.store.get_all() if s.is_scheduled)
         log.info("football_espn_done",
-                 total_events=total_fetched, live_matches=len(live_ids))
+                 total_events=total_fetched, live_matches=live_count, starting_soon=soon_count)
 
-    def _parse_event(self, event: dict) -> FootballMatchState | None:
+    def _parse_event(
+        self, event: dict, now_utc: datetime | None = None
+    ) -> FootballMatchState | None:
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc)
+
         status_obj = event.get("status", {})
         type_obj = status_obj.get("type") or {}
         status_name = type_obj.get("name", "")
 
-        if status_name not in _LIVE_STATUSES:
+        is_live = status_name in _LIVE_STATUSES
+        is_scheduled_status = status_name in _SCHEDULED_STATUSES
+
+        if not is_live and not is_scheduled_status:
             log.debug("football_event_skipped",
-                      event_id=event.get("id"),
-                      status=status_name,
-                      league=event.get("_league_key", ""))
+                      status=status_name, league=event.get("_league_key", ""))
             return None
+
+        # For scheduled events: only include those starting within _SOON_HOURS
+        kickoff_time: datetime | None = None
+        if is_scheduled_status:
+            raw_date = event.get("date", "")
+            if raw_date:
+                try:
+                    kickoff_time = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+                except ValueError:
+                    pass
+            if kickoff_time is None:
+                return None
+            now_aware = now_utc if now_utc.tzinfo else now_utc.replace(tzinfo=timezone.utc)
+            mins_away = (kickoff_time - now_aware).total_seconds() / 60
+            if mins_away < 0 or mins_away > _SOON_HOURS * 60:
+                return None  # too far away or already started
 
         is_halftime = status_name in _HALFTIME_STATUSES
         period = status_obj.get("period", 1)
         is_extra_time = period > 2
-        minute = _parse_minute(status_obj)
+        minute = _parse_minute(status_obj) if is_live else 0
 
         match_id = f"fb_{event.get('id', '')}"
         competitions = event.get("competitions", [])
@@ -195,16 +237,15 @@ class FootballESPNCollector:
 
         home_team = _name(home_comp)
         away_team = _name(away_comp)
-        home_score = int(home_comp.get("score", "0") or 0)
-        away_score = int(away_comp.get("score", "0") or 0)
+        home_score = int(home_comp.get("score", "0") or 0) if is_live else 0
+        away_score = int(away_comp.get("score", "0") or 0) if is_live else 0
 
         details = comp.get("details", [])
         home_id = (home_comp.get("team") or {}).get("id", "")
         away_id = (away_comp.get("team") or {}).get("id", "")
-        home_red = _count_red_cards(details, home_id)
-        away_red = _count_red_cards(details, away_id)
+        home_red = _count_red_cards(details, home_id) if is_live else 0
+        away_red = _count_red_cards(details, away_id) if is_live else 0
 
-        # Use event name if available, otherwise league key
         tournament = (
             event.get("name")
             or (comp.get("tournament") or {}).get("displayName")
@@ -226,5 +267,7 @@ class FootballESPNCollector:
             is_halftime=is_halftime,
             is_extra_time=is_extra_time,
             period=period,
+            is_scheduled=is_scheduled_status,
+            kickoff_time=kickoff_time,
             timestamp=datetime.utcnow(),
         )

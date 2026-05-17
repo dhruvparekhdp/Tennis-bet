@@ -100,8 +100,14 @@ async def _api_matches(runner, request: web.Request) -> web.Response:
 
 async def _api_football_matches(runner, request: web.Request) -> web.Response:
     states = await runner.football_store.get_all()
+    # Live first, then upcoming sorted by kickoff
+    live = [s for s in states if not s.is_scheduled]
+    soon = sorted(
+        [s for s in states if s.is_scheduled],
+        key=lambda s: s.kickoff_time or datetime.utcnow(),
+    )
     matches = []
-    for s in states:
+    for s in live + soon:
         matches.append({
             "match_id": s.match_id,
             "home_team": s.home_team,
@@ -119,6 +125,8 @@ async def _api_football_matches(runner, request: web.Request) -> web.Response:
             "is_halftime": s.is_halftime,
             "is_extra_time": s.is_extra_time,
             "period": s.period,
+            "is_scheduled": s.is_scheduled,
+            "kickoff_time": s.kickoff_time.isoformat() if s.kickoff_time else None,
         })
     return web.Response(text=json.dumps(matches), content_type="application/json")
 
@@ -662,18 +670,34 @@ const FB_MKT={match_winner:'Match Winner',draw_no_bet:'Draw No Bet',asian_handic
 
 function renderFootballMatches(matches){
   const el=document.getElementById('fb-matches');
-  if(!matches.length){el.innerHTML='<div class="empty">No live football matches right now</div>';return;}
+  if(!matches.length){el.innerHTML='<div class="empty">No live or upcoming football matches in next 3 hours</div>';return;}
   el.innerHTML=matches.map(renderFootballMatch).join('');
 }
 
+function fmtKickoff(iso){
+  if(!iso) return '';
+  const d=new Date(iso);
+  return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' ('+d.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+')';
+}
+
+function minsUntil(iso){
+  if(!iso) return null;
+  const diff=Math.round((new Date(iso)-Date.now())/60000);
+  if(diff<=0) return 'Starting now';
+  if(diff<60) return `in ${diff} min`;
+  const h=Math.floor(diff/60),m=diff%60;
+  return `in ${h}h${m>0?' '+m+'m':''}`;
+}
+
 function renderFootballMatch(m){
+  if(m.is_scheduled) return renderFootballUpcoming(m);
+
   const hasOdds=m.home_odds>1.01&&m.away_odds>1.01&&m.draw_odds>1.01;
   const favHome=hasOdds&&m.home_odds<=m.away_odds&&m.home_odds<=m.draw_odds;
   const favAway=hasOdds&&m.away_odds<m.home_odds&&m.away_odds<=m.draw_odds;
   const homeLeads=m.home_score>m.away_score;
   const awayLeads=m.away_score>m.home_score;
 
-  // Header
   const leagueLabel=m.league_key.replace(/\./g,' ').replace(/\b\w/g,c=>c.toUpperCase());
   const htBadge=m.is_halftime?'<span class="fb-ht-badge">HT</span>':'';
   const etBadge=m.is_extra_time?'<span class="fb-et-badge">ET</span>':'';
@@ -685,29 +709,24 @@ function renderFootballMatch(m){
     <span class="fb-minute"><span class="fb-live-dot"></span>${minDisplay}</span>
   </div>`;
 
-  // Score row
   const homeRC=Array(m.home_red_cards).fill('<span class="fb-red-card"></span>').join('');
   const awayRC=Array(m.away_red_cards).fill('<span class="fb-red-card"></span>').join('');
-  const homeLeadBadge=homeLeads?'<span class="fb-leading-badge">LEADING</span>':'';
-  const awayLeadBadge=awayLeads?'<span class="fb-leading-badge">LEADING</span>':'';
   const scoreRow=`<div class="fb-score-row">
     <div class="fb-team">
       <div class="fb-team-name">${esc(m.home_team)}</div>
       ${homeRC?`<div class="fb-red-cards">${homeRC}</div>`:''}
-      ${homeLeadBadge}
+      ${homeLeads?'<span class="fb-leading-badge">LEADING</span>':''}
     </div>
     <div class="fb-score-center">
       <div class="fb-score">${m.home_score}&nbsp;:&nbsp;${m.away_score}</div>
-      <div class="fb-score-sub">Full Time 90'</div>
     </div>
     <div class="fb-team right">
       <div class="fb-team-name">${esc(m.away_team)}</div>
       ${awayRC?`<div class="fb-red-cards" style="justify-content:flex-end">${awayRC}</div>`:''}
-      ${awayLeadBadge}
+      ${awayLeads?'<span class="fb-leading-badge">LEADING</span>':''}
     </div>
   </div>`;
 
-  // 3-way odds
   const oddsRow=`<div class="fb-odds-row">
     <div class="fb-odds-box">
       <div class="fb-odds-label">1 · ${esc(m.home_team.split(' ').slice(-1)[0])}</div>
@@ -724,6 +743,27 @@ function renderFootballMatch(m){
   </div>`;
 
   return `<div class="fb-card">${header}${scoreRow}${oddsRow}</div>`;
+}
+
+function renderFootballUpcoming(m){
+  const leagueLabel=m.league_key.replace(/\./g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+  const until=minsUntil(m.kickoff_time);
+  const kt=fmtKickoff(m.kickoff_time);
+  return `<div class="fb-card" style="opacity:.82">
+    <div class="fb-header">
+      <span class="fb-league-tag" style="background:#1e3a2e;color:#6ee7b7">${esc(leagueLabel)}</span>
+      <span>${esc(m.tournament)}</span>
+      <span class="fb-minute" style="color:#6ee7b7">⏰ ${esc(until||'')}</span>
+    </div>
+    <div class="fb-score-row">
+      <div class="fb-team"><div class="fb-team-name">${esc(m.home_team)}</div></div>
+      <div class="fb-score-center">
+        <div style="font-size:13px;color:#64748b;font-weight:700">UPCOMING</div>
+        <div style="font-size:12px;color:#94a3b8;margin-top:4px">${esc(kt)}</div>
+      </div>
+      <div class="fb-team right"><div class="fb-team-name">${esc(m.away_team)}</div></div>
+    </div>
+  </div>`;
 }
 
 // ── FOOTBALL SIGNALS ──────────────────────────────────────────────────────────
