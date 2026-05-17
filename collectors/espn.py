@@ -54,9 +54,8 @@ class ESPNCollector(BaseCollector):
             for url in _TOUR_URLS:
                 try:
                     resp = await client.get(url, params={"dates": today, "limit": "100"})
-                    if resp.status_code == 404:
-                        continue  # tour not active right now
-                    resp.raise_for_status()
+                    if resp.status_code >= 400:
+                        continue  # 404 = not active, 403 = blocked, etc — all silently skipped
                     data = resp.json()
                     tour_events = data.get("events", [])
                     events.extend(tour_events)
@@ -101,7 +100,7 @@ class ESPNCollector(BaseCollector):
         status_type = status_obj.get("name", "")
         status_detail = status_obj.get("description", "")
         if status_type not in self._LIVE_STATUSES:
-            log.info(
+            log.debug(
                 "espn_event_skipped",
                 event_id=event.get("id"),
                 name=event.get("name", "")[:60],
