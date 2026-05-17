@@ -642,8 +642,6 @@ function renderStatus(st){
       <div class="status-name"><span class="dot ${s.ok?'dot-green':'dot-red'}"></span>${s.name}</div>
       <div class="status-val">${s.detail}</div>
     </div>`).join('');
-  document.getElementById('stat-odds').textContent=oa.key_set?'✓ Set':'✗ Missing';
-  document.getElementById('stat-odds-sub').textContent=oa.key_set?`every ${oa.poll_interval_secs}s`:'Add ODDS_API_KEY';
 }
 
 function esc(s){
@@ -848,6 +846,7 @@ async function refresh(){
     document.getElementById('last-updated').textContent='Updated: '+new Date().toLocaleTimeString();
     document.getElementById('refresh-label').textContent='Next in 30s';
   }catch(e){
+    console.error('refresh error:', e);
     document.getElementById('refresh-label').textContent='Error — retrying…';
   }
 }
