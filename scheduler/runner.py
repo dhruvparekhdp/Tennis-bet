@@ -25,6 +25,8 @@ import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from analysis.engine import AnalysisEngine
+from analysis.football_engine import FootballEngine
+from analysis.football_state import FootballStateStore
 from analysis.match_state import MatchState
 from analysis.ml_predictor import MLPredictor
 from analysis.state_store import MatchStateStore
@@ -32,12 +34,14 @@ from analysis.win_probability import compute_win_probability
 from collectors.bets_api import BetsAPICollector
 from collectors.espn import ESPNCollector
 from collectors.flashscore import FlashscoreCollector
+from collectors.football_espn import FootballESPNCollector
 from collectors.historical_importer import run_import
 from collectors.odds_api import OddsApiCollector
 from collectors.slam_pbp_importer import run_slam_import
 from collectors.sofascore import SofascoreCollector
 from collectors.thesportsdb import TheSportsDBCollector
 from config.settings import settings
+from notifications.football_formatter import format_football_signal
 from notifications.telegram_notifier import TelegramNotifier
 from storage.database import AsyncSessionFactory
 from storage.repository import Repository
@@ -73,12 +77,16 @@ class AppRunner:
         self.ml_predictor = MLPredictor()
         self.notifier = TelegramNotifier()
         self.scheduler = AsyncIOScheduler()
-        # Persistent engine so _cooldowns dict survives across poll cycles
+        # Tennis: persistent engine so _cooldowns survive across poll cycles
         self._engine: AnalysisEngine | None = None
         # Track last-seen match states to detect completions
         self._last_states: dict[str, MatchState] = {}
         # Per-match poll counter for snapshot throttling
         self._poll_counters: dict[str, int] = {}
+        # Football
+        self.football_store = FootballStateStore()
+        self.football_espn = FootballESPNCollector(self.football_store)
+        self.football_engine = FootballEngine()
 
     async def _data_poll_job(self) -> None:
         await self.flashscore.fetch()
@@ -208,6 +216,20 @@ class AppRunner:
         except Exception:
             log.exception("snapshot_save_failed", match_id=state.match_id)
 
+    async def _football_poll_job(self) -> None:
+        try:
+            await self.football_espn.fetch()
+            for state in await self.football_store.get_all():
+                try:
+                    signals = self.football_engine.process(state)
+                    for sig in signals:
+                        msg = format_football_signal(sig)
+                        await self.notifier.send_text(msg)
+                except Exception:
+                    log.exception("football_analysis_failed", match_id=state.match_id)
+        except Exception:
+            log.exception("football_poll_job_failed")
+
     async def _odds_job(self) -> None:
         try:
             await self.odds_api.fetch()
@@ -312,6 +334,14 @@ class AppRunner:
             id="self_ping",
             max_instances=1,
         )
+        self.scheduler.add_job(
+            self._football_poll_job,
+            "interval",
+            seconds=60,
+            id="football_poll",
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc),
+        )
         # Historical import — runs immediately on startup, then weekly
         self.scheduler.add_job(
             self._historical_import_job,
@@ -328,10 +358,10 @@ class AppRunner:
         self.scheduler.start()
         bets_api_status = "BetsAPI: active" if settings.bets_api_token else "BetsAPI: no token"
         await self.notifier.send_text(
-            "🎾 Tennis-bet monitor started.\n"
-            f"Polling every {settings.sofascore_poll_interval}s | "
-            f"Min confidence: {settings.min_confidence} | "
-            f"Data: Flashscore + ESPN + {bets_api_status} → Sofascore (serve stats)"
+            "🎾⚽ Tennis + Football monitor started.\n"
+            f"Tennis: ESPN + Flashscore + {bets_api_status} (every {settings.sofascore_poll_interval}s)\n"
+            f"Football: ESPN all leagues (every 60s)\n"
+            f"Min confidence: {settings.min_confidence}"
         )
         log.info("scheduler_started")
 
@@ -354,6 +384,10 @@ class AppRunner:
             "bets_api": {
                 "token_set": bool(settings.bets_api_token),
                 "consecutive_failures": self.bets_api._consecutive_failures,
+            },
+            "football": {
+                "live_matches": 0,  # filled by health.py via football_store.count()
+                "signals_today": len(self.football_engine.get_recent_signals(24)),
             },
         }
 
