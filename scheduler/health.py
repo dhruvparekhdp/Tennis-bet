@@ -98,6 +98,57 @@ async def _api_matches(runner, request: web.Request) -> web.Response:
     return web.Response(text=json.dumps(matches), content_type="application/json")
 
 
+async def _api_football_matches(runner, request: web.Request) -> web.Response:
+    states = await runner.football_store.get_all()
+    matches = []
+    for s in states:
+        matches.append({
+            "match_id": s.match_id,
+            "home_team": s.home_team,
+            "away_team": s.away_team,
+            "tournament": s.tournament,
+            "league_key": s.league_key,
+            "minute": s.minute,
+            "home_score": s.home_score,
+            "away_score": s.away_score,
+            "home_odds": s.home_odds,
+            "draw_odds": s.draw_odds,
+            "away_odds": s.away_odds,
+            "home_red_cards": s.home_red_cards,
+            "away_red_cards": s.away_red_cards,
+            "is_halftime": s.is_halftime,
+            "is_extra_time": s.is_extra_time,
+            "period": s.period,
+        })
+    return web.Response(text=json.dumps(matches), content_type="application/json")
+
+
+async def _api_football_signals(runner, request: web.Request) -> web.Response:
+    sigs = runner.football_engine.get_recent_signals(hours=24)
+    result = [
+        {
+            "match_id": s.match_id,
+            "signal_type": s.signal_type,
+            "team_to_back": s.team_to_back,
+            "opponent": s.opponent,
+            "tournament": s.tournament,
+            "is_home": s.is_home,
+            "market": s.market,
+            "current_odds": s.current_odds,
+            "fair_odds": s.fair_odds,
+            "edge_pct": round(s.edge_pct * 100, 1),
+            "confidence": round(s.confidence * 100),
+            "stake_pct": round(s.stake_pct * 100, 1),
+            "trigger": s.trigger_description,
+            "score_summary": s.score_summary,
+            "minute": s.minute,
+            "timestamp": s.timestamp.isoformat(),
+        }
+        for s in reversed(sigs)  # newest first
+    ]
+    return web.Response(text=json.dumps(result), content_type="application/json")
+
+
 async def _api_signals(runner, request: web.Request) -> web.Response:
     from storage.database import AsyncSessionFactory
     from storage.repository import Repository
@@ -267,6 +318,55 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .sc-conf-bar{font-size:13px;color:#334155;letter-spacing:1px}
 .sc-edge{font-size:11px;color:#22c55e;font-weight:700}
 .sc-stake{font-size:10px;background:#1d4736;color:#34d399;padding:2px 8px;border-radius:4px;font-weight:600;margin-left:auto}
+
+/* ── Tab bar ── */
+.tab-bar{display:flex;gap:0;padding:0 20px;background:#1e293b;border-bottom:2px solid #0f172a}
+.tab-btn{background:none;border:none;border-bottom:3px solid transparent;color:#64748b;font-size:13px;font-weight:600;padding:11px 20px;cursor:pointer;transition:all .15s;margin-bottom:-2px}
+.tab-btn.active{color:#f1f5f9;border-bottom-color:#0ea5e9}
+.tab-btn:hover:not(.active){color:#94a3b8}
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* ── Football match card ── */
+.fb-card{background:#1e293b;border:1px solid #334155;border-radius:12px;overflow:hidden;margin-bottom:12px}
+.fb-header{display:flex;align-items:center;gap:6px;padding:7px 12px;background:#1a1f2e;border-bottom:1px solid #2d3748;font-size:11px;color:#64748b;flex-wrap:wrap}
+.fb-league-tag{font-size:10px;padding:1px 7px;border-radius:4px;background:#166534;color:#86efac;font-weight:700;letter-spacing:.04em}
+.fb-minute{font-size:12px;font-weight:800;color:#f59e0b;margin-left:auto;display:flex;align-items:center;gap:4px}
+.fb-live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#ef4444;animation:fbpulse .9s infinite}
+@keyframes fbpulse{0%,100%{opacity:1}50%{opacity:.25}}
+.fb-ht-badge{font-size:10px;background:#78350f;color:#fde68a;padding:1px 6px;border-radius:3px;font-weight:700}
+.fb-et-badge{font-size:10px;background:#7c3aed;color:#ddd6fe;padding:1px 6px;border-radius:3px;font-weight:700}
+/* Score area */
+.fb-score-row{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:18px 14px 14px}
+.fb-team{display:flex;flex-direction:column;gap:5px}
+.fb-team.right{align-items:flex-end;text-align:right}
+.fb-team-name{font-size:14px;font-weight:700;color:#f1f5f9;max-width:145px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fb-red-cards{display:flex;gap:2px}
+.fb-red-card{width:11px;height:15px;background:#ef4444;border-radius:2px}
+.fb-leading-badge{font-size:10px;padding:2px 6px;border-radius:4px;background:#14532d;color:#4ade80;font-weight:700}
+/* Center */
+.fb-score-center{text-align:center;padding:0 18px;min-width:90px}
+.fb-score{font-size:46px;font-weight:900;color:#f1f5f9;letter-spacing:6px;line-height:1}
+.fb-score-sub{font-size:10px;color:#64748b;margin-top:4px}
+/* Odds 3-way */
+.fb-odds-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:#0f172a;border-top:1px solid #334155}
+.fb-odds-box{padding:10px 6px;text-align:center;background:#1e293b}
+.fb-odds-label{font-size:9px;color:#64748b;margin-bottom:3px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fb-odds-val{font-size:20px;font-weight:900;color:#38bdf8}
+.fb-odds-val.fav{color:#34d399}
+.fb-odds-val.draw{color:#94a3b8}
+.fb-odds-val.none{color:#334155;font-size:14px}
+
+/* ── Football signal card ── */
+.fb-sig-card{background:#1e293b;border:1px solid #334155;border-radius:10px;overflow:hidden;margin-bottom:10px}
+.fb-sig-header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#0f172a;border-bottom:1px solid #334155}
+.fb-sig-type{font-size:11px;font-weight:700;padding:3px 8px;border-radius:5px;white-space:nowrap}
+.fb-sig-late_lead{background:#065f46;color:#a7f3d0}
+.fb-sig-heavy_fav_dominating{background:#1d4ed8;color:#bfdbfe}
+.fb-sig-late_draw_fade{background:#312e81;color:#c7d2fe}
+.fb-sig-red_card_advantage{background:#7f1d1d;color:#fca5a5}
+.fb-sig-clean_sheet_likely{background:#134e4a;color:#99f6e4}
+.fb-sig-time{font-size:11px;color:#475569;margin-left:auto}
 </style>
 </head>
 <body>
@@ -276,26 +376,42 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 </header>
 
 <div class="grid">
-  <div class="card"><div class="card-title">Live Matches</div><div class="card-value" id="stat-matches">&mdash;</div><div class="card-sub">tracked now</div></div>
-  <div class="card"><div class="card-title">Signals (24h)</div><div class="card-value" id="stat-signals">&mdash;</div><div class="card-sub">alerts fired</div></div>
+  <div class="card"><div class="card-title">Tennis Live</div><div class="card-value" id="stat-matches">&mdash;</div><div class="card-sub">matches now</div></div>
+  <div class="card"><div class="card-title">Football Live</div><div class="card-value" id="stat-fb-matches">&mdash;</div><div class="card-sub">matches now</div></div>
+  <div class="card"><div class="card-title">Signals (24h)</div><div class="card-value" id="stat-signals">&mdash;</div><div class="card-sub">tennis + football</div></div>
   <div class="card"><div class="card-title">Uptime</div><div class="card-value" id="stat-uptime">&mdash;</div><div class="card-sub">since restart</div></div>
-  <div class="card"><div class="card-title">Odds API</div><div class="card-value" id="stat-odds">&mdash;</div><div class="card-sub" id="stat-odds-sub"></div></div>
 </div>
 
-<section>
-  <h2>Data Sources</h2>
-  <div class="status-grid" id="sources"></div>
-</section>
+<div class="tab-bar">
+  <button class="tab-btn active" data-tab="tennis" onclick="switchTab('tennis')">🎾 Tennis</button>
+  <button class="tab-btn" data-tab="football" onclick="switchTab('football')">⚽ Football</button>
+</div>
 
-<section>
-  <h2>Live Matches</h2>
-  <div id="matches"><div class="empty">No live matches tracked</div></div>
-</section>
+<div id="tab-tennis" class="tab-content active">
+  <section>
+    <h2>Data Sources</h2>
+    <div class="status-grid" id="sources"></div>
+  </section>
+  <section>
+    <h2>Live Tennis Matches</h2>
+    <div id="matches"><div class="empty">No live matches tracked</div></div>
+  </section>
+  <section>
+    <h2>Tennis Signals (last 24h)</h2>
+    <div id="signals"><div class="empty">No signals fired yet</div></div>
+  </section>
+</div>
 
-<section>
-  <h2>Recent Signals (last 24h)</h2>
-  <div id="signals"><div class="empty">No signals fired yet</div></div>
-</section>
+<div id="tab-football" class="tab-content">
+  <section>
+    <h2>Live Football Matches</h2>
+    <div id="fb-matches"><div class="empty">No live football matches tracked</div></div>
+  </section>
+  <section>
+    <h2>Football Signals (last 24h)</h2>
+    <div id="fb-signals"><div class="empty">No football signals fired yet</div></div>
+  </section>
+</div>
 
 <footer>Auto-refreshes every 30s &middot; <span id="last-updated">&mdash;</span></footer>
 
@@ -528,21 +644,167 @@ function esc(s){
   return d.innerHTML;
 }
 
+// ── TAB SWITCHING ─────────────────────────────────────────────────────────────
+function switchTab(tab){
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
+  document.querySelectorAll('.tab-content').forEach(c=>c.classList.toggle('active',c.id==='tab-'+tab));
+}
+
+// ── FOOTBALL MATCHES ──────────────────────────────────────────────────────────
+const FB_SIG_NAME={
+  late_lead:'⏱ Late Lead',
+  heavy_fav_dominating:'💪 Fav Dominating',
+  late_draw_fade:'🔄 Draw Fade',
+  red_card_advantage:'🟥 Red Card Edge',
+  clean_sheet_likely:'🧤 Clean Sheet',
+};
+const FB_MKT={match_winner:'Match Winner',draw_no_bet:'Draw No Bet',asian_handicap_0:'AH 0'};
+
+function renderFootballMatches(matches){
+  const el=document.getElementById('fb-matches');
+  if(!matches.length){el.innerHTML='<div class="empty">No live football matches right now</div>';return;}
+  el.innerHTML=matches.map(renderFootballMatch).join('');
+}
+
+function renderFootballMatch(m){
+  const hasOdds=m.home_odds>1.01&&m.away_odds>1.01&&m.draw_odds>1.01;
+  const favHome=hasOdds&&m.home_odds<=m.away_odds&&m.home_odds<=m.draw_odds;
+  const favAway=hasOdds&&m.away_odds<m.home_odds&&m.away_odds<=m.draw_odds;
+  const homeLeads=m.home_score>m.away_score;
+  const awayLeads=m.away_score>m.home_score;
+
+  // Header
+  const leagueLabel=m.league_key.replace(/\./g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+  const htBadge=m.is_halftime?'<span class="fb-ht-badge">HT</span>':'';
+  const etBadge=m.is_extra_time?'<span class="fb-et-badge">ET</span>':'';
+  const minDisplay=m.is_halftime?'HT':(m.minute>0?m.minute+"'":"?'");
+  const header=`<div class="fb-header">
+    <span class="fb-league-tag">${esc(leagueLabel)}</span>
+    <span>${esc(m.tournament)}</span>
+    ${htBadge}${etBadge}
+    <span class="fb-minute"><span class="fb-live-dot"></span>${minDisplay}</span>
+  </div>`;
+
+  // Score row
+  const homeRC=Array(m.home_red_cards).fill('<span class="fb-red-card"></span>').join('');
+  const awayRC=Array(m.away_red_cards).fill('<span class="fb-red-card"></span>').join('');
+  const homeLeadBadge=homeLeads?'<span class="fb-leading-badge">LEADING</span>':'';
+  const awayLeadBadge=awayLeads?'<span class="fb-leading-badge">LEADING</span>':'';
+  const scoreRow=`<div class="fb-score-row">
+    <div class="fb-team">
+      <div class="fb-team-name">${esc(m.home_team)}</div>
+      ${homeRC?`<div class="fb-red-cards">${homeRC}</div>`:''}
+      ${homeLeadBadge}
+    </div>
+    <div class="fb-score-center">
+      <div class="fb-score">${m.home_score}&nbsp;:&nbsp;${m.away_score}</div>
+      <div class="fb-score-sub">Full Time 90'</div>
+    </div>
+    <div class="fb-team right">
+      <div class="fb-team-name">${esc(m.away_team)}</div>
+      ${awayRC?`<div class="fb-red-cards" style="justify-content:flex-end">${awayRC}</div>`:''}
+      ${awayLeadBadge}
+    </div>
+  </div>`;
+
+  // 3-way odds
+  const oddsRow=`<div class="fb-odds-row">
+    <div class="fb-odds-box">
+      <div class="fb-odds-label">1 · ${esc(m.home_team.split(' ').slice(-1)[0])}</div>
+      <div class="fb-odds-val ${hasOdds?(favHome?'fav':''):'none'}">${hasOdds?m.home_odds.toFixed(2):'—'}</div>
+    </div>
+    <div class="fb-odds-box">
+      <div class="fb-odds-label">X · Draw</div>
+      <div class="fb-odds-val draw">${hasOdds?m.draw_odds.toFixed(2):'—'}</div>
+    </div>
+    <div class="fb-odds-box">
+      <div class="fb-odds-label">2 · ${esc(m.away_team.split(' ').slice(-1)[0])}</div>
+      <div class="fb-odds-val ${hasOdds?(favAway?'fav':''):'none'}">${hasOdds?m.away_odds.toFixed(2):'—'}</div>
+    </div>
+  </div>`;
+
+  return `<div class="fb-card">${header}${scoreRow}${oddsRow}</div>`;
+}
+
+// ── FOOTBALL SIGNALS ──────────────────────────────────────────────────────────
+function renderFootballSignals(signals){
+  const el=document.getElementById('fb-signals');
+  if(!signals.length){el.innerHTML='<div class="empty">No football signals in the last 24 hours</div>';return;}
+  el.innerHTML=signals.map(renderFootballSignal).join('');
+}
+
+function renderFootballSignal(s){
+  const name=FB_SIG_NAME[s.signal_type]||s.signal_type.replace(/_/g,' ');
+  const mkt=FB_MKT[s.market]||s.market;
+  const side=s.is_home?'🏠 HOME':'✈️ AWAY';
+  const confBar='█'.repeat(Math.round(s.confidence/10))+'░'.repeat(10-Math.round(s.confidence/10));
+  const modelPct=s.fair_odds>1?Math.round(100/s.fair_odds):0;
+  const mktPct=s.current_odds>1?Math.round(100/s.current_odds):0;
+  const modelBar='▓'.repeat(Math.round(modelPct/5))+'░'.repeat(20-Math.round(modelPct/5));
+  const mktBarStr='▓'.repeat(Math.round(mktPct/5))+'░'.repeat(20-Math.round(mktPct/5));
+
+  return `<div class="fb-sig-card">
+    <div class="fb-sig-header">
+      <span class="fb-sig-type fb-sig-${s.signal_type}">${name}</span>
+      <span class="fb-sig-time">${fmtTime(s.timestamp)}</span>
+    </div>
+    <div class="sc-bet-banner">
+      <span class="sc-bet-arrow">🎯</span>
+      <div>
+        <div class="sc-bet-label">Bet on</div>
+        <div class="sc-bet-player">${esc(s.team_to_back)}</div>
+        <div class="sc-bet-market">${side} · ${mkt} · ${esc(s.tournament)}</div>
+      </div>
+      <div class="sc-bet-odds">
+        <div class="sc-bet-odds-val">${s.current_odds.toFixed(2)}</div>
+        <div class="sc-bet-odds-fair">fair: ${s.fair_odds.toFixed(2)}</div>
+      </div>
+    </div>
+    <div class="sc-body">
+      <div class="sc-match">vs <strong>${esc(s.opponent)}</strong> · <span style="color:#f59e0b">${esc(s.score_summary)}</span></div>
+      <div class="sc-why">${esc(s.trigger)}</div>
+      <div class="sc-probs">
+        <div class="sc-prob-row">
+          <span class="sc-prob-lbl">Model</span>
+          <div class="sc-prob-bar-wrap"><div class="sc-prob-bar sc-prob-bar-model" style="width:${Math.min(100,modelPct)}%"></div></div>
+          <span class="sc-prob-pct">${modelPct}%</span>
+        </div>
+        <div class="sc-prob-row">
+          <span class="sc-prob-lbl">Market</span>
+          <div class="sc-prob-bar-wrap"><div class="sc-prob-bar sc-prob-bar-market" style="width:${Math.min(100,mktPct)}%"></div></div>
+          <span class="sc-prob-pct">${mktPct}%</span>
+        </div>
+      </div>
+    </div>
+    <div class="sc-footer">
+      <span class="sc-conf">${s.confidence}%</span>
+      <span class="sc-conf-bar">${confBar}</span>
+      <span class="sc-edge">+${s.edge_pct}% edge</span>
+      <span class="sc-stake">Stake ${s.stake_pct}%</span>
+    </div>
+  </div>`;
+}
+
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 async function refresh(){
   try{
-    const [status,matches,signals]=await Promise.all([
+    const [status,matches,signals,fbMatches,fbSignals]=await Promise.all([
       fetch('/api/status').then(r=>r.json()),
       fetch('/api/matches').then(r=>r.json()),
       fetch('/api/signals').then(r=>r.json()),
+      fetch('/api/football/matches').then(r=>r.json()),
+      fetch('/api/football/signals').then(r=>r.json()),
     ]);
     document.getElementById('stat-matches').textContent=matches.length;
-    document.getElementById('stat-signals').textContent=signals.length;
+    document.getElementById('stat-fb-matches').textContent=fbMatches.length;
+    document.getElementById('stat-signals').textContent=signals.length+fbSignals.length;
     document.getElementById('stat-uptime').textContent=fmtUptime(status.uptime_seconds);
-    document.getElementById('live-count').textContent=matches.length+' live';
+    document.getElementById('live-count').textContent=matches.length+' tennis';
     renderStatus(status);
     renderMatches(matches);
     renderSignals(signals);
+    renderFootballMatches(fbMatches);
+    renderFootballSignals(fbSignals);
     document.getElementById('last-updated').textContent='Updated: '+new Date().toLocaleTimeString();
     document.getElementById('refresh-label').textContent='Next in 30s';
   }catch(e){
@@ -563,6 +825,8 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/status", lambda req: _api_status(runner, req))
     app.router.add_get("/api/matches", lambda req: _api_matches(runner, req))
     app.router.add_get("/api/signals", lambda req: _api_signals(runner, req))
+    app.router.add_get("/api/football/matches", lambda req: _api_football_matches(runner, req))
+    app.router.add_get("/api/football/signals", lambda req: _api_football_signals(runner, req))
     return app
 
 
