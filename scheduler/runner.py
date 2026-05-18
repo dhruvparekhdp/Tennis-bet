@@ -36,6 +36,7 @@ from collectors.espn import ESPNCollector
 from collectors.flashscore import FlashscoreCollector
 from collectors.football_espn import FootballESPNCollector
 from collectors.football_odds_api import FootballOddsApiCollector
+from collectors.sportradar import SportradarCollector
 from collectors.historical_importer import run_import
 from collectors.odds_api import OddsApiCollector
 from collectors.slam_pbp_importer import run_slam_import
@@ -89,6 +90,8 @@ class AppRunner:
         self.football_espn = FootballESPNCollector(self.football_store)
         self.football_odds = FootballOddsApiCollector(self.football_store)
         self.football_engine = FootballEngine()
+        # Sportradar — covers ALL tennis (Challengers, ITF) + ALL football in one call each
+        self.sportradar = SportradarCollector(self.store, self.football_store)
 
     async def _data_poll_job(self) -> None:
         await self.flashscore.fetch()
@@ -266,6 +269,19 @@ class AppRunner:
         except Exception:
             log.exception("historical_import_failed_non_fatal")
 
+    async def _sportradar_job(self) -> None:
+        key = settings.sportradar_api_key
+        if not key:
+            return
+        try:
+            await self.sportradar.fetch_tennis(key)
+        except Exception:
+            log.exception("sportradar_tennis_job_failed")
+        try:
+            await self.sportradar.fetch_soccer(key)
+        except Exception:
+            log.exception("sportradar_soccer_job_failed")
+
     async def _cleanup_job(self) -> None:
         async with AsyncSessionFactory() as session:
             repo = Repository(session)
@@ -338,6 +354,15 @@ class AppRunner:
             minutes=10,
             id="heartbeat",
         )
+        if settings.sportradar_api_key:
+            self.scheduler.add_job(
+                self._sportradar_job,
+                "interval",
+                seconds=settings.sportradar_poll_interval_seconds,
+                id="sportradar",
+                max_instances=1,
+                next_run_time=datetime.now(timezone.utc),
+            )
         self.scheduler.add_job(
             self._self_ping_job,
             "interval",
@@ -395,6 +420,11 @@ class AppRunner:
             "bets_api": {
                 "token_set": bool(settings.bets_api_token),
                 "consecutive_failures": self.bets_api._consecutive_failures,
+            },
+            "sportradar": {
+                "key_set": bool(settings.sportradar_api_key),
+                "consecutive_failures": self.sportradar._consecutive_failures,
+                "poll_interval_secs": settings.sportradar_poll_interval_seconds,
             },
             "football": {
                 "live_matches": 0,  # filled by health.py via football_store.count()
