@@ -758,13 +758,14 @@ function renderSignal(s){
 
 // ── STATUS ────────────────────────────────────────────────────────────────────
 function renderStatus(st){
-  const fs=st.flashscore||{}, espn=st.espn||{}, sc=st.sofascore||{}, oa=st.odds_api||{}, ba=st.bets_api||{};
+  const fs=st.flashscore||{}, espn=st.espn||{}, sc=st.sofascore||{}, oa=st.odds_api||{}, ba=st.bets_api||{}, sr=st.sportradar||{};
   const sources=[
     {name:'ESPN',ok:true,detail:'Live scores (always on)'},
+    {name:'Sportradar',ok:sr.key_set,detail:sr.key_set?`All tours+leagues · every ${sr.poll_interval_secs}s`:'No key — add SPORTRADAR_API_KEY (free trial)'},
     {name:'BetsAPI',ok:ba.token_set,detail:ba.token_set?`Live odds · ${ba.consecutive_failures||0} failures`:'No token — add BETS_API_TOKEN'},
     {name:'Sofascore',ok:!sc.blocked,detail:sc.blocked?'Blocked on cloud IP':'Available (serve stats)'},
     {name:'Flashscore',ok:fs.http_ok,detail:fs.http_ok?'OK':`${fs.consecutive_failures||0} failures`},
-    {name:'Odds API',ok:oa.key_set,detail:oa.key_set?`Every ${oa.poll_interval_secs}s`:'No API key'},
+    {name:'Odds API',ok:oa.key_set,detail:oa.key_set?`Upcoming + live odds · every ${oa.poll_interval_secs}s`:'No API key'},
   ];
   document.getElementById('sources').innerHTML=sources.map(s=>`
     <div class="status-card">
