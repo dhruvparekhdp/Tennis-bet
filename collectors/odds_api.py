@@ -107,7 +107,8 @@ class OddsApiCollector:
 
         now = datetime.now(timezone.utc)
         commence_time_to = (now + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        commence_time_from = (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # 12h lookback — tennis matches can run 3-4h; qualifiers start early
+        commence_time_from = (now - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         total_updated = 0
         total_fetched = 0

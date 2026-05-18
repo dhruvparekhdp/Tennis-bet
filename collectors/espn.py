@@ -21,12 +21,20 @@ from collectors.base import BaseCollector
 
 log = structlog.get_logger()
 
-# Main tours + secondary circuits — ESPN covers all of these with the same API shape
+# Main tours + secondary circuits + Grand Slam specific endpoints.
+# Each Grand Slam has its own scoreboard that covers qualifying + main draw.
+# Endpoints returning 4xx are silently skipped so adding extras is free.
 _TOUR_URLS = [
+    # Main tours (one featured tournament per tour at a time)
     "https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard",
     "https://site.api.espn.com/apis/site/v2/sports/tennis/wta/scoreboard",
     "https://site.api.espn.com/apis/site/v2/sports/tennis/atp-challenger/scoreboard",
     "https://site.api.espn.com/apis/site/v2/sports/tennis/wta-125/scoreboard",
+    # Grand Slam specific endpoints — covers qualifying + main draw
+    "https://site.api.espn.com/apis/site/v2/sports/tennis/french-open/scoreboard",
+    "https://site.api.espn.com/apis/site/v2/sports/tennis/wimbledon/scoreboard",
+    "https://site.api.espn.com/apis/site/v2/sports/tennis/us-open/scoreboard",
+    "https://site.api.espn.com/apis/site/v2/sports/tennis/australian-open/scoreboard",
 ]
 
 _SURFACE_MAP = {
