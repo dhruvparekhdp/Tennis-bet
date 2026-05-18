@@ -35,6 +35,7 @@ from collectors.bets_api import BetsAPICollector
 from collectors.espn import ESPNCollector
 from collectors.flashscore import FlashscoreCollector
 from collectors.football_espn import FootballESPNCollector
+from collectors.football_odds_api import FootballOddsApiCollector
 from collectors.historical_importer import run_import
 from collectors.odds_api import OddsApiCollector
 from collectors.slam_pbp_importer import run_slam_import
@@ -86,6 +87,7 @@ class AppRunner:
         # Football
         self.football_store = FootballStateStore()
         self.football_espn = FootballESPNCollector(self.football_store)
+        self.football_odds = FootballOddsApiCollector(self.football_store)
         self.football_engine = FootballEngine()
 
     async def _data_poll_job(self) -> None:
@@ -219,7 +221,15 @@ class AppRunner:
     async def _football_poll_job(self) -> None:
         try:
             await self.football_espn.fetch()
+            # Enrich with Odds API odds + upcoming matches (if key configured)
+            if settings.odds_api_key:
+                try:
+                    await self.football_odds.fetch(settings.odds_api_key)
+                except Exception:
+                    log.exception("football_odds_api_failed")
             for state in await self.football_store.get_all():
+                if state.is_scheduled:
+                    continue  # don't run signals on upcoming matches
                 try:
                     signals = self.football_engine.process(state)
                     for sig in signals:
@@ -389,6 +399,7 @@ class AppRunner:
             "football": {
                 "live_matches": 0,  # filled by health.py via football_store.count()
                 "signals_today": len(self.football_engine.get_recent_signals(24)),
+                "odds_api_football": bool(settings.odds_api_key),
             },
         }
 
