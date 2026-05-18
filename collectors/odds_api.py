@@ -159,12 +159,17 @@ class OddsApiCollector:
                     away = event.get("away_team", "?")
                     ct_str = event.get("commence_time", "")
                     is_live = False
+                    is_upcoming = False
+                    ct = None
                     try:
                         ct = datetime.fromisoformat(ct_str.replace("Z", "+00:00"))
                         mins_until = int((ct - now).total_seconds() / 60)
                         if mins_until <= 0:
                             status = f"LIVE ({-mins_until}m ago)"
                             is_live = True
+                        elif mins_until <= 180:  # show upcoming within 3h
+                            status = f"starts_in_{mins_until}m"
+                            is_upcoming = True
                         else:
                             status = f"starts_in_{mins_until}m"
                     except Exception:
@@ -178,9 +183,13 @@ class OddsApiCollector:
                         bookmakers=len(event.get("bookmakers", [])),
                     )
 
-                    if is_live:
+                    if is_live or is_upcoming:
                         try:
-                            match_id = await self._process_event(event, sport, now)
+                            match_id = await self._process_event(
+                                event, sport, now,
+                                is_scheduled=is_upcoming,
+                                start_time=ct,
+                            )
                             if match_id:
                                 current_live_ids.add(match_id)
                                 total_updated += 1
@@ -188,7 +197,7 @@ class OddsApiCollector:
                             log.exception("odds_api_event_error",
                                           event_id=event.get("id"), error=str(exc))
 
-        # Remove odds-created states that are no longer live
+        # Remove odds-created states that are no longer tracked
         for stale_id in self._odds_live_ids - current_live_ids:
             existing = await self.store.get(stale_id)
             if existing:
@@ -204,10 +213,17 @@ class OddsApiCollector:
             quota_used=quota_used,
         )
 
-    async def _process_event(self, event: dict, sport_key: str, now: datetime) -> str | None:
+    async def _process_event(
+        self,
+        event: dict,
+        sport_key: str,
+        now: datetime,
+        is_scheduled: bool = False,
+        start_time: datetime | None = None,
+    ) -> str | None:
         """
-        Update odds on an existing MatchState, or create a new one if the match is
-        live but not yet tracked by ESPN/Flashscore.
+        Update odds on an existing MatchState, or create/update a state for
+        live or upcoming (within 3h) matches not tracked by ESPN/BetsAPI.
         Returns the match_id that was updated/created, or None.
         """
         home_team: str = event.get("home_team", "")
@@ -269,16 +285,19 @@ class OddsApiCollector:
         tournament, surface = _sport_key_to_meta(sport_key)
 
         if existing_odds is not None:
-            # Update odds on the existing odds-created state
+            # Update odds and flip scheduled → live when commence_time passes
             existing_odds.odds_p1 = odds_home
             existing_odds.odds_p2 = odds_away
             existing_odds.odds_history.append(
                 OddsPoint(odds_p1=odds_home, odds_p2=odds_away, timestamp=datetime.utcnow())
             )
+            if not is_scheduled:
+                existing_odds.is_scheduled = False  # match started
             _save_snapshot(odds_id, odds_home, odds_away)
             log.info("odds_api_odds_state_updated", match_id=odds_id,
                      player1=home_team, odds_p1=odds_home,
-                     player2=away_team, odds_p2=odds_away)
+                     player2=away_team, odds_p2=odds_away,
+                     scheduled=is_scheduled)
             return odds_id
 
         # Create brand-new MatchState from odds data
@@ -304,6 +323,8 @@ class OddsApiCollector:
             game_log=[],
             match_duration_mins=0,
             timestamp=datetime.utcnow(),
+            is_scheduled=is_scheduled,
+            start_time=start_time,
         )
         await self.store.update(new_state)
         _save_snapshot(odds_id, odds_home, odds_away)

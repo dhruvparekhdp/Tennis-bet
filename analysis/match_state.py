@@ -55,6 +55,8 @@ class MatchState:
     game_log: list[int] = field(default_factory=list)
     match_duration_mins: int = 0
     timestamp: datetime = field(default_factory=datetime.utcnow)
+    is_scheduled: bool = False       # True = upcoming, not yet live
+    start_time: datetime | None = None
 
     # ── Derived helpers ────────────────────────────────────────────────────
 

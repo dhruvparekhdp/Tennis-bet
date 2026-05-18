@@ -57,8 +57,14 @@ async def _api_status(runner, request: web.Request) -> web.Response:
 async def _api_matches(runner, request: web.Request) -> web.Response:
     from analysis.win_probability import compute_win_probability
     states = await runner.store.get_all()
+    # Live first, upcoming sorted by start_time
+    live = [s for s in states if not s.is_scheduled]
+    soon = sorted(
+        [s for s in states if s.is_scheduled],
+        key=lambda s: s.start_time or datetime.utcnow(),
+    )
     matches = []
-    for s in states:
+    for s in live + soon:
         try:
             win_p1, win_p2 = compute_win_probability(s)
         except Exception:
@@ -94,6 +100,8 @@ async def _api_matches(runner, request: web.Request) -> web.Response:
             "game_log": s.game_log[-20:],
             "duration_mins": s.match_duration_mins,
             "source": s.match_id.split("_")[0],
+            "is_upcoming": s.is_scheduled,
+            "start_time": s.start_time.isoformat() if s.start_time else None,
         })
     return web.Response(text=json.dumps(matches), content_type="application/json")
 
@@ -479,6 +487,7 @@ function renderMatches(matches){
 }
 
 function renderMatch(m){
+  if(m.is_upcoming) return renderTennisUpcoming(m);
   const surf=SURFACE_CLASS[m.surface]||'';
   const surfLabel=m.surface.replace('_',' ');
   const hasOdds=m.odds_p1>1.01&&m.odds_p2>1.01;
@@ -630,6 +639,48 @@ function renderMatch(m){
   </div>`;
 
   return `<div class="match-card">${header}${players}${scoreboard}${probBar}${oddsRow}</div>`;
+}
+
+// ── TENNIS UPCOMING ───────────────────────────────────────────────────────────
+function renderTennisUpcoming(m){
+  const surf=SURFACE_CLASS[m.surface]||'';
+  const surfLabel=m.surface.replace('_',' ');
+  const hasOdds=m.odds_p1>1.01&&m.odds_p2>1.01;
+  const until=minsUntil(m.start_time);
+  const kt=fmtKickoff(m.start_time);
+  const favP1=hasOdds&&m.odds_p1<m.odds_p2;
+  return `<div class="match-card" style="opacity:.82">
+    <div class="mc-header">
+      <span class="source-tag" style="background:#1a2e1a;color:#6ee7b7">UPCOMING</span>
+      <span class="${surf}">${surfLabel}</span>
+      <span>&middot; ${esc(m.tournament)}</span>
+      <span style="margin-left:auto;font-size:11px;color:#6ee7b7;font-weight:700">⏰ ${esc(until||kt||'')}</span>
+    </div>
+    <div class="mc-players">
+      <div class="mc-player">
+        <div class="mc-name">${esc(m.player1)}</div>
+        ${hasOdds?`<div style="font-size:11px;color:#64748b;margin-top:3px">impl. ${Math.round(100/m.odds_p1)}%</div>`:''}
+      </div>
+      <div class="mc-center">
+        <div style="font-size:13px;color:#64748b;font-weight:700">vs</div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:4px">${esc(kt)}</div>
+      </div>
+      <div class="mc-player right">
+        <div class="mc-name">${esc(m.player2)}</div>
+        ${hasOdds?`<div style="font-size:11px;color:#64748b;margin-top:3px">impl. ${Math.round(100/m.odds_p2)}%</div>`:''}
+      </div>
+    </div>
+    ${hasOdds?`<div class="mc-odds-row">
+      <div class="mc-odds-box">
+        <div class="mc-odds-label">Back ${esc(m.player1.split(' ').pop())}</div>
+        <div class="mc-odds-val ${favP1?'fav':'dog'}">${m.odds_p1.toFixed(2)}</div>
+      </div>
+      <div class="mc-odds-box">
+        <div class="mc-odds-label">Back ${esc(m.player2.split(' ').pop())}</div>
+        <div class="mc-odds-val ${!favP1?'fav':'dog'}">${m.odds_p2.toFixed(2)}</div>
+      </div>
+    </div>`:''}
+  </div>`;
 }
 
 // ── SIGNALS ───────────────────────────────────────────────────────────────────
