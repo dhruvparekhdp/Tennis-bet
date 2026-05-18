@@ -66,7 +66,7 @@ _HALFTIME_STATUSES = {"STATUS_HALFTIME", "HALFTIME"}
 
 _SCHEDULED_STATUSES = {"STATUS_SCHEDULED", "SCHEDULED", "STATUS_PRE", "PRE"}
 
-_SOON_HOURS = 3  # show scheduled matches starting within this many hours
+_SOON_HOURS = 12  # show scheduled matches starting within this many hours
 
 
 def _parse_minute(status: dict) -> int:
