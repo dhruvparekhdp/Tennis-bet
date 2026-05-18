@@ -188,6 +188,41 @@ async def _api_signals(runner, request: web.Request) -> web.Response:
     return web.Response(text=json.dumps(signals), content_type="application/json")
 
 
+async def _api_debug(runner, request: web.Request) -> web.Response:
+    """Diagnostic endpoint — returns collector state, all stored match IDs, and timing."""
+    states = await runner.store.get_all()
+    fb_states = await runner.football_store.get_all()
+    uptime = int((datetime.utcnow() - _start_time).total_seconds())
+    return web.Response(
+        text=json.dumps({
+            "uptime_seconds": uptime,
+            "tennis_matches": [
+                {
+                    "match_id": s.match_id,
+                    "players": f"{s.player1_name} vs {s.player2_name}",
+                    "tournament": s.tournament,
+                    "score": f"{s.sets_p1}-{s.sets_p2} ({s.games_in_set_p1}-{s.games_in_set_p2})",
+                    "has_odds": s.odds_p1 > 1.01,
+                    "source": s.match_id.split("_")[0],
+                }
+                for s in states
+            ],
+            "football_matches": [
+                {
+                    "match_id": s.match_id,
+                    "teams": f"{s.home_team} vs {s.away_team}",
+                    "tournament": s.tournament,
+                    "minute": s.minute,
+                    "is_scheduled": s.is_scheduled,
+                }
+                for s in fb_states
+            ],
+            "collector_status": runner.get_status(),
+        }),
+        content_type="application/json",
+    )
+
+
 async def _health(runner, request: web.Request) -> web.Response:
     count = await runner.store.count()
     uptime = int((datetime.utcnow() - _start_time).total_seconds())
@@ -436,7 +471,10 @@ function fmtTime(iso){const d=new Date(iso+'Z');return d.toLocaleTimeString([],{
 // ── MATCHES ───────────────────────────────────────────────────────────────────
 function renderMatches(matches){
   const el=document.getElementById('matches');
-  if(!matches.length){el.innerHTML='<div class="empty">No live matches tracked right now</div>';return;}
+  if(!matches.length){
+    el.innerHTML='<div class="empty">No live matches tracked right now.<br><span style="font-size:11px;color:#334155">ESPN updates every 30s · BetsAPI covers all tours if token is set · Odds API shows in-play matches</span></div>';
+    return;
+  }
   el.innerHTML=matches.map(renderMatch).join('');
 }
 
@@ -445,8 +483,48 @@ function renderMatch(m){
   const surfLabel=m.surface.replace('_',' ');
   const hasOdds=m.odds_p1>1.01&&m.odds_p2>1.01;
   const hasScore=m.sets_p1>0||m.sets_p2>0||m.games_p1>0||m.games_p2>0;
+  const isOddsOnly=m.source==='odds';
   const sets=m.set_scores||[];
   const numSets=sets.length;
+
+  // Odds-only match (no live score data from ESPN/BetsAPI)
+  if(isOddsOnly){
+    const favP1=hasOdds&&m.odds_p1<m.odds_p2;
+    const impliedP1=hasOdds?Math.round(100/m.odds_p1)+'%':'—';
+    const impliedP2=hasOdds?Math.round(100/m.odds_p2)+'%':'—';
+    return `<div class="match-card">
+      <div class="mc-header">
+        <span class="source-tag" style="background:#1a2e1a;color:#86efac">LIVE</span>
+        <span class="${surf}">${surfLabel}</span>
+        <span>&middot; ${esc(m.tournament)}</span>
+        <span style="margin-left:auto;font-size:10px;color:#475569">odds only · no score feed</span>
+      </div>
+      <div class="mc-players">
+        <div class="mc-player">
+          <div class="mc-name">${esc(m.player1)}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:3px">impl. ${impliedP1}</div>
+        </div>
+        <div class="mc-center">
+          <div class="mc-set-label">IN PLAY</div>
+          <div style="font-size:20px;font-weight:900;color:#475569;letter-spacing:2px">vs</div>
+        </div>
+        <div class="mc-player right">
+          <div class="mc-name">${esc(m.player2)}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:3px">impl. ${impliedP2}</div>
+        </div>
+      </div>
+      <div class="mc-odds-row">
+        <div class="mc-odds-box">
+          <div class="mc-odds-label">Back ${esc(m.player1.split(' ').pop())}</div>
+          <div class="mc-odds-val ${hasOdds?(favP1?'fav':'dog'):'none'}">${hasOdds?m.odds_p1.toFixed(2):'—'}</div>
+        </div>
+        <div class="mc-odds-box">
+          <div class="mc-odds-label">Back ${esc(m.player2.split(' ').pop())}</div>
+          <div class="mc-odds-val ${hasOdds?(!favP1?'fav':'dog'):'none'}">${hasOdds?m.odds_p2.toFixed(2):'—'}</div>
+        </div>
+      </div>
+    </div>`;
+  }
 
   // Header
   const tbBadge=m.is_tiebreak?'<span style="background:#7c3aed;color:#ddd6fe;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700;margin-left:auto">TIEBREAK</span>':'';
@@ -866,6 +944,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/signals", lambda req: _api_signals(runner, req))
     app.router.add_get("/api/football/matches", lambda req: _api_football_matches(runner, req))
     app.router.add_get("/api/football/signals", lambda req: _api_football_signals(runner, req))
+    app.router.add_get("/api/debug", lambda req: _api_debug(runner, req))
     return app
 
 
