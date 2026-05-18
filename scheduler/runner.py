@@ -291,6 +291,7 @@ class AppRunner:
             seconds=settings.sofascore_poll_interval,
             id="data_poll",
             max_instances=1,
+            next_run_time=datetime.now(timezone.utc),  # run immediately on startup
         )
         self.scheduler.add_job(
             self._schedule_job,

@@ -62,12 +62,13 @@ class ESPNCollector(BaseCollector):
             for url in _TOUR_URLS:
                 try:
                     resp = await client.get(url, params={"dates": today, "limit": "100"})
+                    tour_name = url.split("/tennis/")[1].split("/")[0]
                     if resp.status_code >= 400:
-                        continue  # 404 = not active, 403 = blocked, etc — all silently skipped
+                        log.debug("espn_tour_skipped", tour=tour_name, status=resp.status_code)
+                        continue
                     data = resp.json()
                     tour_events = data.get("events", [])
                     events.extend(tour_events)
-                    tour_name = url.split("/tennis/")[1].split("/")[0]
                     log.info("espn_fetched", tour=tour_name, count=len(tour_events))
                 except Exception:
                     log.exception("espn_fetch_failed", url=url)
