@@ -196,6 +196,26 @@ async def _api_signals(runner, request: web.Request) -> web.Response:
     return web.Response(text=json.dumps(signals), content_type="application/json")
 
 
+async def _api_h2h(runner, request: web.Request) -> web.Response:
+    p1 = request.query.get("p1", "")
+    p2 = request.query.get("p2", "")
+    surface = request.query.get("surface", None)
+    if not p1 or not p2:
+        return web.Response(text=json.dumps({"error": "p1 and p2 required"}),
+                            content_type="application/json", status=400)
+    from storage.database import AsyncSessionFactory
+    from storage.repository import Repository
+    async with AsyncSessionFactory() as session:
+        repo = Repository(session)
+        h2h = await repo.get_h2h(p1, p2, surface)
+        p1_form = await repo.get_player_form(p1, surface)
+        p2_form = await repo.get_player_form(p2, surface)
+    return web.Response(
+        text=json.dumps({"h2h": h2h, "p1_form": p1_form, "p2_form": p2_form}),
+        content_type="application/json",
+    )
+
+
 async def _api_debug(runner, request: web.Request) -> web.Response:
     """Diagnostic endpoint — returns collector state, all stored match IDs, and timing."""
     states = await runner.store.get_all()
@@ -486,6 +506,127 @@ function renderMatches(matches){
   el.innerHTML=matches.map(renderMatch).join('');
 }
 
+// H2H cache so we don't re-fetch on every render
+const _h2hCache={};
+async function loadH2H(matchId,p1,p2,surface){
+  const key=matchId;
+  if(_h2hCache[key]) return _h2hCache[key];
+  try{
+    const r=await fetch(`/api/h2h?p1=${encodeURIComponent(p1)}&p2=${encodeURIComponent(p2)}&surface=${encodeURIComponent(surface||'')}`);
+    const d=await r.json();
+    _h2hCache[key]=d;
+    return d;
+  }catch(e){return null;}
+}
+
+function toggleH2H(matchId,p1,p2,surface){
+  const panel=document.getElementById('h2h-'+matchId);
+  if(!panel) return;
+  const isOpen=panel.style.display!=='none';
+  if(isOpen){panel.style.display='none';return;}
+  panel.style.display='block';
+  if(panel.dataset.loaded) return;
+  panel.innerHTML='<div style="padding:16px;color:#64748b;text-align:center;font-size:12px">Loading H2H data…</div>';
+  loadH2H(matchId,p1,p2,surface).then(data=>{
+    if(!data){panel.innerHTML='<div style="padding:12px;color:#475569;font-size:11px;text-align:center">No H2H data in database yet</div>';return;}
+    panel.innerHTML=renderH2HPanel(data,p1,p2);
+    panel.dataset.loaded='1';
+  });
+}
+
+function renderH2HPanel(data,p1,p2){
+  const h=data.h2h||{};
+  const f1=data.p1_form||{};
+  const f2=data.p2_form||{};
+  const p1s=p1.split(' ').pop();
+  const p2s=p2.split(' ').pop();
+  const total=h.total_meetings||0;
+
+  // H2H header
+  let h2hHeader='<div style="padding:10px 12px;background:#0f172a;border-bottom:1px solid #1e293b">';
+  if(total===0){
+    h2hHeader+='<div style="color:#475569;font-size:12px;text-align:center">No historical H2H found in database</div>';
+  } else {
+    const p1pct=total>0?Math.round(h.p1_wins/total*100):50;
+    const p2pct=100-p1pct;
+    h2hHeader+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="font-size:13px;font-weight:800;color:#f1f5f9">${h.p1_wins}</span>
+      <span style="font-size:10px;color:#64748b;font-weight:600;flex:1;text-align:center">H2H · ${total} meetings</span>
+      <span style="font-size:13px;font-weight:800;color:#f1f5f9">${h.p2_wins}</span>
+    </div>
+    <div style="display:flex;height:6px;border-radius:3px;overflow:hidden;margin-bottom:4px">
+      <div style="width:${p1pct}%;background:#38bdf8"></div>
+      <div style="width:${p2pct}%;background:#f97316"></div>
+    </div>`;
+    if(h.surface_meetings>0){
+      h2hHeader+=`<div style="display:flex;justify-content:space-between;font-size:10px;color:#64748b;margin-top:4px">
+        <span>${esc(p1s)} ${h.p1_surface_wins}-${h.p2_surface_wins} ${esc(p2s)} on surface</span>
+        <span>${h.surface_meetings} matches</span>
+      </div>`;
+    }
+  }
+  h2hHeader+='</div>';
+
+  // Last meetings
+  let meetings='';
+  if((h.last_meetings||[]).length>0){
+    meetings='<div style="padding:8px 12px;border-bottom:1px solid #1e293b">';
+    meetings+=`<div style="font-size:10px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Recent Meetings</div>`;
+    for(const m of h.last_meetings){
+      const isP1Win=m.winner==='p1';
+      const surfColor={clay:'#f97316',grass:'#22c55e',hard:'#38bdf8',indoor_hard:'#818cf8'}[m.surface]||'#94a3b8';
+      meetings+=`<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #0f172a;font-size:11px">
+        <span style="color:#475569;width:36px;flex-shrink:0">${m.year}</span>
+        <span style="color:${surfColor};font-size:9px;width:8px;flex-shrink:0">●</span>
+        <span style="color:#64748b;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.tournament)}</span>
+        <span style="font-size:9px;color:#475569;width:28px;text-align:center">${m.round||''}</span>
+        <span style="font-weight:700;color:${isP1Win?'#38bdf8':'#f97316'};width:60px;text-align:right;flex-shrink:0">${esc(isP1Win?p1s:p2s)}</span>
+        <span style="color:#334155;width:4px">·</span>
+        <span style="color:#94a3b8;width:70px;flex-shrink:0;font-size:10px">${esc(m.score)}</span>
+      </div>`;
+    }
+    meetings+='</div>';
+  }
+
+  // Form blocks
+  function formBubbles(form){
+    return (form.recent||[]).map(f=>`<span style="display:inline-block;width:18px;height:18px;border-radius:3px;background:${f.won?'#166534':'#7f1d1d'};color:${f.won?'#4ade80':'#fca5a5'};font-size:9px;font-weight:800;line-height:18px;text-align:center" title="${f.won?'W':'L'} vs ${f.opponent} (${f.tournament})">${f.won?'W':'L'}</span>`).join('');
+  }
+
+  function statRow(label,v1,v2,higherIsBetter=true){
+    const n1=parseFloat(v1)||0, n2=parseFloat(v2)||0;
+    const p1b=higherIsBetter?(n1>n2):(n1<n2);
+    const p2b=higherIsBetter?(n2>n1):(n2<n1);
+    return `<tr>
+      <td style="font-size:12px;font-weight:${p1b?'800':'500'};color:${p1b?'#38bdf8':'#94a3b8'};padding:4px 0;text-align:left">${v1}</td>
+      <td style="font-size:10px;color:#475569;text-align:center;padding:4px 8px">${label}</td>
+      <td style="font-size:12px;font-weight:${p2b?'800':'500'};color:${p2b?'#f97316':'#94a3b8'};padding:4px 0;text-align:right">${v2}</td>
+    </tr>`;
+  }
+
+  const stats=`<div style="padding:8px 12px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div>
+        <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">${esc(p1s)} FORM (last ${f1.total||0})</div>
+        <div style="display:flex;gap:2px;flex-wrap:wrap">${formBubbles(f1)}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">${esc(p2s)} FORM (last ${f2.total||0})</div>
+        <div style="display:flex;gap:2px;flex-wrap:wrap;justify-content:flex-end">${formBubbles(f2)}</div>
+      </div>
+    </div>
+    <table style="width:100%;border-collapse:collapse">
+      ${statRow('Win Rate',`${f1.win_rate||0}%`,`${f2.win_rate||0}%`)}
+      ${statRow('1st Serve %',`${f1.avg_first_serve_pct||0}%`,`${f2.avg_first_serve_pct||0}%`)}
+      ${statRow('Aces/Match',f1.avg_aces||0,f2.avg_aces||0)}
+      ${statRow('BP Save %',`${f1.bp_save_pct||0}%`,`${f2.bp_save_pct||0}%`)}
+      ${f1.surface_win_rate!=null?statRow('Surface Win %',`${f1.surface_win_rate}%`,`${f2.surface_win_rate||0}%`):''}
+    </table>
+  </div>`;
+
+  return h2hHeader+meetings+stats;
+}
+
 function renderMatch(m){
   if(m.is_upcoming) return renderTennisUpcoming(m);
   const surf=SURFACE_CLASS[m.surface]||'';
@@ -501,6 +642,7 @@ function renderMatch(m){
     const favP1=hasOdds&&m.odds_p1<m.odds_p2;
     const impliedP1=hasOdds?Math.round(100/m.odds_p1)+'%':'—';
     const impliedP2=hasOdds?Math.round(100/m.odds_p2)+'%':'—';
+    const mid2=m.match_id.replace(/[^a-z0-9]/gi,'_');
     return `<div class="match-card">
       <div class="mc-header">
         <span class="source-tag" style="background:#1a2e1a;color:#86efac">LIVE</span>
@@ -532,6 +674,12 @@ function renderMatch(m){
           <div class="mc-odds-val ${hasOdds?(!favP1?'fav':'dog'):'none'}">${hasOdds?m.odds_p2.toFixed(2):'—'}</div>
         </div>
       </div>
+      <div onclick="toggleH2H('${mid2}','${esc(m.player1)}','${esc(m.player2)}','${m.surface}')"
+        style="padding:8px 12px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;background:#0c1929;border-top:1px solid #1e293b">
+        <span style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em">H2H &amp; Player Stats</span>
+        <span style="font-size:14px;color:#475569">▾</span>
+      </div>
+      <div id="h2h-${mid2}" style="display:none;border-top:1px solid #1e293b"></div>
     </div>`;
   }
 
@@ -638,7 +786,15 @@ function renderMatch(m){
     </div>
   </div>`;
 
-  return `<div class="match-card">${header}${players}${scoreboard}${probBar}${oddsRow}</div>`;
+  const mid=m.match_id.replace(/[^a-z0-9]/gi,'_');
+  const h2hBtn=`<div onclick="toggleH2H('${mid}','${esc(m.player1)}','${esc(m.player2)}','${m.surface}')"
+    style="padding:8px 12px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;background:#0c1929;border-top:1px solid #1e293b">
+    <span style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em">H2H &amp; Player Stats</span>
+    <span style="font-size:14px;color:#475569">▾</span>
+  </div>
+  <div id="h2h-${mid}" style="display:none;border-top:1px solid #1e293b"></div>`;
+
+  return `<div class="match-card">${header}${players}${scoreboard}${probBar}${oddsRow}${h2hBtn}</div>`;
 }
 
 // ── TENNIS UPCOMING ───────────────────────────────────────────────────────────
@@ -997,6 +1153,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/football/matches", lambda req: _api_football_matches(runner, req))
     app.router.add_get("/api/football/signals", lambda req: _api_football_signals(runner, req))
     app.router.add_get("/api/debug", lambda req: _api_debug(runner, req))
+    app.router.add_get("/api/h2h", lambda req: _api_h2h(runner, req))
     return app
 
 
