@@ -282,3 +282,126 @@ class Repository:
         for row in result.scalars():
             await self.session.delete(row)
         await self.session.commit()
+
+    async def get_h2h(
+        self, player1: str, player2: str, surface: str | None = None
+    ) -> dict:
+        """Head-to-head record from MatchRecord historical data. Uses last-name matching."""
+        from sqlalchemy import or_, and_
+        p1_last = player1.strip().split()[-1].lower()
+        p2_last = player2.strip().split()[-1].lower()
+
+        q = (
+            select(MatchRecord)
+            .where(
+                or_(
+                    and_(
+                        MatchRecord.winner_name.ilike(f"%{p1_last}%"),
+                        MatchRecord.loser_name.ilike(f"%{p2_last}%"),
+                    ),
+                    and_(
+                        MatchRecord.winner_name.ilike(f"%{p2_last}%"),
+                        MatchRecord.loser_name.ilike(f"%{p1_last}%"),
+                    ),
+                )
+            )
+            .order_by(MatchRecord.year.desc())
+            .limit(30)
+        )
+        result = await self.session.execute(q)
+        records = list(result.scalars().all())
+
+        p1_wins = sum(1 for r in records if p1_last in r.winner_name.lower())
+        p2_wins = len(records) - p1_wins
+
+        on_surface = [r for r in records if r.surface.lower() == (surface or "").lower()] if surface else []
+        p1_sw = sum(1 for r in on_surface if p1_last in r.winner_name.lower())
+        p2_sw = len(on_surface) - p1_sw
+
+        last_meetings = []
+        for r in records[:8]:
+            winner_is_p1 = p1_last in r.winner_name.lower()
+            last_meetings.append({
+                "year": r.year,
+                "tournament": r.tourney_name,
+                "surface": r.surface,
+                "round": r.round,
+                "winner": "p1" if winner_is_p1 else "p2",
+                "winner_name": r.winner_name,
+                "loser_name": r.loser_name,
+                "score": r.score,
+            })
+
+        return {
+            "total_meetings": len(records),
+            "p1_wins": p1_wins,
+            "p2_wins": p2_wins,
+            "surface_meetings": len(on_surface),
+            "p1_surface_wins": p1_sw,
+            "p2_surface_wins": p2_sw,
+            "last_meetings": last_meetings,
+        }
+
+    async def get_player_form(self, player_name: str, surface: str | None = None, n: int = 15) -> dict:
+        """Last n matches for a player with win/loss, surface stats, serve averages."""
+        from sqlalchemy import or_
+        last = player_name.strip().split()[-1].lower()
+
+        q = (
+            select(MatchRecord)
+            .where(
+                or_(
+                    MatchRecord.winner_name.ilike(f"%{last}%"),
+                    MatchRecord.loser_name.ilike(f"%{last}%"),
+                )
+            )
+            .order_by(MatchRecord.year.desc())
+            .limit(n)
+        )
+        result = await self.session.execute(q)
+        records = list(result.scalars().all())
+
+        matches = []
+        total_aces, total_first_svpt, total_svpt, total_bp_saved, total_bp_faced = 0, 0, 0, 0, 0
+        for r in records:
+            won = last in r.winner_name.lower()
+            if won:
+                aces, svpt, first_in = r.w_ace, r.w_svpt, r.w_1st_in
+                bp_saved, bp_faced = r.w_bp_saved, r.w_bp_faced
+                opponent = r.loser_name
+            else:
+                aces, svpt, first_in = r.l_ace, r.l_svpt, r.l_1st_in
+                bp_saved, bp_faced = r.l_bp_saved, r.l_bp_faced
+                opponent = r.winner_name
+
+            fsp = round(first_in / svpt * 100) if svpt > 0 else 0
+            matches.append({
+                "year": r.year, "tournament": r.tourney_name[:22],
+                "surface": r.surface, "won": won,
+                "opponent": opponent.split()[-1] if opponent else "?",
+                "score": r.score[:20], "aces": aces, "first_serve_pct": fsp,
+            })
+            total_aces += aces
+            total_first_svpt += first_in
+            total_svpt += svpt
+            total_bp_saved += bp_saved
+            total_bp_faced += bp_faced
+
+        wins = sum(1 for m in matches if m["won"])
+        n_matches = len(matches)
+
+        # Surface-specific win rate
+        surf_matches = [m for m in matches if m["surface"].lower() == (surface or "").lower()] if surface else []
+        surf_wins = sum(1 for m in surf_matches if m["won"])
+
+        return {
+            "recent": matches[:10],
+            "wins": wins,
+            "total": n_matches,
+            "win_rate": round(wins / n_matches * 100) if n_matches > 0 else 0,
+            "surface_win_rate": round(surf_wins / len(surf_matches) * 100) if surf_matches else None,
+            "avg_aces": round(total_aces / n_matches, 1) if n_matches > 0 else 0,
+            "avg_first_serve_pct": round(total_first_svpt / total_svpt * 100) if total_svpt > 0 else 0,
+            "bp_save_pct": round(total_bp_saved / total_bp_faced * 100) if total_bp_faced > 0 else 0,
+        }
+
