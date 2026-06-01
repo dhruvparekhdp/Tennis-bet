@@ -216,6 +216,87 @@ async def _api_h2h(runner, request: web.Request) -> web.Response:
     )
 
 
+async def _api_ingest(runner, request: web.Request) -> web.Response:
+    """Receive match states pushed from a laptop-based Flashscore scraper."""
+    import structlog as _log
+    from config.settings import settings
+    from analysis.match_state import MatchState, ServeStats
+
+    key = request.headers.get("X-Ingest-Key", "")
+    if not settings.ingest_api_key or key != settings.ingest_api_key:
+        return web.Response(
+            text=json.dumps({"error": "unauthorized"}),
+            content_type="application/json",
+            status=401,
+        )
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.Response(
+            text=json.dumps({"error": "invalid JSON"}),
+            content_type="application/json",
+            status=400,
+        )
+
+    matches = data.get("matches", [])
+    count = 0
+    pushed_ids: set[str] = set()
+    for m in matches:
+        try:
+            ts = datetime.fromisoformat(m["timestamp"]) if m.get("timestamp") else datetime.utcnow()
+            st = datetime.fromisoformat(m["start_time"]) if m.get("start_time") else None
+            sp1 = m.get("serve_stats_p1", {})
+            sp2 = m.get("serve_stats_p2", {})
+            state = MatchState(
+                match_id=m["match_id"],
+                player1_name=m["player1_name"],
+                player2_name=m["player2_name"],
+                surface=m["surface"],
+                tournament=m["tournament"],
+                current_server=m.get("current_server", 0),
+                sets_p1=m.get("sets_p1", 0),
+                sets_p2=m.get("sets_p2", 0),
+                games_in_set_p1=m.get("games_in_set_p1", 0),
+                games_in_set_p2=m.get("games_in_set_p2", 0),
+                current_set=m.get("current_set", 1),
+                is_tiebreak=m.get("is_tiebreak", False),
+                serve_stats_p1=ServeStats(
+                    first_serve_pct=sp1.get("first_serve_pct", 0.6),
+                    aces=sp1.get("aces", 0),
+                    double_faults=sp1.get("double_faults", 0),
+                ),
+                serve_stats_p2=ServeStats(
+                    first_serve_pct=sp2.get("first_serve_pct", 0.6),
+                    aces=sp2.get("aces", 0),
+                    double_faults=sp2.get("double_faults", 0),
+                ),
+                odds_p1=m.get("odds_p1", 0.0),
+                odds_p2=m.get("odds_p2", 0.0),
+                game_log=m.get("game_log", []),
+                match_duration_mins=m.get("match_duration_mins", 0),
+                timestamp=ts,
+                is_scheduled=m.get("is_scheduled", False),
+                start_time=st,
+            )
+            await runner.store.update(state)
+            pushed_ids.add(state.match_id)
+            count += 1
+        except Exception as exc:
+            _log.get_logger().warning("ingest_match_failed", error=str(exc))
+
+    # Remove stale pushed matches that are no longer in the push payload
+    for s in await runner.store.get_all():
+        if s.match_id.startswith("fs_") and s.match_id not in pushed_ids:
+            await runner.store.remove(s.match_id)
+
+    _log.get_logger().info("ingest_received", count=count)
+    return web.Response(
+        text=json.dumps({"ok": True, "count": count}),
+        content_type="application/json",
+    )
+
+
 async def _api_debug(runner, request: web.Request) -> web.Response:
     """Diagnostic endpoint — returns collector state, all stored match IDs, and timing."""
     states = await runner.store.get_all()
@@ -1154,6 +1235,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/football/signals", lambda req: _api_football_signals(runner, req))
     app.router.add_get("/api/debug", lambda req: _api_debug(runner, req))
     app.router.add_get("/api/h2h", lambda req: _api_h2h(runner, req))
+    app.router.add_post("/api/ingest", lambda req: _api_ingest(runner, req))
     return app
 
 

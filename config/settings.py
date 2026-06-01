@@ -63,5 +63,9 @@ class Settings(BaseSettings):
     # Tournament filter — "tier1" = Slams + Masters 1000/WTA 1000 only, "all" = everything
     tournament_tier: str = "tier1"
 
+    # Push-client ingest — shared secret between your laptop's push_client.py and Render.
+    # Set INGEST_API_KEY in Render env vars; pass the same value via --key to push_client.py.
+    ingest_api_key: str = ""
+
 
 settings = Settings()  # type: ignore[call-arg]
