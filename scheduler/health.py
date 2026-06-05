@@ -656,7 +656,7 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   </section>
 </div>
 
-<footer>Auto-refreshes every 30s &middot; <span id="last-updated">&mdash;</span> &middot; <a href="/data" style="color:#38bdf8;text-decoration:none">🗄️ Database dump</a></footer>
+<footer>Auto-refreshes every 30s &middot; <span id="last-updated">&mdash;</span> &middot; <a href="/data" style="color:#38bdf8;text-decoration:none">🗄️ DB Dump</a> &middot; <a href="/api/debug/collectors" style="color:#a78bfa;text-decoration:none">🔬 Collector Debug</a></footer>
 
 <script>
 const SURFACE_CLASS={clay:'surface-clay',grass:'surface-grass',hard:'surface-hard',indoor_hard:'surface-indoor_hard'};
@@ -1484,6 +1484,149 @@ load();
 </html>"""
 
 
+async def _api_collectors_debug(runner, request: web.Request) -> web.Response:
+    """
+    Live diagnostic: fires every cloud-safe collector once and returns raw results.
+    Helps diagnose why the dashboard shows 0 matches.
+    GET /api/debug/collectors
+    """
+    import traceback
+    from datetime import timezone
+
+    from config.settings import settings
+
+    out: dict = {
+        "generated_at_ist": (
+            datetime.utcnow().replace(tzinfo=timezone.utc)
+            .astimezone(__import__("zoneinfo").ZoneInfo("Asia/Kolkata"))
+            .strftime("%Y-%m-%d %H:%M:%S IST")
+        ),
+        "collectors": {},
+    }
+
+    # ── Odds API ──────────────────────────────────────────────────────────────
+    if settings.odds_api_key:
+        import httpx as _httpx
+        try:
+            key = settings.odds_api_key
+            async with _httpx.AsyncClient(timeout=12) as c:
+                sports_resp = await c.get(
+                    "https://api.the-odds-api.com/v4/sports/",
+                    params={"apiKey": key, "all": "true"})
+                all_sports = sports_resp.json() if sports_resp.status_code == 200 else []
+                tennis_keys = [s["key"] for s in all_sports if "tennis" in s.get("key","")]
+                active_tennis = [s for s in all_sports
+                                 if "tennis" in s.get("key","") and s.get("active")]
+
+                # Fetch odds for each active key
+                sample_events: list[dict] = []
+                for sport_key in (active_tennis or [{"key": "tennis_atp"}, {"key": "tennis_wta"}])[:4]:
+                    sk = sport_key.get("key", sport_key) if isinstance(sport_key, dict) else sport_key
+                    r = await c.get(
+                        f"https://api.the-odds-api.com/v4/sports/{sk}/odds/",
+                        params={"apiKey": key, "regions": "eu,uk,us",
+                                "markets": "h2h", "oddsFormat": "decimal"})
+                    if r.status_code == 200:
+                        evs = r.json()
+                        for e in evs[:3]:
+                            sample_events.append({
+                                "sport": sk,
+                                "match": f"{e.get('home_team')} vs {e.get('away_team')}",
+                                "commence_time": e.get("commence_time"),
+                                "bookmakers": len(e.get("bookmakers", [])),
+                            })
+
+            out["collectors"]["odds_api"] = {
+                "status": "ok",
+                "all_tennis_keys": tennis_keys,
+                "active_tennis_keys": [s.get("key") for s in active_tennis],
+                "quota_remaining": runner.odds_api.quota_remaining,
+                "sample_events": sample_events,
+            }
+        except Exception:
+            out["collectors"]["odds_api"] = {"status": "error", "detail": traceback.format_exc()[-400:]}
+    else:
+        out["collectors"]["odds_api"] = {"status": "no_key"}
+
+    # ── Sportradar ────────────────────────────────────────────────────────────
+    if settings.sportradar_api_key:
+        import httpx as _httpx
+        key = settings.sportradar_api_key
+        try:
+            today = datetime.utcnow().strftime("%Y-%m-%d")
+            async with _httpx.AsyncClient(timeout=12) as c:
+                live_r = await c.get(
+                    "https://api.sportradar.com/tennis/trial/v3/en/schedules/live/summaries.json",
+                    headers={"x-api-key": key})
+                sched_r = await c.get(
+                    f"https://api.sportradar.com/tennis/trial/v3/en/schedules/{today}/schedule.json",
+                    headers={"x-api-key": key})
+
+            def _sr_sample(data, key_name):
+                items = data.get(key_name, []) if isinstance(data, dict) else []
+                out = []
+                for item in items[:5]:
+                    ev = item.get("sport_event", item)
+                    comps = ev.get("competitors", [])
+                    p1 = comps[0].get("name", "?") if comps else "?"
+                    p2 = comps[1].get("name", "?") if len(comps) > 1 else "?"
+                    st = (item.get("sport_event_status") or {}).get("status", ev.get("status","?"))
+                    out.append({"match": f"{p1} vs {p2}", "status": st,
+                                "start": ev.get("start_time") or ev.get("scheduled")})
+                return out
+
+            out["collectors"]["sportradar"] = {
+                "live_status": live_r.status_code,
+                "schedule_status": sched_r.status_code,
+                "live_count": len(live_r.json().get("summaries", [])) if live_r.status_code == 200 else 0,
+                "schedule_count": len(sched_r.json().get("sport_events", [])) if sched_r.status_code == 200 else 0,
+                "live_sample": _sr_sample(live_r.json() if live_r.status_code == 200 else {}, "summaries"),
+                "schedule_sample": _sr_sample(sched_r.json() if sched_r.status_code == 200 else {}, "sport_events"),
+            }
+        except Exception:
+            out["collectors"]["sportradar"] = {"status": "error", "detail": traceback.format_exc()[-400:]}
+    else:
+        out["collectors"]["sportradar"] = {"status": "no_key"}
+
+    # ── ESPN (cloud-safe check) ───────────────────────────────────────────────
+    import httpx as _httpx
+    try:
+        today = datetime.utcnow().strftime("%Y%m%d")
+        async with _httpx.AsyncClient(timeout=8) as c:
+            r = await c.get(
+                "https://site.api.espn.com/apis/site/v2/sports/tennis/french-open/scoreboard",
+                params={"dates": today, "limit": "20"})
+        events = r.json().get("events", []) if r.status_code == 200 else []
+        statuses: dict[str, int] = {}
+        for e in events:
+            s = e.get("status", {}).get("type", {}).get("name", "?")
+            statuses[s] = statuses.get(s, 0) + 1
+        out["collectors"]["espn"] = {
+            "status_code": r.status_code,
+            "events": len(events),
+            "statuses": statuses,
+            "blocked": r.status_code == 403,
+        }
+    except Exception:
+        out["collectors"]["espn"] = {"status": "error", "detail": traceback.format_exc()[-200:]}
+
+    # ── In-memory store ───────────────────────────────────────────────────────
+    all_states = await runner.store.get_all()
+    out["store"] = {
+        "total": len(all_states),
+        "live": sum(1 for s in all_states if not s.is_scheduled),
+        "scheduled": sum(1 for s in all_states if s.is_scheduled),
+        "matches": [
+            {"id": s.match_id, "p1": s.player1_name, "p2": s.player2_name,
+             "tournament": s.tournament, "scheduled": s.is_scheduled}
+            for s in all_states[:20]
+        ],
+    }
+
+    return web.Response(text=json.dumps(out, default=str, indent=2),
+                        content_type="application/json")
+
+
 async def _api_tables(runner, request: web.Request) -> web.Response:
     """Dump every table in the database (reflected, so it covers all tables).
 
@@ -1564,6 +1707,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/football/matches", lambda req: _api_football_matches(runner, req))
     app.router.add_get("/api/football/signals", lambda req: _api_football_signals(runner, req))
     app.router.add_get("/api/debug", lambda req: _api_debug(runner, req))
+    app.router.add_get("/api/debug/collectors", lambda req: _api_collectors_debug(runner, req))
     app.router.add_get("/api/h2h", lambda req: _api_h2h(runner, req))
     app.router.add_get("/api/scalping", lambda req: _api_scalping(runner, req))
     app.router.add_post("/api/ingest", lambda req: _api_ingest(runner, req))
