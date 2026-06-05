@@ -11,6 +11,7 @@ Limitations vs Sofascore:
 - Score data is slightly less granular (no point-level)
 """
 from datetime import datetime, timezone
+from dateutil import parser as _dtparser
 
 import httpx
 import structlog
@@ -96,19 +97,34 @@ class ESPNCollector(BaseCollector):
             if state.match_id.startswith("espn_") and state.match_id not in live_ids:
                 await self.store.remove(state.match_id)
 
-        log.info("espn_collector_done", live_matches=len(live_ids))
+        live_count = sum(1 for s in await self.store.get_all()
+                         if s.match_id in live_ids and not s.is_scheduled)
+        sched_count = len(live_ids) - live_count
+        log.info("espn_collector_done", live_matches=live_count, scheduled=sched_count)
 
     _LIVE_STATUSES = {
         "STATUS_IN_PROGRESS", "STATUS_LIVE", "STATUS_PLAY",
-        "STATUS_HALFTIME", "STATUS_OVERTIME",  # rare but seen in ESPN data
-        "IN_PROGRESS", "LIVE", "PLAYING",       # alternative formats
+        "STATUS_HALFTIME", "STATUS_OVERTIME",
+        "IN_PROGRESS", "LIVE", "PLAYING",
+    }
+    _SCHEDULED_STATUSES = {
+        "STATUS_SCHEDULED", "STATUS_PRE", "SCHEDULED", "PRE_GAME",
+        "STATUS_POSTPONED", "STATUS_DELAYED",
+    }
+    _FINAL_STATUSES = {
+        "STATUS_FINAL", "STATUS_FULL_TIME", "FINAL", "COMPLETED",
+        "STATUS_RETIRED", "STATUS_WALKOVER",
     }
 
     async def _parse_event(self, event: dict) -> MatchState | None:
         status_obj = event.get("status", {}).get("type", {})
         status_type = status_obj.get("name", "")
         status_detail = status_obj.get("description", "")
-        if status_type not in self._LIVE_STATUSES:
+
+        is_live = status_type in self._LIVE_STATUSES
+        is_scheduled = status_type in self._SCHEDULED_STATUSES
+
+        if not is_live and not is_scheduled:
             log.debug(
                 "espn_event_skipped",
                 event_id=event.get("id"),
@@ -191,6 +207,18 @@ class ESPNCollector(BaseCollector):
 
         current_set = home_sets + away_sets + 1
 
+        # Parse start time for scheduled matches
+        start_time: datetime | None = None
+        if is_scheduled:
+            raw_date = event.get("date") or comp.get("date")
+            if raw_date:
+                try:
+                    start_time = _dtparser.parse(raw_date)
+                    if start_time.tzinfo is None:
+                        start_time = start_time.replace(tzinfo=timezone.utc)
+                except Exception:
+                    pass
+
         # Carry over game_log from previous state and infer new game winner from score delta
         existing = await self.store.get(match_id)
         game_log: list[int] = existing.game_log.copy() if existing else []
@@ -224,4 +252,6 @@ class ESPNCollector(BaseCollector):
             game_log=game_log,
             match_duration_mins=0,
             timestamp=datetime.utcnow(),
+            is_scheduled=is_scheduled,
+            start_time=start_time,
         )
