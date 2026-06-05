@@ -1518,28 +1518,60 @@ async def _api_collectors_debug(runner, request: web.Request) -> web.Response:
                 active_tennis = [s for s in all_sports
                                  if "tennis" in s.get("key","") and s.get("active")]
 
-                # Fetch odds for each active key
+                # Fetch odds for active keys + Grand Slam fallbacks
+                from datetime import timedelta, timezone as _tz
+                _now = datetime.now(_tz.utc)
+                _from = (_now - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                _to = (_now + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 sample_events: list[dict] = []
-                for sport_key in (active_tennis or [{"key": "tennis_atp"}, {"key": "tennis_wta"}])[:4]:
-                    sk = sport_key.get("key", sport_key) if isinstance(sport_key, dict) else sport_key
+                keys_tried: list[dict] = []
+                try_keys = [s["key"] for s in active_tennis] or [
+                    "tennis_atp_french_open", "tennis_wta_french_open",
+                    "tennis_atp_wimbledon", "tennis_atp", "tennis_wta"]
+                for sk in try_keys[:6]:
                     r = await c.get(
                         f"https://api.the-odds-api.com/v4/sports/{sk}/odds/",
-                        params={"apiKey": key, "regions": "eu,uk,us",
-                                "markets": "h2h", "oddsFormat": "decimal"})
+                        params={"apiKey": key, "regions": "eu",
+                                "markets": "h2h", "oddsFormat": "decimal",
+                                "commenceTimeFrom": _from, "commenceTimeTo": _to})
+                    q_rem = r.headers.get("x-requests-remaining", "?")
+                    keys_tried.append({"key": sk, "status": r.status_code,
+                                       "events": len(r.json()) if r.status_code == 200 else 0,
+                                       "quota_remaining": q_rem})
                     if r.status_code == 200:
-                        evs = r.json()
-                        for e in evs[:3]:
+                        for e in r.json()[:5]:
+                            home = e.get("home_team", "")
+                            away = e.get("away_team", "")
+                            bks = e.get("bookmakers", [])
+                            # Match odds by name (correct way)
+                            h_p = a_p = 0.0
+                            for bm in bks:
+                                for mkt in bm.get("markets", []):
+                                    if mkt.get("key") == "h2h":
+                                        for oc in mkt.get("outcomes", []):
+                                            nm = oc.get("name","").lower()
+                                            pr = float(oc.get("price", 0))
+                                            if nm == home.lower() and pr > h_p:
+                                                h_p = pr
+                                            elif nm == away.lower() and pr > a_p:
+                                                a_p = pr
+                            mins_u = int(
+                                (datetime.fromisoformat(e["commence_time"].replace("Z","+00:00")) - _now
+                                 ).total_seconds() / 60) if e.get("commence_time") else None
                             sample_events.append({
                                 "sport": sk,
-                                "match": f"{e.get('home_team')} vs {e.get('away_team')}",
+                                "match": f"{home} vs {away}",
                                 "commence_time": e.get("commence_time"),
-                                "bookmakers": len(e.get("bookmakers", [])),
+                                "mins_until": mins_u,
+                                "bookmakers": len(bks),
+                                "odds_home": h_p, "odds_away": a_p,
                             })
 
             out["collectors"]["odds_api"] = {
                 "status": "ok",
                 "all_tennis_keys": tennis_keys,
                 "active_tennis_keys": [s.get("key") for s in active_tennis],
+                "keys_tried": keys_tried,
                 "quota_remaining": runner.odds_api.quota_remaining,
                 "sample_events": sample_events,
             }

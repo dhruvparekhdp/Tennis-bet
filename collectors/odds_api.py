@@ -32,18 +32,24 @@ def _last_name(full_name: str) -> str:
     return full_name.strip().split()[-1].lower() if full_name.strip() else ""
 
 
-def _best_odds(bookmakers: list[dict], idx: int) -> float:
-    """Lowest decimal back price for outcome at position idx across all bookmakers."""
+def _best_odds(bookmakers: list[dict], team_name: str) -> float:
+    """Best (highest) decimal price for the named team/player across all bookmakers.
+
+    The Odds API h2h outcomes array has {name, price} objects. Bookmakers may list
+    them in any order (alphabetical etc.), so we must match by name not by index.
+    Returns 0.0 if no price is found.
+    """
     best: float = 0.0
+    name_lower = team_name.strip().lower()
     for bm in bookmakers:
         for market in bm.get("markets", []):
             if market.get("key") != "h2h":
                 continue
-            outcomes = market.get("outcomes", [])
-            if len(outcomes) > idx:
-                price = float(outcomes[idx].get("price", 0.0))
-                if price > 1.0 and (best == 0.0 or price < best):
-                    best = price
+            for outcome in market.get("outcomes", []):
+                if outcome.get("name", "").strip().lower() == name_lower:
+                    price = float(outcome.get("price", 0.0))
+                    if price > 1.0 and (best == 0.0 or price > best):
+                        best = price
     return best
 
 
@@ -151,7 +157,7 @@ class OddsApiCollector:
                         f"{_API_BASE}/sports/{sport}/odds/",
                         params={
                             "apiKey": api_key,
-                            "regions": "eu,uk,us",
+                            "regions": settings.odds_regions,
                             "markets": "h2h",
                             "oddsFormat": "decimal",
                             "commenceTimeFrom": commence_time_from,
@@ -273,8 +279,8 @@ class OddsApiCollector:
             log.info("odds_api_skipped_doubles", home=home_team[:40], away=away_team[:40])
             return None
 
-        odds_home = _best_odds(bookmakers, 0)
-        odds_away = _best_odds(bookmakers, 1)
+        odds_home = _best_odds(bookmakers, home_team)
+        odds_away = _best_odds(bookmakers, away_team)
         # Still create the match state even if odds are missing (bookmakers may be empty)
 
         home_last = _last_name(home_team)
