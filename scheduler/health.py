@@ -1804,45 +1804,57 @@ async def _api_collector_toggle(runner, request: web.Request) -> web.Response:
 
 async def _api_collector_states(runner, request: web.Request) -> web.Response:
     """GET /api/settings — returns collector enabled/disabled states with quota info."""
-    from config.settings import settings as _settings
-    states = {}
-    for name, enabled in runner.collector_enabled.items():
-        states[name] = {"enabled": enabled}
+    try:
+        from config.settings import settings as _settings
+        states = {}
+        for name, enabled in runner.collector_enabled.items():
+            states[name] = {"enabled": enabled}
 
-    # Enrich with quota / key info
-    states["sportradar"].update({
-        "key_set": bool(_settings.sportradar_api_key),
-        "poll_interval_secs": _settings.sportradar_poll_interval_seconds,
-        "quota_total": 1000,
-        "calls_per_poll": 3,
-        "polls_per_day": round(86400 / _settings.sportradar_poll_interval_seconds, 1),
-        "est_calls_per_month": round(3 * 86400 / _settings.sportradar_poll_interval_seconds * 30),
-    })
-    states["odds_api"].update({
-        "key_set": bool(_settings.odds_api_key),
-        "poll_interval_secs": _settings.odds_poll_interval_seconds,
-        "quota_remaining": runner.odds_api.quota_remaining,
-        "quota_used": runner.odds_api.quota_used,
-    })
-    states["api_sports"].update({
-        "key_set": bool(_settings.api_sports_key),
-        "poll_interval_secs": _settings.api_sports_poll_interval_seconds,
-        "quota_remaining": runner.api_sports.quota_remaining,
-    })
-    states["espn"].update({"key_set": True, "poll_interval_secs": _settings.sofascore_poll_interval})
-    states["bets_api"].update({"key_set": bool(_settings.bets_api_token)})
-    states["sportsdata"].update({
-        "key_set": bool(_settings.sportsdata_api_key),
-        "poll_interval_secs": _settings.sportsdata_poll_interval_seconds,
-        "quota_remaining": runner.sportsdata.quota_remaining,
-        "quota_total": runner.sportsdata.quota_total,
-    })
-    states["api_tennis"].update({
-        "key_set": bool(_settings.api_tennis_key),
-        "poll_interval_secs": _settings.api_tennis_poll_interval_seconds,
-    })
+        # Enrich with quota / key info — safely access with getattr
+        states["sportradar"].update({
+            "key_set": bool(_settings.sportradar_api_key),
+            "poll_interval_secs": _settings.sportradar_poll_interval_seconds,
+            "quota_total": 1000,
+            "calls_per_poll": 3,
+            "polls_per_day": round(86400 / _settings.sportradar_poll_interval_seconds, 1),
+            "est_calls_per_month": round(3 * 86400 / _settings.sportradar_poll_interval_seconds * 30),
+        })
+        states["odds_api"].update({
+            "key_set": bool(_settings.odds_api_key),
+            "poll_interval_secs": _settings.odds_poll_interval_seconds,
+            "quota_remaining": getattr(runner.odds_api, "quota_remaining", None),
+            "quota_used": getattr(runner.odds_api, "quota_used", None),
+        })
+        states["api_sports"].update({
+            "key_set": bool(_settings.api_sports_key),
+            "poll_interval_secs": _settings.api_sports_poll_interval_seconds,
+            "quota_remaining": getattr(runner.api_sports, "quota_remaining", None),
+        })
+        states["espn"].update({"key_set": True, "poll_interval_secs": _settings.sofascore_poll_interval})
+        states["bets_api"].update({"key_set": bool(_settings.bets_api_token)})
 
-    return web.Response(text=json.dumps(states), content_type="application/json")
+        # New collectors with safe access
+        if hasattr(runner, "sportsdata"):
+            states["sportsdata"].update({
+                "key_set": bool(_settings.sportsdata_api_key),
+                "poll_interval_secs": _settings.sportsdata_poll_interval_seconds,
+                "quota_remaining": getattr(runner.sportsdata, "quota_remaining", None),
+                "quota_total": getattr(runner.sportsdata, "quota_total", 250),
+            })
+        if hasattr(runner, "api_tennis"):
+            states["api_tennis"].update({
+                "key_set": bool(_settings.api_tennis_key),
+                "poll_interval_secs": _settings.api_tennis_poll_interval_seconds,
+            })
+
+        return web.Response(text=json.dumps(states), content_type="application/json")
+    except Exception as e:
+        import traceback
+        return web.Response(
+            text=json.dumps({"error": str(e), "detail": traceback.format_exc()[-200:]}),
+            content_type="application/json",
+            status=500,
+        )
 
 
 _SETTINGS_HTML = """<!DOCTYPE html>
