@@ -661,7 +661,7 @@ const SIG_EMOJI={momentum:'⚡',odds_value:'📉',serve_degradation:'🎯',set_p
 const SIG_NAME={momentum:'Momentum Surge',odds_value:'Odds Value',serve_degradation:'Serve Degradation',set_pattern:'Set Pattern',fatigue:'Fatigue',ml_value:'ML Value',endgame:'Endgame Scalp',break_momentum:'Break Momentum',second_set_fade:'Second Set Fade'};
 const MKT_LABEL={match_winner:'Match Winner',next_game:'Next Game',next_set:'Next Set',set_winner_set2:'Set 2 Winner'};
 
-function fmtUptime(s){if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h+'h '+m+'m';}
+function fmtUptime(s){if(s==null||isNaN(s))return '—';if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h+'h '+m+'m';}
 function fmtTime(iso){const d=new Date(iso+'Z');return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}
 
 // ── MATCHES ───────────────────────────────────────────────────────────────────
@@ -1337,15 +1337,17 @@ function renderScalpCard(o){
 }
 
 // ── MAIN ──────────────────────────────────────────────────────────────────────
+// Fetch JSON that never rejects — a single failing endpoint must not blank the whole dashboard.
+function jget(url,fallback){return fetch(url).then(r=>r.ok?r.json():fallback).catch(()=>fallback);}
 async function refresh(){
   try{
     const [status,matches,signals,fbMatches,fbSignals,scalps]=await Promise.all([
-      fetch('/api/status').then(r=>r.json()),
-      fetch('/api/matches').then(r=>r.json()),
-      fetch('/api/signals').then(r=>r.json()),
-      fetch('/api/football/matches').then(r=>r.json()),
-      fetch('/api/football/signals').then(r=>r.json()),
-      fetch('/api/scalping').then(r=>r.json()).catch(()=>[]),
+      jget('/api/status',{}),
+      jget('/api/matches',[]),
+      jget('/api/signals',[]),
+      jget('/api/football/matches',[]),
+      jget('/api/football/signals',[]),
+      jget('/api/scalping',[]),
     ]);
     document.getElementById('stat-matches').textContent=matches.length;
     document.getElementById('stat-fb-matches').textContent=fbMatches.length;
