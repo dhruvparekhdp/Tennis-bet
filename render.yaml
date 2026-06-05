@@ -24,4 +24,10 @@ services:
       - key: THESPORTSDB_API_KEY
         value: "3"
       - key: DATABASE_URL
-        value: "sqlite+aiosqlite:///./tennis_bet.db"
+        sync: false          # set to your Neon Postgres URL in Render dashboard
+      - key: INGEST_API_KEY
+        sync: false          # set to a6f73f8ae0db395966528d63be617e50 in Render dashboard
+      - key: ODDS_API_KEY
+        sync: false          # set to your Odds API key
+      - key: SPORTRADAR_API_KEY
+        sync: false          # set to your Sportradar key
