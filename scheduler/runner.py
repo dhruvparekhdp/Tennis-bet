@@ -97,11 +97,21 @@ class AppRunner:
         self.sportradar = SportradarCollector(self.store, self.football_store)
         # Scalping alerts — track last Telegram ping per match to avoid spam
         self._scalp_alert_times: dict[str, datetime] = {}
+        # Collector enable/disable toggles (runtime, not persisted across restarts)
+        self.collector_enabled: dict[str, bool] = {
+            "sportradar": True,
+            "odds_api": True,
+            "api_sports": True,
+            "espn": True,
+            "bets_api": True,
+        }
 
     async def _data_poll_job(self) -> None:
         await self.flashscore.fetch()
-        await self.espn.fetch()
-        await self.bets_api.fetch()
+        if self.collector_enabled.get("espn", True):
+            await self.espn.fetch()
+        if self.collector_enabled.get("bets_api", True):
+            await self.bets_api.fetch()
 
         if self.sofascore._consecutive_failures < 5:
             await self.sofascore.fetch()
@@ -249,6 +259,9 @@ class AppRunner:
             log.exception("football_poll_job_failed")
 
     async def _odds_job(self) -> None:
+        if not self.collector_enabled.get("odds_api", True):
+            log.debug("odds_api_skipped_disabled")
+            return
         try:
             await self.odds_api.fetch()
         except Exception:
@@ -322,6 +335,9 @@ class AppRunner:
     async def _api_sports_job(self) -> None:
         if not settings.api_sports_key:
             return
+        if not self.collector_enabled.get("api_sports", True):
+            log.debug("api_sports_skipped_disabled")
+            return
         try:
             await self.api_sports.fetch()
         except Exception:
@@ -330,6 +346,9 @@ class AppRunner:
     async def _sportradar_job(self) -> None:
         key = settings.sportradar_api_key
         if not key:
+            return
+        if not self.collector_enabled.get("sportradar", True):
+            log.debug("sportradar_skipped_disabled")
             return
         try:
             await self.sportradar.fetch_tennis(key)
@@ -478,7 +497,7 @@ class AppRunner:
         log.info("scheduler_started")
 
     def get_status(self) -> dict:
-        return {
+        return {"collector_enabled": dict(self.collector_enabled),
             "flashscore": {
                 "http_ok": self.flashscore._consecutive_failures == 0,
                 "consecutive_failures": self.flashscore._consecutive_failures,

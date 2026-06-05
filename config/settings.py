@@ -67,11 +67,9 @@ class Settings(BaseSettings):
     # Sportradar — https://developer.sportradar.com (free 30-day trial)
     # One call returns ALL live matches across every competition (Challengers, ITF, all football)
     # Trial quota: 1,000 calls/product/30 days.
-    # 3 endpoints per poll (tennis live + tennis schedule + soccer live).
-    # 120s = 720 polls/day × 2 tennis = 1,440 tennis calls/day → exhausted in <1 day!
-    # 7,200s (2h) = 12 tennis calls/day × 30 = 360/month → safely within 1,000 trial limit.
+    # Use the /settings page toggle to pause polling and save credits when not watching.
     sportradar_api_key: str | None = None
-    sportradar_poll_interval_seconds: int = 7200  # 2 hours = 720 calls/month, within trial quota
+    sportradar_poll_interval_seconds: int = 300  # 5 min — use toggle to pause when not needed
 
     # Tournament filter — "tier1" = Slams + Masters 1000/WTA 1000 only, "all" = everything
     tournament_tier: str = "tier1"
