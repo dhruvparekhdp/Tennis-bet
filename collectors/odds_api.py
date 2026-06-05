@@ -75,29 +75,49 @@ class OddsApiCollector:
 
     def __init__(self, store: MatchStateStore) -> None:
         self.store = store
-        # Track which odds_* match IDs we created so we can remove finished ones
         self._odds_live_ids: set[str] = set()
+        self.quota_remaining: str | None = None
+        self.quota_used: str | None = None
+        self.last_events_fetched: int = 0
+
+    # Fallback keys tried even when the sports-list returns nothing (always-on tournaments).
+    _FALLBACK_KEYS = [
+        "tennis_atp_french_open", "tennis_wta_french_open",
+        "tennis_atp_wimbledon", "tennis_wta_wimbledon",
+        "tennis_atp_us_open", "tennis_wta_us_open",
+        "tennis_atp_australian_open", "tennis_wta_australian_open",
+        "tennis_atp", "tennis_wta",
+    ]
 
     async def _get_active_tennis_sports(self, client: httpx.AsyncClient, api_key: str) -> list[str]:
         """
-        GET /v4/sports/ — free, doesn't count against quota.
-        Returns all currently active tennis sport keys.
+        GET /v4/sports/?all=true — free, doesn't count against quota.
+        Returns all tennis sport keys (active or not), deduped against fallbacks.
         """
+        discovered: list[str] = []
         try:
-            resp = await client.get(f"{_API_BASE}/sports/", params={"apiKey": api_key})
+            resp = await client.get(f"{_API_BASE}/sports/",
+                                    params={"apiKey": api_key, "all": "true"})
             if resp.status_code != 200:
                 log.error("odds_api_sports_error", status=resp.status_code, body=resp.text[:300])
-                return []
-            all_sports: list[dict] = resp.json()
-            keys = [
-                s["key"] for s in all_sports
-                if "tennis" in s.get("key", "").lower() and s.get("active", False)
-            ]
-            log.info("odds_api_sports_fetched", active_tennis=keys)
-            return keys
+            else:
+                all_sports: list[dict] = resp.json()
+                discovered = [
+                    s["key"] for s in all_sports
+                    if "tennis" in s.get("key", "").lower()
+                ]
+                log.info("odds_api_sports_fetched", all_tennis=discovered)
         except Exception as exc:
             log.error("odds_api_sports_fetch_failed", error=str(exc))
-            return []
+
+        # Merge with fallbacks (fallbacks first so Grand Slams are always tried)
+        seen: set[str] = set()
+        merged: list[str] = []
+        for k in self._FALLBACK_KEYS + discovered:
+            if k not in seen:
+                seen.add(k)
+                merged.append(k)
+        return merged
 
     async def fetch(self) -> None:
         api_key = settings.odds_api_key
@@ -117,9 +137,7 @@ class OddsApiCollector:
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             sports = await self._get_active_tennis_sports(client, api_key)
-            if not sports:
-                log.warning("odds_api_no_active_tennis")
-                return
+            log.info("odds_api_sports_to_fetch", count=len(sports), keys=sports[:6])
 
             for sport in sports:
                 try:
@@ -127,7 +145,7 @@ class OddsApiCollector:
                         f"{_API_BASE}/sports/{sport}/odds/",
                         params={
                             "apiKey": api_key,
-                            "regions": "eu",
+                            "regions": "eu,uk,us",
                             "markets": "h2h",
                             "oddsFormat": "decimal",
                             "commenceTimeFrom": commence_time_from,
@@ -138,6 +156,9 @@ class OddsApiCollector:
                     log.error("odds_api_http_error", sport=sport, error=str(exc))
                     continue
 
+                if resp.status_code == 404:
+                    log.debug("odds_api_sport_not_found", sport=sport)
+                    continue
                 if resp.status_code != 200:
                     log.error("odds_api_bad_status", sport=sport,
                               status_code=resp.status_code, body=resp.text[:300])
@@ -206,6 +227,9 @@ class OddsApiCollector:
                 log.info("odds_api_match_removed", match_id=stale_id)
         self._odds_live_ids = current_live_ids
 
+        self.quota_remaining = quota_remaining
+        self.quota_used = quota_used
+        self.last_events_fetched = total_fetched
         log.info(
             "odds_api_done",
             matches_updated=total_updated,
@@ -231,7 +255,7 @@ class OddsApiCollector:
         away_team: str = event.get("away_team", "")
         bookmakers: list[dict] = event.get("bookmakers", [])
 
-        if not home_team or not away_team or not bookmakers:
+        if not home_team or not away_team:
             return None
 
         # Skip doubles — Odds API represents doubles teams as "Player1 / Player2"
@@ -241,8 +265,7 @@ class OddsApiCollector:
 
         odds_home = _best_odds(bookmakers, 0)
         odds_away = _best_odds(bookmakers, 1)
-        if odds_home <= 1.0 or odds_away <= 1.0:
-            return None
+        # Still create the match state even if odds are missing (bookmakers may be empty)
 
         home_last = _last_name(home_team)
         away_last = _last_name(away_team)

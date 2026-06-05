@@ -666,7 +666,11 @@ const SIG_NAME={momentum:'Momentum Surge',odds_value:'Odds Value',serve_degradat
 const MKT_LABEL={match_winner:'Match Winner',next_game:'Next Game',next_set:'Next Set',set_winner_set2:'Set 2 Winner'};
 
 function fmtUptime(s){if(s==null||isNaN(s))return '—';if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h+'h '+m+'m';}
-function fmtTime(iso){const d=new Date(iso+'Z');return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}
+const _IST={timeZone:'Asia/Kolkata'};
+function fmtTime(iso){
+  const d=new Date(iso.endsWith('Z')||iso.includes('+')?iso:iso+'Z');
+  return d.toLocaleTimeString('en-IN',{..._IST,hour:'2-digit',minute:'2-digit'})+ ' IST';
+}
 
 // ── MATCHES ───────────────────────────────────────────────────────────────────
 function renderMatches(matches){
@@ -1093,7 +1097,7 @@ function renderStatus(st){
     {name:'BetsAPI',ok:ba.token_set,detail:ba.token_set?`Live odds · ${ba.consecutive_failures||0} failures`:'No token — add BETS_API_TOKEN'},
     {name:'Sofascore',ok:!sc.blocked,detail:sc.blocked?'Blocked on cloud IP':'Available (serve stats)'},
     {name:'Flashscore',ok:fs.http_ok,detail:fs.http_ok?'OK':`${fs.consecutive_failures||0} failures`},
-    {name:'Odds API',ok:oa.key_set,detail:oa.key_set?`Upcoming + live odds · every ${oa.poll_interval_secs}s`:'No API key'},
+    {name:'Odds API',ok:oa.key_set,detail:oa.key_set?`${oa.last_events_fetched||0} events · ${oa.quota_remaining!=null?oa.quota_remaining+' credits left':'checking...'} · every ${oa.poll_interval_secs}s`:'No API key — add ODDS_API_KEY'},
   ];
   document.getElementById('sources').innerHTML=sources.map(s=>`
     <div class="status-card">
@@ -1132,13 +1136,15 @@ function renderFootballMatches(matches){
 
 function fmtKickoff(iso){
   if(!iso) return '';
-  const d=new Date(iso);
-  return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' ('+d.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+')';
+  const d=new Date(iso.endsWith('Z')||iso.includes('+')?iso:iso+'Z');
+  return d.toLocaleTimeString('en-IN',{..._IST,hour:'2-digit',minute:'2-digit'})
+    +' IST ('+d.toLocaleDateString('en-IN',{..._IST,weekday:'short',month:'short',day:'numeric'})+')';
 }
 
 function minsUntil(iso){
   if(!iso) return null;
-  const diff=Math.round((new Date(iso)-Date.now())/60000);
+  const d=new Date(iso.endsWith('Z')||iso.includes('+')?iso:iso+'Z');
+  const diff=Math.round((d-Date.now())/60000);
   if(diff<=0) return 'Starting now';
   if(diff<60) return `in ${diff} min`;
   const h=Math.floor(diff/60),m=diff%60;
@@ -1364,7 +1370,7 @@ async function refresh(){
     renderFootballMatches(fbMatches);
     renderFootballSignals(fbSignals);
     renderScalping(scalps||[]);
-    document.getElementById('last-updated').textContent='Updated: '+new Date().toLocaleTimeString();
+    document.getElementById('last-updated').textContent='Updated: '+new Date().toLocaleTimeString('en-IN',_IST)+' IST';
     document.getElementById('refresh-label').textContent='Next in 30s';
   }catch(e){
     console.error('refresh error:', e);

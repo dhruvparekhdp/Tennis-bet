@@ -472,6 +472,9 @@ class AppRunner:
             "odds_api": {
                 "key_set": bool(settings.odds_api_key),
                 "poll_interval_secs": settings.odds_poll_interval_seconds,
+                "quota_remaining": self.odds_api.quota_remaining,
+                "quota_used": self.odds_api.quota_used,
+                "last_events_fetched": self.odds_api.last_events_fetched,
             },
             "bets_api": {
                 "token_set": bool(settings.bets_api_token),
