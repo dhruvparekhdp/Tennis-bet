@@ -32,13 +32,14 @@ from analysis.ml_predictor import MLPredictor
 from analysis.scalping import scan_all
 from analysis.state_store import MatchStateStore
 from analysis.win_probability import compute_win_probability
-from collectors.api_sports import ApiSportsCollector
 from collectors.bets_api import BetsAPICollector
 from collectors.espn import ESPNCollector
 from collectors.flashscore import FlashscoreCollector
 from collectors.football_espn import FootballESPNCollector
 from collectors.football_odds_api import FootballOddsApiCollector
 from collectors.sportradar import SportradarCollector
+from collectors.sportsdata import SportsDataCollector
+from collectors.api_tennis import ApiTennisCollector
 from collectors.historical_importer import run_import
 from collectors.odds_api import OddsApiCollector
 from collectors.slam_pbp_importer import run_slam_import
@@ -78,7 +79,6 @@ class AppRunner:
         self.thesportsdb = TheSportsDBCollector(api_key=settings.thesportsdb_api_key)
         self.odds_api = OddsApiCollector(self.store)
         self.bets_api = BetsAPICollector(self.store)
-        self.api_sports = ApiSportsCollector(self.store)
         self.ml_predictor = MLPredictor()
         self.notifier = TelegramNotifier()
         self.scheduler = AsyncIOScheduler()
@@ -95,11 +95,17 @@ class AppRunner:
         self.football_engine = FootballEngine()
         # Sportradar — covers ALL tennis (Challengers, ITF) + ALL football in one call each
         self.sportradar = SportradarCollector(self.store, self.football_store)
+        # SportsData.io — live + scheduled tennis
+        self.sportsdata = SportsDataCollector(self.store)
+        # API-Tennis — live + scheduled, no quota limits
+        self.api_tennis = ApiTennisCollector(self.store)
         # Scalping alerts — track last Telegram ping per match to avoid spam
         self._scalp_alert_times: dict[str, datetime] = {}
         # Collector enable/disable toggles (runtime, not persisted across restarts)
         self.collector_enabled: dict[str, bool] = {
             "sportradar": True,
+            "sportsdata": True,
+            "api_tennis": True,
             "odds_api": True,
             "api_sports": True,
             "espn": True,
@@ -108,10 +114,8 @@ class AppRunner:
 
     async def _data_poll_job(self) -> None:
         await self.flashscore.fetch()
-        if self.collector_enabled.get("espn", True):
-            await self.espn.fetch()
-        if self.collector_enabled.get("bets_api", True):
-            await self.bets_api.fetch()
+        await self.espn.fetch()
+        await self.bets_api.fetch()
 
         if self.sofascore._consecutive_failures < 5:
             await self.sofascore.fetch()
@@ -259,9 +263,6 @@ class AppRunner:
             log.exception("football_poll_job_failed")
 
     async def _odds_job(self) -> None:
-        if not self.collector_enabled.get("odds_api", True):
-            log.debug("odds_api_skipped_disabled")
-            return
         try:
             await self.odds_api.fetch()
         except Exception:
@@ -332,23 +333,9 @@ class AppRunner:
         except Exception:
             log.exception("historical_import_failed_non_fatal")
 
-    async def _api_sports_job(self) -> None:
-        if not settings.api_sports_key:
-            return
-        if not self.collector_enabled.get("api_sports", True):
-            log.debug("api_sports_skipped_disabled")
-            return
-        try:
-            await self.api_sports.fetch()
-        except Exception:
-            log.exception("api_sports_job_failed")
-
     async def _sportradar_job(self) -> None:
         key = settings.sportradar_api_key
         if not key:
-            return
-        if not self.collector_enabled.get("sportradar", True):
-            log.debug("sportradar_skipped_disabled")
             return
         try:
             await self.sportradar.fetch_tennis(key)
@@ -358,6 +345,26 @@ class AppRunner:
             await self.sportradar.fetch_soccer(key)
         except Exception:
             log.exception("sportradar_soccer_job_failed")
+
+    async def _sportsdata_job(self) -> None:
+        if not settings.sportsdata_api_key:
+            return
+        if not self.collector_enabled.get("sportsdata", True):
+            return
+        try:
+            await self.sportsdata.fetch()
+        except Exception:
+            log.exception("sportsdata_job_failed")
+
+    async def _api_tennis_job(self) -> None:
+        if not settings.api_tennis_key:
+            return
+        if not self.collector_enabled.get("api_tennis", True):
+            return
+        try:
+            await self.api_tennis.fetch()
+        except Exception:
+            log.exception("api_tennis_job_failed")
 
     async def _cleanup_job(self) -> None:
         async with AsyncSessionFactory() as session:
@@ -440,6 +447,24 @@ class AppRunner:
                 max_instances=1,
                 next_run_time=datetime.now(timezone.utc),
             )
+        if settings.sportsdata_api_key:
+            self.scheduler.add_job(
+                self._sportsdata_job,
+                "interval",
+                seconds=settings.sportsdata_poll_interval_seconds,
+                id="sportsdata",
+                max_instances=1,
+                next_run_time=datetime.now(timezone.utc),
+            )
+        if settings.api_tennis_key:
+            self.scheduler.add_job(
+                self._api_tennis_job,
+                "interval",
+                seconds=settings.api_tennis_poll_interval_seconds,
+                id="api_tennis",
+                max_instances=1,
+                next_run_time=datetime.now(timezone.utc),
+            )
         self.scheduler.add_job(
             self._self_ping_job,
             "interval",
@@ -463,15 +488,6 @@ class AppRunner:
             max_instances=1,
             next_run_time=datetime.now(timezone.utc),
         )
-        if settings.api_sports_key:
-            self.scheduler.add_job(
-                self._api_sports_job,
-                "interval",
-                seconds=settings.api_sports_poll_interval_seconds,
-                id="api_sports",
-                max_instances=1,
-                next_run_time=datetime.now(timezone.utc),
-            )
         # Historical import — runs immediately on startup, then weekly
         self.scheduler.add_job(
             self._historical_import_job,
@@ -487,17 +503,16 @@ class AppRunner:
         self.setup_jobs()
         self.scheduler.start()
         bets_api_status = "BetsAPI: active" if settings.bets_api_token else "BetsAPI: no token"
-        api_sports_status = f"API-Sports: active ({settings.api_sports_poll_interval_seconds}s)" if settings.api_sports_key else "API-Sports: no key"
         await self.notifier.send_text(
             "🎾⚽ Tennis + Football monitor started.\n"
-            f"Tennis: ESPN + Flashscore + {bets_api_status} + {api_sports_status} (every {settings.sofascore_poll_interval}s)\n"
+            f"Tennis: ESPN + Flashscore + {bets_api_status} (every {settings.sofascore_poll_interval}s)\n"
             f"Football: ESPN all leagues (every 60s)\n"
             f"Min confidence: {settings.min_confidence}"
         )
         log.info("scheduler_started")
 
     def get_status(self) -> dict:
-        return {"collector_enabled": dict(self.collector_enabled),
+        return {
             "flashscore": {
                 "http_ok": self.flashscore._consecutive_failures == 0,
                 "consecutive_failures": self.flashscore._consecutive_failures,
@@ -519,18 +534,26 @@ class AppRunner:
                 "token_set": bool(settings.bets_api_token),
                 "consecutive_failures": self.bets_api._consecutive_failures,
             },
-            "api_sports": {
-                "key_set": bool(settings.api_sports_key),
-                "consecutive_failures": self.api_sports._consecutive_failures,
-                "quota_remaining": self.api_sports.quota_remaining,
-                "last_live": self.api_sports.last_live_count,
-                "last_scheduled": self.api_sports.last_scheduled_count,
-                "poll_interval_secs": settings.api_sports_poll_interval_seconds,
-            },
             "sportradar": {
                 "key_set": bool(settings.sportradar_api_key),
                 "consecutive_failures": self.sportradar._consecutive_failures,
                 "poll_interval_secs": settings.sportradar_poll_interval_seconds,
+            },
+            "sportsdata": {
+                "key_set": bool(settings.sportsdata_api_key),
+                "consecutive_failures": self.sportsdata._consecutive_failures,
+                "poll_interval_secs": settings.sportsdata_poll_interval_seconds,
+                "quota_remaining": self.sportsdata.quota_remaining,
+                "quota_total": self.sportsdata.quota_total,
+                "last_live": self.sportsdata.last_live_count,
+                "last_scheduled": self.sportsdata.last_scheduled_count,
+            },
+            "api_tennis": {
+                "key_set": bool(settings.api_tennis_key),
+                "consecutive_failures": self.api_tennis._consecutive_failures,
+                "poll_interval_secs": settings.api_tennis_poll_interval_seconds,
+                "last_live": self.api_tennis.last_live_count,
+                "last_scheduled": self.api_tennis.last_scheduled_count,
             },
             "football": {
                 "live_matches": 0,  # filled by health.py via football_store.count()
