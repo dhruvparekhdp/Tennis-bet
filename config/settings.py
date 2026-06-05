@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # Odds API
     odds_api_key: str | None = None  # https://the-odds-api.com
     odds_poll_interval_seconds: int = 300  # 5 min default — ~8,640 req/month for 2 sports
+    # How far ahead to show upcoming matches (the API itself returns ~24h of fixtures).
+    # Widened from 3h so the dashboard isn't empty when nothing is live right now.
+    odds_upcoming_window_hours: int = 24
 
     # BetsAPI — https://betsapi.com (live scores + in-play odds, cloud-safe)
     bets_api_token: str | None = None

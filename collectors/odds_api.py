@@ -164,10 +164,11 @@ class OddsApiCollector:
                     try:
                         ct = datetime.fromisoformat(ct_str.replace("Z", "+00:00"))
                         mins_until = int((ct - now).total_seconds() / 60)
+                        upcoming_window_mins = settings.odds_upcoming_window_hours * 60
                         if mins_until <= 0:
                             status = f"LIVE ({-mins_until}m ago)"
                             is_live = True
-                        elif mins_until <= 180:  # show upcoming within 3h
+                        elif mins_until <= upcoming_window_mins:
                             status = f"starts_in_{mins_until}m"
                             is_upcoming = True
                         else:
