@@ -256,8 +256,9 @@ async def _api_h2h(runner, request: web.Request) -> web.Response:
 async def _api_ingest(runner, request: web.Request) -> web.Response:
     """Receive match states pushed from a laptop-based Flashscore scraper."""
     import structlog as _log
-    from config.settings import settings
+
     from analysis.match_state import MatchState, ServeStats
+    from config.settings import settings
 
     key = request.headers.get("X-Ingest-Key", "")
     if settings.ingest_api_key and key != settings.ingest_api_key:
@@ -652,7 +653,7 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   </section>
 </div>
 
-<footer>Auto-refreshes every 30s &middot; <span id="last-updated">&mdash;</span></footer>
+<footer>Auto-refreshes every 30s &middot; <span id="last-updated">&mdash;</span> &middot; <a href="/data" style="color:#38bdf8;text-decoration:none">🗄️ Database dump</a></footer>
 
 <script>
 const SURFACE_CLASS={clay:'surface-clay',grass:'surface-grass',hard:'surface-hard',indoor_hard:'surface-indoor_hard'};
@@ -1374,9 +1375,178 @@ setInterval(refresh,30000);
 </html>"""
 
 
+_DATA_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Database Dump — Tennis Bet</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;padding-bottom:40px}
+header{background:#1e293b;border-bottom:1px solid #334155;padding:14px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:10}
+header h1{font-size:17px;font-weight:700;color:#f1f5f9;display:flex;align-items:center;gap:8px}
+header a{color:#38bdf8;text-decoration:none;font-size:13px}
+.controls{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:13px;color:#94a3b8}
+.controls input{width:70px;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:6px;padding:4px 8px}
+.controls button{background:#0ea5e9;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-weight:600;cursor:pointer}
+.controls button:hover{background:#0284c7}
+.toc{padding:12px 20px;display:flex;flex-wrap:wrap;gap:8px}
+.toc a{font-size:12px;background:#1e293b;border:1px solid #334155;color:#cbd5e1;padding:4px 10px;border-radius:9999px;text-decoration:none}
+.toc a:hover{border-color:#0ea5e9;color:#fff}
+.toc a b{color:#38bdf8}
+section{padding:8px 20px 20px}
+.tbl-head{display:flex;align-items:baseline;gap:10px;margin:18px 0 8px;border-bottom:1px solid #334155;padding-bottom:6px}
+.tbl-head h2{font-size:15px;font-weight:700;color:#f1f5f9}
+.tbl-head .count{font-size:12px;color:#64748b}
+.tbl-head .count b{color:#22c55e}
+.scroll{overflow-x:auto;border:1px solid #334155;border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:12px;white-space:nowrap}
+th,td{border:1px solid #1e293b;padding:5px 9px;text-align:left;max-width:360px;overflow:hidden;text-overflow:ellipsis}
+th{background:#1e293b;color:#94a3b8;position:sticky;top:0;font-weight:600}
+tr:nth-child(even) td{background:#172033}
+td.null{color:#475569;font-style:italic}
+.empty{color:#475569;font-size:13px;padding:14px 0}
+.err{color:#f87171;font-size:12px;padding:8px 0}
+.note{color:#64748b;font-size:12px;padding:0 20px}
+#status{color:#94a3b8;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🗄️ Database Dump</h1>
+  <a href="/">&larr; Dashboard</a>
+  <div class="controls">
+    <span id="status">loading…</span>
+    <label>rows/table
+      <input id="limit" type="number" min="1" max="2000" value="100">
+    </label>
+    <button onclick="load()">Reload</button>
+  </div>
+</header>
+<div class="toc" id="toc"></div>
+<div class="note">Newest rows first (by primary key). Increase rows/table to dump more — capped at 2000 per table.</div>
+<div id="tables"></div>
+<script>
+function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function cell(v){
+  if(v===null||v===undefined) return '<td class="null">NULL</td>';
+  return '<td title="'+esc(v)+'">'+esc(v)+'</td>';
+}
+function renderTable(t){
+  const head='<div class="tbl-head" id="t_'+esc(t.name)+'">'
+    +'<h2>'+esc(t.name)+'</h2>'
+    +'<span class="count">showing <b>'+t.shown+'</b> of '+t.total.toLocaleString()+' rows</span></div>';
+  if(t.error) return head+'<div class="err">error: '+esc(t.error)+'</div>';
+  if(!t.rows.length) return head+'<div class="empty">— empty —</div>';
+  let h='<div class="scroll"><table><thead><tr>';
+  for(const c of t.columns) h+='<th>'+esc(c)+'</th>';
+  h+='</tr></thead><tbody>';
+  for(const row of t.rows){
+    h+='<tr>';
+    for(const v of row) h+=cell(v);
+    h+='</tr>';
+  }
+  h+='</tbody></table></div>';
+  return head+h;
+}
+async function load(){
+  const lim=Math.max(1,Math.min(2000,parseInt(document.getElementById('limit').value)||100));
+  document.getElementById('status').textContent='loading…';
+  try{
+    const data=await fetch('/api/tables?limit='+lim).then(r=>r.json());
+    const tables=data.tables||[];
+    document.getElementById('toc').innerHTML=tables.map(t=>
+      '<a href="#t_'+esc(t.name)+'">'+esc(t.name)+' <b>'+t.total.toLocaleString()+'</b></a>').join('');
+    document.getElementById('tables').innerHTML=
+      tables.map(t=>'<section>'+renderTable(t)+'</section>').join('');
+    const totRows=tables.reduce((a,t)=>a+t.total,0);
+    document.getElementById('status').textContent=
+      tables.length+' tables · '+totRows.toLocaleString()+' rows total';
+  }catch(e){
+    document.getElementById('status').textContent='Error: '+e;
+    document.getElementById('tables').innerHTML='<div class="err" style="padding:20px">Failed to load: '+esc(e)+'</div>';
+  }
+}
+load();
+</script>
+</body>
+</html>"""
+
+
+async def _api_tables(runner, request: web.Request) -> web.Response:
+    """Dump every table in the database (reflected, so it covers all tables).
+
+    Query params:
+      limit — rows per table (default 100, max 2000)
+    """
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text
+
+    from storage.database import engine
+
+    try:
+        limit = max(1, min(int(request.query.get("limit", "100")), 2000))
+    except ValueError:
+        limit = 100
+
+    out: dict = {"generated_at": datetime.utcnow().isoformat() + "Z", "limit": limit,
+                 "tables": []}
+
+    async with engine.connect() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: sa_inspect(sync_conn).get_table_names()
+        )
+        pk_map = await conn.run_sync(
+            lambda sync_conn: {
+                t: sa_inspect(sync_conn).get_pk_constraint(t).get("constrained_columns", [])
+                for t in table_names
+            }
+        )
+
+        for name in sorted(table_names):
+            try:
+                total = (await conn.execute(
+                    text(f'SELECT COUNT(*) FROM "{name}"'))).scalar() or 0
+            except Exception:
+                total = 0
+
+            # Newest-first when there's a single-column primary key, else natural order.
+            pks = pk_map.get(name) or []
+            order = f' ORDER BY "{pks[0]}" DESC' if len(pks) == 1 else ""
+            cols: list[str] = []
+            rows: list[list] = []
+            error = None
+            try:
+                result = await conn.execute(
+                    text(f'SELECT * FROM "{name}"{order} LIMIT :lim'), {"lim": limit})
+                cols = list(result.keys())
+                rows = [list(r) for r in result.fetchall()]
+            except Exception as exc:
+                error = str(exc)
+
+            out["tables"].append({
+                "name": name,
+                "columns": cols,
+                "rows": rows,
+                "shown": len(rows),
+                "total": total,
+                "error": error,
+            })
+
+    return web.Response(text=json.dumps(out, default=str),
+                        content_type="application/json")
+
+
+async def _data_page(request: web.Request) -> web.Response:
+    return web.Response(text=_DATA_HTML, content_type="text/html")
+
+
 async def make_app(runner) -> web.Application:
     app = web.Application()
     app.router.add_get("/", lambda req: _dashboard(req))
+    app.router.add_get("/data", lambda req: _data_page(req))
+    app.router.add_get("/api/tables", lambda req: _api_tables(runner, req))
     app.router.add_get("/health", lambda req: _health(runner, req))
     app.router.add_get("/api/status", lambda req: _api_status(runner, req))
     app.router.add_get("/api/matches", lambda req: _api_matches(runner, req))
