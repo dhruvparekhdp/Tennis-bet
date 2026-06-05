@@ -1831,6 +1831,16 @@ async def _api_collector_states(runner, request: web.Request) -> web.Response:
     })
     states["espn"].update({"key_set": True, "poll_interval_secs": _settings.sofascore_poll_interval})
     states["bets_api"].update({"key_set": bool(_settings.bets_api_token)})
+    states["sportsdata"].update({
+        "key_set": bool(_settings.sportsdata_api_key),
+        "poll_interval_secs": _settings.sportsdata_poll_interval_seconds,
+        "quota_remaining": runner.sportsdata.quota_remaining,
+        "quota_total": runner.sportsdata.quota_total,
+    })
+    states["api_tennis"].update({
+        "key_set": bool(_settings.api_tennis_key),
+        "poll_interval_secs": _settings.api_tennis_poll_interval_seconds,
+    })
 
     return web.Response(text=json.dumps(states), content_type="application/json")
 
@@ -1959,6 +1969,26 @@ const SOURCES = [
     can_toggle: true,
     warning: null,
   },
+  {
+    id: 'sportsdata',
+    name: 'SportsData.io',
+    icon: '📊',
+    desc: 'Live + scheduled tennis (250 req/day free trial)',
+    quota_label: 'Daily quota',
+    quota_total: 250,
+    can_toggle: true,
+    warning: 'Free trial gives 250 req/day. At 10-min interval = 144 calls/day ✅ Safe. Toggle OFF to save quota.',
+  },
+  {
+    id: 'api_tennis',
+    name: 'API-Tennis.com',
+    icon: '🎯',
+    desc: 'Live + scheduled tennis (no hard quota limits)',
+    quota_label: 'Unlimited',
+    quota_total: null,
+    can_toggle: true,
+    warning: null,
+  },
 ];
 
 let states = {};
@@ -2007,6 +2037,15 @@ function render() {
       quotaHtml = `
         <div class="meta-row"><span class="meta-label">Remaining today</span><span class="meta-value">${rem} / ${src.quota_total} req</span></div>
         <div class="quota-bar"><div class="quota-fill ${cls}" style="width:${pct}%"></div></div>`;
+    } else if (src.id === 'sportsdata') {
+      const rem = st.quota_remaining != null ? st.quota_remaining : '?';
+      const pct = rem !== '?' ? Math.min(100, Math.round((src.quota_total - rem) / src.quota_total * 100)) : 0;
+      const cls = pct < 60 ? 'safe' : pct < 85 ? 'warn' : 'danger';
+      quotaHtml = `
+        <div class="meta-row"><span class="meta-label">Remaining today</span><span class="meta-value">${rem} / ${src.quota_total} req</span></div>
+        <div class="quota-bar"><div class="quota-fill ${cls}" style="width:${pct}%"></div></div>`;
+    } else if (src.id === 'api_tennis') {
+      quotaHtml = `<div class="meta-row"><span class="meta-label">Quota</span><span class="meta-value" style="color:#3fb950">Unlimited ✓</span></div>`;
     } else if (src.id === 'espn') {
       quotaHtml = `<div class="meta-row"><span class="meta-label">Quota</span><span class="meta-value" style="color:#3fb950">Unlimited ✓</span></div>`;
     } else if (src.id === 'bets_api') {
