@@ -1650,24 +1650,39 @@ async def _api_collectors_debug(runner, request: web.Request) -> web.Response:
     else:
         out["collectors"]["api_sports"] = {"status": "no_key", "note": "Add API_SPORTS_KEY — 100 req/day free at api-sports.io"}
 
-    # ── ESPN (cloud-safe check) ───────────────────────────────────────────────
+    # ── ESPN (cloud-safe check — tests the same URLs as the real collector) ──────
     import httpx as _httpx
+    _ESPN_TEST_URLS = [
+        "https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard",
+        "https://site.api.espn.com/apis/site/v2/sports/tennis/wta/scoreboard",
+        "https://site.api.espn.com/apis/site/v2/sports/tennis/french-open/scoreboard",
+    ]
+    espn_results = []
     try:
-        today = datetime.utcnow().strftime("%Y%m%d")
         async with _httpx.AsyncClient(timeout=8) as c:
-            r = await c.get(
-                "https://site.api.espn.com/apis/site/v2/sports/tennis/french-open/scoreboard",
-                params={"dates": today, "limit": "20"})
-        events = r.json().get("events", []) if r.status_code == 200 else []
-        statuses: dict[str, int] = {}
-        for e in events:
-            s = e.get("status", {}).get("type", {}).get("name", "?")
-            statuses[s] = statuses.get(s, 0) + 1
+            for url in _ESPN_TEST_URLS:
+                try:
+                    r = await c.get(url, params={"limit": "20"})
+                    events = r.json().get("events", []) if r.status_code == 200 else []
+                    statuses: dict[str, int] = {}
+                    for e in events:
+                        s = e.get("status", {}).get("type", {}).get("name", "?")
+                        statuses[s] = statuses.get(s, 0) + 1
+                    espn_results.append({
+                        "url": url.split("/sports/tennis/")[1],
+                        "status_code": r.status_code,
+                        "events": len(events),
+                        "statuses": statuses,
+                        "sample": [
+                            e.get("name", "?") for e in events[:3]
+                        ],
+                    })
+                except Exception as _e:
+                    espn_results.append({"url": url, "error": str(_e)})
         out["collectors"]["espn"] = {
-            "status_code": r.status_code,
-            "events": len(events),
-            "statuses": statuses,
-            "blocked": r.status_code == 403,
+            "endpoints": espn_results,
+            "blocked": all(x.get("status_code") == 403 for x in espn_results),
+            "total_events": sum(x.get("events", 0) for x in espn_results),
         }
     except Exception:
         out["collectors"]["espn"] = {"status": "error", "detail": traceback.format_exc()[-200:]}
