@@ -606,6 +606,7 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 <header>
   <h1>&#127934; Tennis Bet Monitor <span class="badge" id="live-count">0 live</span></h1>
   <span class="refresh" id="refresh-label">Loading&hellip;</span>
+  <a class="nav-btn" href="/settings">⚙️ Settings</a>
   <a class="nav-btn" href="/data">🗄️ History</a>
 </header>
 
@@ -656,7 +657,7 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   </section>
 </div>
 
-<footer>Auto-refreshes every 30s &middot; <span id="last-updated">&mdash;</span> &middot; <a href="/data" style="color:#38bdf8;text-decoration:none">🗄️ DB Dump</a> &middot; <a href="/api/debug/collectors" style="color:#a78bfa;text-decoration:none">🔬 Collector Debug</a></footer>
+<footer>Auto-refreshes every 30s &middot; <span id="last-updated">&mdash;</span> &middot; <a href="/data" style="color:#38bdf8;text-decoration:none">🗄️ DB Dump</a> &middot; <a href="/settings" style="color:#3fb950;text-decoration:none">⚙️ Settings</a> &middot; <a href="/api/debug/collectors" style="color:#a78bfa;text-decoration:none">🔬 Debug</a></footer>
 
 <script>
 const SURFACE_CLASS={clay:'surface-clay',grass:'surface-grass',hard:'surface-hard',indoor_hard:'surface-indoor_hard'};
@@ -1090,9 +1091,10 @@ function renderSignal(s){
 
 // ── STATUS ────────────────────────────────────────────────────────────────────
 function renderStatus(st){
-  const fs=st.flashscore||{}, espn=st.espn||{}, sc=st.sofascore||{}, oa=st.odds_api||{}, ba=st.bets_api||{}, sr=st.sportradar||{};
+  const fs=st.flashscore||{}, espn=st.espn||{}, sc=st.sofascore||{}, oa=st.odds_api||{}, ba=st.bets_api||{}, sr=st.sportradar||{}, as_=st.api_sports||{};
   const sources=[
     {name:'ESPN',ok:true,detail:'Live scores (always on)'},
+    {name:'API-Sports',ok:as_.key_set,detail:as_.key_set?`${as_.last_live||0} live · ${as_.last_scheduled||0} upcoming · ${as_.quota_remaining!=null?as_.quota_remaining+' req left today':'checking...'} · every ${as_.poll_interval_secs}s`:'No key — add API_SPORTS_KEY (100 req/day FREE)'},
     {name:'Sportradar',ok:sr.key_set,detail:sr.key_set?`All tours+leagues · every ${sr.poll_interval_secs}s`:'No key — add SPORTRADAR_API_KEY (free trial)'},
     {name:'BetsAPI',ok:ba.token_set,detail:ba.token_set?`Live odds · ${ba.consecutive_failures||0} failures`:'No token — add BETS_API_TOKEN'},
     {name:'Sofascore',ok:!sc.blocked,detail:sc.blocked?'Blocked on cloud IP':'Available (serve stats)'},
@@ -1425,7 +1427,8 @@ td.null{color:#475569;font-style:italic}
 <body>
 <header>
   <h1>🗄️ Database Dump</h1>
-  <a class="nav-btn" href="/">&larr; Home</a>
+  <a class="nav-btn" href="/">← Home</a>
+  <a class="nav-btn" href="/settings">⚙️ Settings</a>
   <div class="controls">
     <span id="status">loading…</span>
     <label>rows/table
@@ -1620,24 +1623,68 @@ async def _api_collectors_debug(runner, request: web.Request) -> web.Response:
     else:
         out["collectors"]["sportradar"] = {"status": "no_key"}
 
-    # ── ESPN (cloud-safe check) ───────────────────────────────────────────────
+    # ── API-Sports Tennis ─────────────────────────────────────────────────────
+    if settings.api_sports_key:
+        try:
+            async with _httpx.AsyncClient(
+                timeout=8,
+                headers={
+                    "x-apisports-key": settings.api_sports_key,
+                    "x-apisports-host": "v1.tennis.api-sports.io",
+                },
+            ) as c:
+                r = await c.get("https://v1.tennis.api-sports.io/games",
+                                params={"live": "all"})
+            quota = r.headers.get("x-ratelimit-requests-remaining", "?")
+            games = r.json().get("response", []) if r.status_code == 200 else []
+            out["collectors"]["api_sports"] = {
+                "status_code": r.status_code,
+                "live_games": len(games),
+                "quota_remaining": quota,
+                "sample": [
+                    f"{g.get('teams',{}).get('home',{}).get('name','?')} vs "
+                    f"{g.get('teams',{}).get('away',{}).get('name','?')}"
+                    for g in games[:5]
+                ],
+            }
+        except Exception:
+            out["collectors"]["api_sports"] = {"status": "error", "detail": traceback.format_exc()[-400:]}
+    else:
+        out["collectors"]["api_sports"] = {"status": "no_key", "note": "Add API_SPORTS_KEY — 100 req/day free at api-sports.io"}
+
+    # ── ESPN (cloud-safe check — tests the same URLs as the real collector) ──────
     import httpx as _httpx
+    _ESPN_TEST_URLS = [
+        "https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard",
+        "https://site.api.espn.com/apis/site/v2/sports/tennis/wta/scoreboard",
+        "https://site.api.espn.com/apis/site/v2/sports/tennis/french-open/scoreboard",
+    ]
+    espn_results = []
     try:
-        today = datetime.utcnow().strftime("%Y%m%d")
         async with _httpx.AsyncClient(timeout=8) as c:
-            r = await c.get(
-                "https://site.api.espn.com/apis/site/v2/sports/tennis/french-open/scoreboard",
-                params={"dates": today, "limit": "20"})
-        events = r.json().get("events", []) if r.status_code == 200 else []
-        statuses: dict[str, int] = {}
-        for e in events:
-            s = e.get("status", {}).get("type", {}).get("name", "?")
-            statuses[s] = statuses.get(s, 0) + 1
+            for url in _ESPN_TEST_URLS:
+                try:
+                    r = await c.get(url, params={"limit": "20"})
+                    events = r.json().get("events", []) if r.status_code == 200 else []
+                    statuses: dict[str, int] = {}
+                    for e in events:
+                        s = e.get("status", {}).get("type", {}).get("name", "?")
+                        statuses[s] = statuses.get(s, 0) + 1
+                    espn_results.append({
+                        "url": url.split("/sports/tennis/")[1],
+                        "status_code": r.status_code,
+                        "events": len(events),
+                        "statuses": statuses,
+                        "sample": [
+                            e.get("name", "?") for e in events[:3]
+                        ],
+                    })
+                except Exception as _e:
+                    espn_results.append({"url": url, "error": str(_e)})
         out["collectors"]["espn"] = {
-            "status_code": r.status_code,
-            "events": len(events),
-            "statuses": statuses,
-            "blocked": r.status_code == 403,
+            "endpoints": espn_results,
+            "blocked": all(x.get("status_code") == 403 for x in espn_results),
+            "total_events": sum(x.get("events", 0) for x in espn_results),
         }
     except Exception:
         out["collectors"]["espn"] = {"status": "error", "detail": traceback.format_exc()[-200:]}
@@ -1727,6 +1774,316 @@ async def _data_page(request: web.Request) -> web.Response:
     return web.Response(text=_DATA_HTML, content_type="text/html")
 
 
+async def _settings_page(request: web.Request) -> web.Response:
+    return web.Response(text=_SETTINGS_HTML, content_type="text/html")
+
+
+async def _api_collector_toggle(runner, request: web.Request) -> web.Response:
+    """POST /api/settings/toggle  body: {"collector": "sportradar", "enabled": true}"""
+    try:
+        body = await request.json()
+        collector = str(body.get("collector", ""))
+        enabled = bool(body.get("enabled", True))
+        if collector not in runner.collector_enabled:
+            return web.Response(
+                text=json.dumps({"error": f"unknown collector: {collector}"}),
+                content_type="application/json", status=400,
+            )
+        runner.collector_enabled[collector] = enabled
+        _log.get_logger().info("collector_toggled", collector=collector, enabled=enabled)
+        return web.Response(
+            text=json.dumps({"collector": collector, "enabled": enabled, "ok": True}),
+            content_type="application/json",
+        )
+    except Exception as exc:
+        return web.Response(
+            text=json.dumps({"error": str(exc)}),
+            content_type="application/json", status=500,
+        )
+
+
+async def _api_collector_states(runner, request: web.Request) -> web.Response:
+    """GET /api/settings — returns collector enabled/disabled states with quota info."""
+    from config.settings import settings as _settings
+    states = {}
+    for name, enabled in runner.collector_enabled.items():
+        states[name] = {"enabled": enabled}
+
+    # Enrich with quota / key info
+    states["sportradar"].update({
+        "key_set": bool(_settings.sportradar_api_key),
+        "poll_interval_secs": _settings.sportradar_poll_interval_seconds,
+        "quota_total": 1000,
+        "calls_per_poll": 3,
+        "polls_per_day": round(86400 / _settings.sportradar_poll_interval_seconds, 1),
+        "est_calls_per_month": round(3 * 86400 / _settings.sportradar_poll_interval_seconds * 30),
+    })
+    states["odds_api"].update({
+        "key_set": bool(_settings.odds_api_key),
+        "poll_interval_secs": _settings.odds_poll_interval_seconds,
+        "quota_remaining": runner.odds_api.quota_remaining,
+        "quota_used": runner.odds_api.quota_used,
+    })
+    states["api_sports"].update({
+        "key_set": bool(_settings.api_sports_key),
+        "poll_interval_secs": _settings.api_sports_poll_interval_seconds,
+        "quota_remaining": runner.api_sports.quota_remaining,
+    })
+    states["espn"].update({"key_set": True, "poll_interval_secs": _settings.sofascore_poll_interval})
+    states["bets_api"].update({"key_set": bool(_settings.bets_api_token)})
+
+    return web.Response(text=json.dumps(states), content_type="application/json")
+
+
+_SETTINGS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Collector Settings — Tennis Bet</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}
+.topbar{background:#161b22;border-bottom:1px solid #30363d;padding:12px 20px;display:flex;align-items:center;gap:16px}
+.topbar a{color:#58a6ff;text-decoration:none;font-size:14px;padding:6px 12px;border-radius:6px;border:1px solid #30363d}
+.topbar a:hover{background:#21262d}
+.topbar h1{font-size:16px;font-weight:600;color:#e6edf3;margin-left:8px}
+.container{max-width:760px;margin:32px auto;padding:0 16px}
+h2{font-size:20px;font-weight:700;margin-bottom:6px}
+.subtitle{color:#8b949e;font-size:13px;margin-bottom:28px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px 24px;margin-bottom:16px;transition:border-color .2s}
+.card.active{border-color:#238636}
+.card.paused{border-color:#f85149;opacity:.85}
+.card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.card-title{display:flex;align-items:center;gap:10px}
+.card-name{font-size:16px;font-weight:600}
+.badge{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600}
+.badge-green{background:#0d4429;color:#3fb950}
+.badge-red{background:#3d0a0a;color:#f85149}
+.badge-yellow{background:#3d2b00;color:#e3b341}
+.card-meta{color:#8b949e;font-size:13px;line-height:1.6}
+.meta-row{display:flex;justify-content:space-between;margin-top:6px}
+.meta-label{color:#8b949e}
+.meta-value{color:#e6edf3;font-weight:500}
+.quota-bar{height:6px;background:#21262d;border-radius:3px;margin-top:10px;overflow:hidden}
+.quota-fill{height:100%;border-radius:3px;transition:width .4s}
+.quota-fill.safe{background:#238636}
+.quota-fill.warn{background:#e3b341}
+.quota-fill.danger{background:#f85149}
+/* Toggle */
+.toggle-wrap{display:flex;align-items:center;gap:8px}
+.toggle-label{font-size:13px;color:#8b949e;min-width:44px;text-align:right}
+.toggle{position:relative;width:44px;height:24px;cursor:pointer}
+.toggle input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;background:#30363d;border-radius:24px;transition:.3s}
+.slider:before{content:'';position:absolute;width:18px;height:18px;left:3px;bottom:3px;background:#e6edf3;border-radius:50%;transition:.3s}
+input:checked+.slider{background:#238636}
+input:checked+.slider:before{transform:translateX(20px)}
+.warn-box{background:#2d1f00;border:1px solid #e3b341;border-radius:8px;padding:12px 16px;font-size:13px;color:#e3b341;margin-top:14px;display:none}
+.warn-box.show{display:block}
+.save-btn{background:#238636;border:none;color:#fff;font-size:14px;font-weight:600;padding:10px 24px;border-radius:8px;cursor:pointer;margin-top:24px;width:100%;transition:background .2s}
+.save-btn:hover{background:#2ea043}
+.toast{position:fixed;bottom:24px;right:24px;background:#238636;color:#fff;padding:12px 20px;border-radius:8px;font-size:14px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:999}
+.toast.show{opacity:1}
+.toast.err{background:#f85149}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a href="/">← Home</a>
+  <a href="/data">📊 History</a>
+  <h1>⚙️ Collector Settings</h1>
+</div>
+
+<div class="container">
+  <h2>Data Source Controls</h2>
+  <p class="subtitle">Toggle collectors on/off to manage API quota. Changes take effect immediately — no redeploy needed.</p>
+
+  <div id="cards">Loading...</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const _IST = {timeZone:'Asia/Kolkata'};
+
+const SOURCES = [
+  {
+    id: 'sportradar',
+    name: 'Sportradar Tennis',
+    icon: '🎾',
+    desc: 'Live + scheduled matches, all tours (ATP, WTA, ITF, Challengers)',
+    quota_label: 'Trial quota',
+    quota_total: 1000,
+    can_toggle: true,
+    warning: 'At 5-min interval, Sportradar uses ~720 calls/month. Trial limit is 1,000. Toggle OFF when not actively monitoring to save credits.',
+  },
+  {
+    id: 'odds_api',
+    name: 'Odds API',
+    icon: '💰',
+    desc: 'Pre-match odds for French Open, ATP, WTA (free tier: 500 req/month)',
+    quota_label: 'Monthly quota',
+    quota_total: 500,
+    can_toggle: true,
+    warning: 'Free tier has 500 requests/month. Toggle OFF when quota is low to preserve remaining credits.',
+  },
+  {
+    id: 'espn',
+    name: 'ESPN',
+    icon: '📡',
+    desc: 'Live scores backup, always cloud-safe, unlimited',
+    quota_label: 'Unlimited',
+    quota_total: null,
+    can_toggle: true,
+    warning: null,
+  },
+  {
+    id: 'bets_api',
+    name: 'BetsAPI',
+    icon: '📈',
+    desc: 'Live in-play odds (requires paid token)',
+    quota_label: 'Paid plan',
+    quota_total: null,
+    can_toggle: true,
+    warning: null,
+  },
+  {
+    id: 'api_sports',
+    name: 'API-Sports',
+    icon: '🏆',
+    desc: 'Live scores (100 req/day free)',
+    quota_label: 'Daily quota',
+    quota_total: 100,
+    can_toggle: true,
+    warning: null,
+  },
+];
+
+let states = {};
+
+async function load() {
+  try {
+    const r = await fetch('/api/settings');
+    states = await r.json();
+    render();
+  } catch(e) {
+    document.getElementById('cards').innerHTML = '<p style="color:#f85149">Failed to load settings</p>';
+  }
+}
+
+function render() {
+  const el = document.getElementById('cards');
+  el.innerHTML = SOURCES.map(src => {
+    const st = states[src.id] || {};
+    const enabled = st.enabled !== false;
+    const keySet = st.key_set !== false;
+
+    // Quota calc
+    let quotaHtml = '';
+    if (src.id === 'sportradar' && st.est_calls_per_month != null) {
+      const used = st.est_calls_per_month;
+      const total = src.quota_total;
+      const pct = Math.min(100, Math.round(used / total * 100));
+      const cls = pct < 60 ? 'safe' : pct < 85 ? 'warn' : 'danger';
+      quotaHtml = `
+        <div class="meta-row"><span class="meta-label">Interval</span><span class="meta-value">${st.poll_interval_secs}s (${Math.round(st.poll_interval_secs/60)}min)</span></div>
+        <div class="meta-row"><span class="meta-label">Est. calls/month</span><span class="meta-value">${used} / ${total} (${pct}%)</span></div>
+        <div class="quota-bar"><div class="quota-fill ${cls}" style="width:${pct}%"></div></div>`;
+    } else if (src.id === 'odds_api') {
+      const used = st.quota_used != null ? st.quota_used : '?';
+      const rem = st.quota_remaining != null ? st.quota_remaining : '?';
+      const pct = st.quota_used != null ? Math.min(100, Math.round(st.quota_used / src.quota_total * 100)) : 0;
+      const cls = pct < 60 ? 'safe' : pct < 85 ? 'warn' : 'danger';
+      quotaHtml = `
+        <div class="meta-row"><span class="meta-label">Used this month</span><span class="meta-value">${used} / ${src.quota_total}</span></div>
+        <div class="meta-row"><span class="meta-label">Remaining</span><span class="meta-value">${rem} credits</span></div>
+        <div class="quota-bar"><div class="quota-fill ${cls}" style="width:${pct}%"></div></div>`;
+    } else if (src.id === 'api_sports') {
+      const rem = st.quota_remaining != null ? st.quota_remaining : '?';
+      const pct = rem !== '?' ? Math.min(100, Math.round((src.quota_total - rem) / src.quota_total * 100)) : 0;
+      const cls = pct < 60 ? 'safe' : pct < 85 ? 'warn' : 'danger';
+      quotaHtml = `
+        <div class="meta-row"><span class="meta-label">Remaining today</span><span class="meta-value">${rem} / ${src.quota_total} req</span></div>
+        <div class="quota-bar"><div class="quota-fill ${cls}" style="width:${pct}%"></div></div>`;
+    } else if (src.id === 'espn') {
+      quotaHtml = `<div class="meta-row"><span class="meta-label">Quota</span><span class="meta-value" style="color:#3fb950">Unlimited ✓</span></div>`;
+    } else if (src.id === 'bets_api') {
+      quotaHtml = `<div class="meta-row"><span class="meta-label">Status</span><span class="meta-value">${keySet ? 'Token active' : 'No token set'}</span></div>`;
+    }
+
+    const warnShow = enabled && src.warning ? 'show' : '';
+    const cardCls = enabled ? 'card active' : 'card paused';
+    const badgeTxt = enabled ? 'ACTIVE' : 'PAUSED';
+    const badgeCls = enabled ? 'badge badge-green' : 'badge badge-red';
+    const noKey = !keySet ? '<span class="badge badge-yellow">NO KEY</span>' : '';
+
+    return `
+    <div class="${cardCls}" id="card-${src.id}">
+      <div class="card-header">
+        <div class="card-title">
+          <span style="font-size:22px">${src.icon}</span>
+          <div>
+            <div class="card-name">${src.name} ${noKey}</div>
+            <div style="font-size:12px;color:#8b949e;margin-top:2px">${src.desc}</div>
+          </div>
+        </div>
+        <div class="toggle-wrap">
+          <span class="toggle-label" id="lbl-${src.id}">${enabled ? 'ON' : 'OFF'}</span>
+          <label class="toggle">
+            <input type="checkbox" id="tog-${src.id}" ${enabled ? 'checked' : ''} onchange="toggle('${src.id}')">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="card-meta">
+        <span class="${badgeCls}">${badgeTxt}</span>
+        ${quotaHtml}
+      </div>
+      <div class="warn-box ${warnShow}" id="warn-${src.id}">${src.warning || ''}</div>
+    </div>`;
+  }).join('');
+}
+
+async function toggle(id) {
+  const cb = document.getElementById('tog-' + id);
+  const enabled = cb.checked;
+  try {
+    const r = await fetch('/api/settings/toggle', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({collector: id, enabled}),
+    });
+    const data = await r.json();
+    if (data.ok) {
+      states[id] = {...(states[id] || {}), enabled};
+      render();
+      showToast(enabled ? id + ' enabled ✓' : id + ' paused — saving quota', !enabled);
+    } else {
+      showToast('Error: ' + (data.error || 'unknown'), true);
+      cb.checked = !enabled;
+    }
+  } catch(e) {
+    showToast('Network error', true);
+    cb.checked = !enabled;
+  }
+}
+
+function showToast(msg, isErr=false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isErr ? ' err' : '');
+  setTimeout(() => t.className = 'toast', 2800);
+}
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>"""
+
+
 async def make_app(runner) -> web.Application:
     app = web.Application()
     app.router.add_get("/", lambda req: _dashboard(req))
@@ -1743,6 +2100,9 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/h2h", lambda req: _api_h2h(runner, req))
     app.router.add_get("/api/scalping", lambda req: _api_scalping(runner, req))
     app.router.add_post("/api/ingest", lambda req: _api_ingest(runner, req))
+    app.router.add_get("/settings", lambda req: _settings_page(req))
+    app.router.add_get("/api/settings", lambda req: _api_collector_states(runner, req))
+    app.router.add_post("/api/settings/toggle", lambda req: _api_collector_toggle(runner, req))
     return app
 
 
