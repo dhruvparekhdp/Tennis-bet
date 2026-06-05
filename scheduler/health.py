@@ -260,7 +260,7 @@ async def _api_ingest(runner, request: web.Request) -> web.Response:
     from analysis.match_state import MatchState, ServeStats
 
     key = request.headers.get("X-Ingest-Key", "")
-    if not settings.ingest_api_key or key != settings.ingest_api_key:
+    if settings.ingest_api_key and key != settings.ingest_api_key:
         return web.Response(
             text=json.dumps({"error": "unauthorized"}),
             content_type="application/json",

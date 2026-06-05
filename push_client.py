@@ -158,13 +158,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if not args.key:
-        print(
-            "ERROR: API key required.\n"
-            "  Set INGEST_API_KEY=your-secret on Render, then run:\n"
-            "  python push_client.py --key your-secret\n"
-            "  (or set INGEST_API_KEY env var locally)"
-        )
-        sys.exit(1)
+        print("No API key provided — connecting without auth (server must have INGEST_API_KEY unset).")
 
     try:
         asyncio.run(push_loop(args.server, args.key, use_parimatch=args.parimatch))
