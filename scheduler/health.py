@@ -396,6 +396,8 @@ header{background:#1e293b;border-bottom:1px solid #334155;padding:14px 20px;disp
 header h1{font-size:18px;font-weight:700;color:#f1f5f9;display:flex;align-items:center;gap:8px}
 .badge{background:#0ea5e9;color:#fff;font-size:11px;padding:2px 8px;border-radius:9999px;font-weight:600}
 .refresh{font-size:12px;color:#64748b}
+.nav-btn{margin-left:12px;background:#0ea5e9;color:#fff;font-size:13px;font-weight:600;padding:6px 14px;border-radius:8px;text-decoration:none;white-space:nowrap}
+.nav-btn:hover{background:#0284c7}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;padding:16px 20px 0}
 .card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px}
 .card-title{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;margin-bottom:6px}
@@ -604,6 +606,7 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 <header>
   <h1>&#127934; Tennis Bet Monitor <span class="badge" id="live-count">0 live</span></h1>
   <span class="refresh" id="refresh-label">Loading&hellip;</span>
+  <a class="nav-btn" href="/data">🗄️ History</a>
 </header>
 
 <div class="grid">
@@ -1386,7 +1389,8 @@ _DATA_HTML = """<!DOCTYPE html>
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;padding-bottom:40px}
 header{background:#1e293b;border-bottom:1px solid #334155;padding:14px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:10}
 header h1{font-size:17px;font-weight:700;color:#f1f5f9;display:flex;align-items:center;gap:8px}
-header a{color:#38bdf8;text-decoration:none;font-size:13px}
+header a.nav-btn{background:#0ea5e9;color:#fff;font-size:13px;font-weight:600;padding:6px 14px;border-radius:8px;text-decoration:none;white-space:nowrap}
+header a.nav-btn:hover{background:#0284c7}
 .controls{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:13px;color:#94a3b8}
 .controls input{width:70px;background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:6px;padding:4px 8px}
 .controls button{background:#0ea5e9;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-weight:600;cursor:pointer}
@@ -1415,7 +1419,7 @@ td.null{color:#475569;font-style:italic}
 <body>
 <header>
   <h1>🗄️ Database Dump</h1>
-  <a href="/">&larr; Dashboard</a>
+  <a class="nav-btn" href="/">&larr; Home</a>
   <div class="controls">
     <span id="status">loading…</span>
     <label>rows/table
