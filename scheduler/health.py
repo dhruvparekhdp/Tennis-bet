@@ -196,6 +196,43 @@ async def _api_signals(runner, request: web.Request) -> web.Response:
     return web.Response(text=json.dumps(signals), content_type="application/json")
 
 
+async def _api_scalping(runner, request: web.Request) -> web.Response:
+    """Sure-shot / scalping opportunities across all live tennis matches."""
+    from analysis.scalping import scan_all
+    from config.settings import settings
+    states = await runner.store.get_all()
+    opps = scan_all(
+        states,
+        min_win_prob=settings.scalp_min_win_prob,
+        lock_win_prob=settings.scalp_lock_win_prob,
+        max_odds=settings.scalp_max_odds,
+        lock_max_odds=settings.scalp_lock_max_odds,
+    )
+    result = [
+        {
+            "match_id": o.match_id,
+            "player_name": o.player_name,
+            "opponent_name": o.opponent_name,
+            "tournament": o.tournament,
+            "surface": o.surface,
+            "source": o.source,
+            "score_summary": o.score_summary,
+            "win_prob": round(o.win_prob * 100, 1),
+            "market_odds": o.market_odds,
+            "market_implied": round(o.market_implied * 100, 1),
+            "edge_pct": o.edge_pct,
+            "ev_pct": o.ev_pct,
+            "tier": o.tier,
+            "reasons": o.reasons,
+            "scalp_window": o.scalp_window,
+            "is_serving": o.is_serving,
+            "timestamp": o.timestamp.isoformat(),
+        }
+        for o in opps
+    ]
+    return web.Response(text=json.dumps(result), content_type="application/json")
+
+
 async def _api_h2h(runner, request: web.Request) -> web.Response:
     p1 = request.query.get("p1", "")
     p2 = request.query.get("p2", "")
@@ -285,9 +322,11 @@ async def _api_ingest(runner, request: web.Request) -> web.Response:
         except Exception as exc:
             _log.get_logger().warning("ingest_match_failed", error=str(exc))
 
-    # Remove stale pushed matches that are no longer in the push payload
+    # Remove stale pushed matches that are no longer in the push payload.
+    # Pushed sources are laptop-scraped: Flashscore (fs_) and Parimatch (pm_).
     for s in await runner.store.get_all():
-        if s.match_id.startswith("fs_") and s.match_id not in pushed_ids:
+        if (s.match_id.startswith("fs_") or s.match_id.startswith("pm_")) \
+                and s.match_id not in pushed_ids:
             await runner.store.remove(s.match_id)
 
     _log.get_logger().info("ingest_received", count=count)
@@ -478,6 +517,45 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .tab-btn:hover:not(.active){color:#94a3b8}
 .tab-content{display:none}
 .tab-content.active{display:block}
+.tab-badge{display:inline-block;background:#dc2626;color:#fff;font-size:10px;font-weight:800;padding:0 6px;border-radius:9999px;margin-left:4px;vertical-align:middle}
+
+/* ── Scalping ── */
+.scalp-intro{font-size:11px;color:#94a3b8;line-height:1.6;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 12px;margin-bottom:14px}
+.scalp-intro strong{color:#e2e8f0}
+.scalp-card{background:#1e293b;border:1px solid #334155;border-left:4px solid #475569;border-radius:12px;overflow:hidden;margin-bottom:12px}
+.scalp-card.tier-lock{border-left-color:#22c55e;box-shadow:0 0 0 1px rgba(34,197,94,.25)}
+.scalp-card.tier-strong{border-left-color:#0ea5e9}
+.scalp-card.tier-watch{border-left-color:#f59e0b}
+.scalp-head{display:flex;align-items:center;gap:8px;padding:9px 12px;background:#162032;border-bottom:1px solid #1e3a5f;flex-wrap:wrap}
+.scalp-tier{font-size:10px;font-weight:900;letter-spacing:.08em;padding:2px 9px;border-radius:5px}
+.scalp-tier.tier-lock{background:#14532d;color:#4ade80}
+.scalp-tier.tier-strong{background:#0c4a6e;color:#7dd3fc}
+.scalp-tier.tier-watch{background:#78350f;color:#fcd34d}
+.scalp-tourney{font-size:11px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scalp-src{font-size:9px;padding:1px 6px;border-radius:4px;background:#1e3a5f;color:#7dd3fc;font-weight:700;text-transform:uppercase}
+.scalp-window{font-size:10px;background:#3b0764;color:#e9d5ff;padding:2px 8px;border-radius:5px;font-weight:700;margin-left:auto;animation:fbpulse 1.2s infinite}
+.scalp-body{padding:12px}
+.scalp-bet{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.scalp-bet-info{flex:1;min-width:0}
+.scalp-bet-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#4ade80;font-weight:700}
+.scalp-player{font-size:19px;font-weight:900;color:#f1f5f9;line-height:1.1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scalp-vs{font-size:11px;color:#64748b;margin-top:2px}
+.scalp-odds{text-align:right}
+.scalp-odds-val{font-size:24px;font-weight:900;color:#34d399}
+.scalp-odds-val.none{color:#475569}
+.scalp-odds-cap{font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.05em}
+.scalp-score{font-size:13px;font-weight:800;color:#f59e0b;margin-bottom:8px}
+.scalp-prob-wrap{height:9px;background:#0f172a;border-radius:5px;overflow:hidden;margin-bottom:4px;position:relative}
+.scalp-prob-bar{height:100%;background:linear-gradient(90deg,#0ea5e9,#22c55e);border-radius:5px}
+.scalp-prob-lbls{display:flex;justify-content:space-between;font-size:10px;color:#64748b;margin-bottom:8px}
+.scalp-prob-lbls b{color:#f1f5f9}
+.scalp-reasons{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px}
+.scalp-reason{font-size:10px;background:#0f172a;color:#cbd5e1;padding:2px 8px;border-radius:9999px;border:1px solid #1e293b}
+.scalp-foot{display:flex;align-items:center;gap:12px;padding:8px 12px;background:#0f172a;border-top:1px solid #1e293b;flex-wrap:wrap}
+.scalp-stat{font-size:11px;color:#94a3b8}
+.scalp-stat b{color:#f1f5f9}
+.scalp-ev-pos{color:#22c55e;font-weight:700}
+.scalp-ev-neg{color:#f87171;font-weight:700}
 
 /* ── Football match card ── */
 .fb-card{background:#1e293b;border:1px solid #334155;border-radius:12px;overflow:hidden;margin-bottom:12px}
@@ -536,6 +614,7 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 
 <div class="tab-bar">
   <button class="tab-btn active" data-tab="tennis" onclick="switchTab('tennis')">🎾 Tennis</button>
+  <button class="tab-btn" data-tab="scalping" onclick="switchTab('scalping')">🎯 Scalping <span id="scalp-count-badge" class="tab-badge" style="display:none">0</span></button>
   <button class="tab-btn" data-tab="football" onclick="switchTab('football')">⚽ Football</button>
 </div>
 
@@ -551,6 +630,14 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   <section>
     <h2>Tennis Signals (last 24h)</h2>
     <div id="signals"><div class="empty">No signals fired yet</div></div>
+  </section>
+</div>
+
+<div id="tab-scalping" class="tab-content">
+  <section>
+    <h2>🎯 Sure-Shot / Scalping Opportunities</h2>
+    <div class="scalp-intro">Near-certain in-play winners — favourite holds a decisive lead <em>and</em> is priced short. <strong>LOCK</strong> = highest conviction. A <strong>scalp window</strong> means odds drifted up after a dropped game (better entry now). Fixed-odds books carry risk — no result is ever 100%.</div>
+    <div id="scalp-list"><div class="empty">No sure-shot opportunities right now</div></div>
   </section>
 </div>
 
@@ -1190,15 +1277,75 @@ function renderFootballSignal(s){
   </div>`;
 }
 
+// ── SCALPING ────────────────────────────────────────────────────────────────────
+const TIER_LABEL={lock:'🔒 LOCK',strong:'✅ STRONG',watch:'👀 WATCH'};
+function renderScalping(opps){
+  const el=document.getElementById('scalp-list');
+  const badge=document.getElementById('scalp-count-badge');
+  const locks=opps.filter(o=>o.tier==='lock').length;
+  if(badge){
+    if(opps.length){badge.style.display='inline-block';badge.textContent=opps.length;
+      badge.style.background=locks?'#16a34a':'#0ea5e9';}
+    else{badge.style.display='none';}
+  }
+  if(!opps.length){
+    el.innerHTML='<div class="empty">No sure-shot opportunities right now.<br><span style="font-size:11px;color:#334155">Appears when a favourite leads decisively & is priced ≤'+'1.25. Needs live odds (Odds API / Parimatch push) for best accuracy.</span></div>';
+    return;
+  }
+  el.innerHTML=opps.map(renderScalpCard).join('');
+}
+
+function renderScalpCard(o){
+  const oddsTxt=o.market_odds>1.01?o.market_odds.toFixed(2):'—';
+  const hasOdds=o.market_odds>1.01;
+  const evClass=o.ev_pct>=0?'scalp-ev-pos':'scalp-ev-neg';
+  const evTxt=(o.ev_pct>=0?'+':'')+o.ev_pct+'%';
+  const win=o.win_prob;
+  const reasons=(o.reasons||[]).map(r=>`<span class="scalp-reason">${esc(r)}</span>`).join('');
+  const window=o.scalp_window?'<span class="scalp-window">⚡ SCALP WINDOW</span>':'';
+  const serving=o.is_serving?' 🎾 serving':'';
+  return `<div class="scalp-card tier-${o.tier}">
+    <div class="scalp-head">
+      <span class="scalp-tier tier-${o.tier}">${TIER_LABEL[o.tier]||o.tier}</span>
+      <span class="scalp-src">${esc(o.source)}</span>
+      <span class="scalp-tourney">${esc(o.tournament)}</span>
+      ${window}
+    </div>
+    <div class="scalp-body">
+      <div class="scalp-bet">
+        <div class="scalp-bet-info">
+          <div class="scalp-bet-label">Back to win${serving}</div>
+          <div class="scalp-player">${esc(o.player_name)}</div>
+          <div class="scalp-vs">vs ${esc(o.opponent_name)}</div>
+        </div>
+        <div class="scalp-odds">
+          <div class="scalp-odds-val ${hasOdds?'':'none'}">${oddsTxt}</div>
+          <div class="scalp-odds-cap">${hasOdds?'back odds':'no odds'}</div>
+        </div>
+      </div>
+      <div class="scalp-score">${esc(o.score_summary)}</div>
+      <div class="scalp-prob-wrap"><div class="scalp-prob-bar" style="width:${Math.min(100,win)}%"></div></div>
+      <div class="scalp-prob-lbls"><span>Model win prob</span><span><b>${win}%</b>${hasOdds?' · market '+o.market_implied+'%':''}</span></div>
+      ${reasons?`<div class="scalp-reasons">${reasons}</div>`:''}
+    </div>
+    <div class="scalp-foot">
+      ${hasOdds?`<span class="scalp-stat">Edge <b>${(o.edge_pct>=0?'+':'')+o.edge_pct}%</b></span>`:''}
+      ${hasOdds?`<span class="scalp-stat">EV <span class="${evClass}">${evTxt}</span></span>`:''}
+      <span class="scalp-stat" style="margin-left:auto">${esc(o.surface)}</span>
+    </div>
+  </div>`;
+}
+
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 async function refresh(){
   try{
-    const [status,matches,signals,fbMatches,fbSignals]=await Promise.all([
+    const [status,matches,signals,fbMatches,fbSignals,scalps]=await Promise.all([
       fetch('/api/status').then(r=>r.json()),
       fetch('/api/matches').then(r=>r.json()),
       fetch('/api/signals').then(r=>r.json()),
       fetch('/api/football/matches').then(r=>r.json()),
       fetch('/api/football/signals').then(r=>r.json()),
+      fetch('/api/scalping').then(r=>r.json()).catch(()=>[]),
     ]);
     document.getElementById('stat-matches').textContent=matches.length;
     document.getElementById('stat-fb-matches').textContent=fbMatches.length;
@@ -1210,6 +1357,7 @@ async function refresh(){
     renderSignals(signals);
     renderFootballMatches(fbMatches);
     renderFootballSignals(fbSignals);
+    renderScalping(scalps||[]);
     document.getElementById('last-updated').textContent='Updated: '+new Date().toLocaleTimeString();
     document.getElementById('refresh-label').textContent='Next in 30s';
   }catch(e){
@@ -1235,6 +1383,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/football/signals", lambda req: _api_football_signals(runner, req))
     app.router.add_get("/api/debug", lambda req: _api_debug(runner, req))
     app.router.add_get("/api/h2h", lambda req: _api_h2h(runner, req))
+    app.router.add_get("/api/scalping", lambda req: _api_scalping(runner, req))
     app.router.add_post("/api/ingest", lambda req: _api_ingest(runner, req))
     return app
 

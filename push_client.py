@@ -72,9 +72,14 @@ def _state_to_dict(s: MatchState) -> dict:
     }
 
 
-async def push_loop(server_url: str, api_key: str) -> None:
+async def push_loop(server_url: str, api_key: str, use_parimatch: bool = False) -> None:
     store = MatchStateStore()
     flashscore = FlashscoreCollector(store)
+    parimatch = None
+    if use_parimatch:
+        from collectors.parimatch import ParimatchCollector
+        parimatch = ParimatchCollector(store=store, headless=True)
+        log.info("parimatch_enabled")
     consecutive_push_failures = 0
 
     log.info("push_client_started", server=server_url, poll_interval=POLL_INTERVAL_SECS)
@@ -83,6 +88,12 @@ async def push_loop(server_url: str, api_key: str) -> None:
         try:
             # Scrape Flashscore locally (residential IP — not blocked)
             await flashscore.fetch()
+            # Optionally scrape Parimatch (Playwright) into the same store
+            if parimatch is not None:
+                try:
+                    await parimatch.fetch_states()
+                except Exception:
+                    log.exception("parimatch_scrape_failed")
             states = await store.get_all()
 
             if not states:
@@ -139,6 +150,11 @@ def main() -> None:
         default=os.getenv("INGEST_API_KEY", ""),
         help="Ingest API key — must match INGEST_API_KEY in Render env vars",
     )
+    parser.add_argument(
+        "--parimatch",
+        action="store_true",
+        help="Also scrape Parimatch via Playwright (needs: playwright install chromium)",
+    )
     args = parser.parse_args()
 
     if not args.key:
@@ -151,7 +167,7 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        asyncio.run(push_loop(args.server, args.key))
+        asyncio.run(push_loop(args.server, args.key, use_parimatch=args.parimatch))
     except KeyboardInterrupt:
         print("\nPush client stopped.")
 

@@ -29,6 +29,7 @@ from analysis.football_engine import FootballEngine
 from analysis.football_state import FootballStateStore
 from analysis.match_state import MatchState
 from analysis.ml_predictor import MLPredictor
+from analysis.scalping import scan_all
 from analysis.state_store import MatchStateStore
 from analysis.win_probability import compute_win_probability
 from collectors.bets_api import BetsAPICollector
@@ -92,6 +93,8 @@ class AppRunner:
         self.football_engine = FootballEngine()
         # Sportradar — covers ALL tennis (Challengers, ITF) + ALL football in one call each
         self.sportradar = SportradarCollector(self.store, self.football_store)
+        # Scalping alerts — track last Telegram ping per match to avoid spam
+        self._scalp_alert_times: dict[str, datetime] = {}
 
     async def _data_poll_job(self) -> None:
         await self.flashscore.fetch()
@@ -249,6 +252,51 @@ class AppRunner:
         except Exception:
             log.exception("odds_job_failed")
 
+    async def _scalp_job(self) -> None:
+        """Scan live tennis for sure-shot 'lock' scalps and ping Telegram (deduped)."""
+        if not settings.scalp_alert_telegram:
+            return
+        try:
+            states = await self.store.get_all()
+            opps = scan_all(
+                states,
+                min_win_prob=settings.scalp_min_win_prob,
+                lock_win_prob=settings.scalp_lock_win_prob,
+                max_odds=settings.scalp_max_odds,
+                lock_max_odds=settings.scalp_lock_max_odds,
+            )
+            now = datetime.now(timezone.utc)
+            cooldown = settings.scalp_alert_cooldown_minutes * 60
+            for o in opps:
+                if o.tier != "lock":
+                    continue
+                last = self._scalp_alert_times.get(o.match_id)
+                if last and (now - last).total_seconds() < cooldown:
+                    continue
+                self._scalp_alert_times[o.match_id] = now
+                odds_txt = f"{o.market_odds:.2f}" if o.market_odds > 1.01 else "n/a"
+                ev_txt = f"{o.ev_pct:+.1f}%" if o.market_odds > 1.01 else "n/a"
+                reasons = ", ".join(o.reasons) if o.reasons else "decisive lead"
+                window = "\n⚡ SCALP WINDOW — odds drifted up, better entry now" if o.scalp_window else ""
+                await self.notifier.send_text(
+                    f"🔒 SURE-SHOT SCALP\n"
+                    f"Back: {o.player_name}\n"
+                    f"vs {o.opponent_name}\n"
+                    f"{o.tournament} ({o.surface})\n"
+                    f"Score: {o.score_summary}\n"
+                    f"Win prob: {o.win_prob*100:.0f}% · Odds: {odds_txt} · EV: {ev_txt}\n"
+                    f"Why: {reasons}{window}"
+                )
+                log.info("scalp_alert_sent", match_id=o.match_id,
+                         player=o.player_name, win_prob=round(o.win_prob, 3))
+            # Drop stale alert-time entries for matches no longer live
+            live_ids = {s.match_id for s in states}
+            for mid in list(self._scalp_alert_times):
+                if mid not in live_ids:
+                    self._scalp_alert_times.pop(mid, None)
+        except Exception:
+            log.exception("scalp_job_failed")
+
     async def _ml_retrain_job(self) -> None:
         try:
             async with AsyncSessionFactory() as session:
@@ -369,6 +417,14 @@ class AppRunner:
             minutes=5,
             id="self_ping",
             max_instances=1,
+        )
+        self.scheduler.add_job(
+            self._scalp_job,
+            "interval",
+            seconds=60,
+            id="scalp_alerts",
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc),
         )
         self.scheduler.add_job(
             self._football_poll_job,

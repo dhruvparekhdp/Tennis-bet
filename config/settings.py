@@ -67,5 +67,14 @@ class Settings(BaseSettings):
     # Set INGEST_API_KEY in Render env vars; pass the same value via --key to push_client.py.
     ingest_api_key: str = ""
 
+    # Scalping / sure-shot detection — thresholds for flagging near-certain in-play winners.
+    # A "lock" needs very high model conviction AND very short market odds.
+    scalp_min_win_prob: float = 0.90      # surface as a scalp at/above this model win prob
+    scalp_lock_win_prob: float = 0.97     # "lock" tier
+    scalp_max_odds: float = 1.25          # only consider favourites priced at/below this
+    scalp_lock_max_odds: float = 1.10     # "lock" tier max odds
+    scalp_alert_telegram: bool = True     # ping Telegram when a new "lock" scalp appears
+    scalp_alert_cooldown_minutes: int = 30
+
 
 settings = Settings()  # type: ignore[call-arg]
