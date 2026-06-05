@@ -17,6 +17,7 @@ Flashscore, or pushed Parimatch data alike.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -26,6 +27,30 @@ from analysis.win_probability import compute_win_probability
 _GRAND_SLAMS = frozenset({
     "australian open", "roland garros", "french open", "wimbledon", "us open",
 })
+
+# Simulated / virtual tennis leagues — never real money opportunities.
+_ETENNIS_MARKERS = ("etennis", "e-tennis", "esports", "virtual", "cyber", "esoccer")
+
+# Player name patterns that indicate a simulated/bot player rather than a real person.
+# Parimatch eTennis uses names like "Alcaraz (Glory)", "mACEsman9", "Djokovic (Fire)".
+_ETENNIS_NAME_RE = re.compile(
+    r"\(Glory\)|\(Fire\)|\(Storm\)|\(Ice\)|mACE|Cyber|Bot\d|Player\d",
+    re.IGNORECASE,
+)
+
+
+def _is_etennis(state: MatchState) -> bool:
+    """True if the match is a simulated/virtual eTennis event — skip for scalping."""
+    t = state.tournament.lower()
+    if any(m in t for m in _ETENNIS_MARKERS):
+        return True
+    for name in (state.player1_name, state.player2_name):
+        if _ETENNIS_NAME_RE.search(name):
+            return True
+        # Numeric suffixes like "mACEsman9" or all-lowercase "xgamer" patterns
+        if re.search(r"\d{1,3}$", name) and not re.search(r"[A-Z]", name[1:]):
+            return True
+    return False
 
 
 @dataclass
@@ -159,6 +184,9 @@ def detect(
     real structural lead so we never flag a noisy 0-0 start.
     """
     if state.is_scheduled:
+        return None
+
+    if _is_etennis(state):
         return None
 
     # Skip matches that have barely started (no meaningful lead yet)
