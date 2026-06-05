@@ -63,5 +63,18 @@ class Settings(BaseSettings):
     # Tournament filter — "tier1" = Slams + Masters 1000/WTA 1000 only, "all" = everything
     tournament_tier: str = "tier1"
 
+    # Push-client ingest — shared secret between your laptop's push_client.py and Render.
+    # Set INGEST_API_KEY in Render env vars; pass the same value via --key to push_client.py.
+    ingest_api_key: str = ""
+
+    # Scalping / sure-shot detection — thresholds for flagging near-certain in-play winners.
+    # A "lock" needs very high model conviction AND very short market odds.
+    scalp_min_win_prob: float = 0.90      # surface as a scalp at/above this model win prob
+    scalp_lock_win_prob: float = 0.97     # "lock" tier
+    scalp_max_odds: float = 1.25          # only consider favourites priced at/below this
+    scalp_lock_max_odds: float = 1.10     # "lock" tier max odds
+    scalp_alert_telegram: bool = True     # ping Telegram when a new "lock" scalp appears
+    scalp_alert_cooldown_minutes: int = 30
+
 
 settings = Settings()  # type: ignore[call-arg]
