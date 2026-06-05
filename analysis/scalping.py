@@ -75,7 +75,6 @@ def _score_summary(state: MatchState, fav: int) -> str:
 
 def _dominance(state: MatchState, fav: int) -> tuple[list[str], int]:
     """Return (human reasons, dominance score 0–100) describing how decided the lead is."""
-    opp = 2 if fav == 1 else 1
     fav_sets = state.sets_p1 if fav == 1 else state.sets_p2
     opp_sets = state.sets_p2 if fav == 1 else state.sets_p1
     fav_games = state.games_in_set_p1 if fav == 1 else state.games_in_set_p2

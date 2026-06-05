@@ -34,7 +34,7 @@ from datetime import datetime
 
 import structlog
 
-from analysis.match_state import MatchState, OddsPoint, ServeStats
+from analysis.match_state import MatchState
 from analysis.state_store import MatchStateStore
 
 log = structlog.get_logger()
@@ -144,7 +144,8 @@ async def discover(headless: bool = False, wait_secs: int = 25) -> None:
             pass
 
         if ws_frames:
-            with open(os.path.join(CAPTURE_DIR, "websocket_frames.txt"), "w", encoding="utf-8") as f:
+            ws_path = os.path.join(CAPTURE_DIR, "websocket_frames.txt")
+            with open(ws_path, "w", encoding="utf-8") as f:
                 f.write("\n\n---FRAME---\n\n".join(ws_frames))
 
         await browser.close()
