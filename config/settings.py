@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # Use a single region on free tier to save quota; eu has the best tennis coverage.
     odds_regions: str = "eu"
 
+    # API-Sports Tennis — https://api-sports.io (100 req/day FREE, cloud-safe)
+    # Same key works for football.api-sports.io — sign up once at dashboard.api-football.com
+    api_sports_key: str | None = None
+    api_sports_poll_interval_seconds: int = 900  # 15 min → 96 calls/day, within 100/day free limit
+
     # BetsAPI — https://betsapi.com (live scores + in-play odds, cloud-safe)
     bets_api_token: str | None = None
 

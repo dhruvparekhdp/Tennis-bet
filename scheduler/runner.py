@@ -32,6 +32,7 @@ from analysis.ml_predictor import MLPredictor
 from analysis.scalping import scan_all
 from analysis.state_store import MatchStateStore
 from analysis.win_probability import compute_win_probability
+from collectors.api_sports import ApiSportsCollector
 from collectors.bets_api import BetsAPICollector
 from collectors.espn import ESPNCollector
 from collectors.flashscore import FlashscoreCollector
@@ -77,6 +78,7 @@ class AppRunner:
         self.thesportsdb = TheSportsDBCollector(api_key=settings.thesportsdb_api_key)
         self.odds_api = OddsApiCollector(self.store)
         self.bets_api = BetsAPICollector(self.store)
+        self.api_sports = ApiSportsCollector(self.store)
         self.ml_predictor = MLPredictor()
         self.notifier = TelegramNotifier()
         self.scheduler = AsyncIOScheduler()
@@ -317,6 +319,14 @@ class AppRunner:
         except Exception:
             log.exception("historical_import_failed_non_fatal")
 
+    async def _api_sports_job(self) -> None:
+        if not settings.api_sports_key:
+            return
+        try:
+            await self.api_sports.fetch()
+        except Exception:
+            log.exception("api_sports_job_failed")
+
     async def _sportradar_job(self) -> None:
         key = settings.sportradar_api_key
         if not key:
@@ -434,6 +444,15 @@ class AppRunner:
             max_instances=1,
             next_run_time=datetime.now(timezone.utc),
         )
+        if settings.api_sports_key:
+            self.scheduler.add_job(
+                self._api_sports_job,
+                "interval",
+                seconds=settings.api_sports_poll_interval_seconds,
+                id="api_sports",
+                max_instances=1,
+                next_run_time=datetime.now(timezone.utc),
+            )
         # Historical import — runs immediately on startup, then weekly
         self.scheduler.add_job(
             self._historical_import_job,
@@ -449,9 +468,10 @@ class AppRunner:
         self.setup_jobs()
         self.scheduler.start()
         bets_api_status = "BetsAPI: active" if settings.bets_api_token else "BetsAPI: no token"
+        api_sports_status = f"API-Sports: active ({settings.api_sports_poll_interval_seconds}s)" if settings.api_sports_key else "API-Sports: no key"
         await self.notifier.send_text(
             "🎾⚽ Tennis + Football monitor started.\n"
-            f"Tennis: ESPN + Flashscore + {bets_api_status} (every {settings.sofascore_poll_interval}s)\n"
+            f"Tennis: ESPN + Flashscore + {bets_api_status} + {api_sports_status} (every {settings.sofascore_poll_interval}s)\n"
             f"Football: ESPN all leagues (every 60s)\n"
             f"Min confidence: {settings.min_confidence}"
         )
@@ -479,6 +499,14 @@ class AppRunner:
             "bets_api": {
                 "token_set": bool(settings.bets_api_token),
                 "consecutive_failures": self.bets_api._consecutive_failures,
+            },
+            "api_sports": {
+                "key_set": bool(settings.api_sports_key),
+                "consecutive_failures": self.api_sports._consecutive_failures,
+                "quota_remaining": self.api_sports.quota_remaining,
+                "last_live": self.api_sports.last_live_count,
+                "last_scheduled": self.api_sports.last_scheduled_count,
+                "poll_interval_secs": settings.api_sports_poll_interval_seconds,
             },
             "sportradar": {
                 "key_set": bool(settings.sportradar_api_key),

@@ -1090,9 +1090,10 @@ function renderSignal(s){
 
 // ── STATUS ────────────────────────────────────────────────────────────────────
 function renderStatus(st){
-  const fs=st.flashscore||{}, espn=st.espn||{}, sc=st.sofascore||{}, oa=st.odds_api||{}, ba=st.bets_api||{}, sr=st.sportradar||{};
+  const fs=st.flashscore||{}, espn=st.espn||{}, sc=st.sofascore||{}, oa=st.odds_api||{}, ba=st.bets_api||{}, sr=st.sportradar||{}, as_=st.api_sports||{};
   const sources=[
     {name:'ESPN',ok:true,detail:'Live scores (always on)'},
+    {name:'API-Sports',ok:as_.key_set,detail:as_.key_set?`${as_.last_live||0} live · ${as_.last_scheduled||0} upcoming · ${as_.quota_remaining!=null?as_.quota_remaining+' req left today':'checking...'} · every ${as_.poll_interval_secs}s`:'No key — add API_SPORTS_KEY (100 req/day FREE)'},
     {name:'Sportradar',ok:sr.key_set,detail:sr.key_set?`All tours+leagues · every ${sr.poll_interval_secs}s`:'No key — add SPORTRADAR_API_KEY (free trial)'},
     {name:'BetsAPI',ok:ba.token_set,detail:ba.token_set?`Live odds · ${ba.consecutive_failures||0} failures`:'No token — add BETS_API_TOKEN'},
     {name:'Sofascore',ok:!sc.blocked,detail:sc.blocked?'Blocked on cloud IP':'Available (serve stats)'},
@@ -1619,6 +1620,35 @@ async def _api_collectors_debug(runner, request: web.Request) -> web.Response:
             out["collectors"]["sportradar"] = {"status": "error", "detail": traceback.format_exc()[-400:]}
     else:
         out["collectors"]["sportradar"] = {"status": "no_key"}
+
+    # ── API-Sports Tennis ─────────────────────────────────────────────────────
+    if settings.api_sports_key:
+        try:
+            async with _httpx.AsyncClient(
+                timeout=8,
+                headers={
+                    "x-apisports-key": settings.api_sports_key,
+                    "x-apisports-host": "v1.tennis.api-sports.io",
+                },
+            ) as c:
+                r = await c.get("https://v1.tennis.api-sports.io/games",
+                                params={"live": "all"})
+            quota = r.headers.get("x-ratelimit-requests-remaining", "?")
+            games = r.json().get("response", []) if r.status_code == 200 else []
+            out["collectors"]["api_sports"] = {
+                "status_code": r.status_code,
+                "live_games": len(games),
+                "quota_remaining": quota,
+                "sample": [
+                    f"{g.get('teams',{}).get('home',{}).get('name','?')} vs "
+                    f"{g.get('teams',{}).get('away',{}).get('name','?')}"
+                    for g in games[:5]
+                ],
+            }
+        except Exception:
+            out["collectors"]["api_sports"] = {"status": "error", "detail": traceback.format_exc()[-400:]}
+    else:
+        out["collectors"]["api_sports"] = {"status": "no_key", "note": "Add API_SPORTS_KEY — 100 req/day free at api-sports.io"}
 
     # ── ESPN (cloud-safe check) ───────────────────────────────────────────────
     import httpx as _httpx
