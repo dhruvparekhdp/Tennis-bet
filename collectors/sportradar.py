@@ -37,6 +37,7 @@ _SURFACE_MAP = {
 }
 
 _TENNIS_LIVE_URL = f"{_BASE}/tennis/trial/v3/en/schedules/live/summaries.json"
+_TENNIS_SCHEDULE_URL = f"{_BASE}/tennis/trial/v3/en/schedules/{{date}}/schedule.json"
 _SOCCER_LIVE_URL = f"{_BASE}/soccer/trial/v4/en/schedules/live/summaries.json"
 
 
@@ -62,49 +63,118 @@ class SportradarCollector:
     # ── Tennis ────────────────────────────────────────────────────────────────
 
     async def fetch_tennis(self, api_key: str) -> None:
+        """
+        Fetch live summaries from Sportradar (live only — no schedule endpoint).
+
+        NOTE: Schedule endpoint disabled to prevent quota burn + 429 rate limits.
+        Upcoming matches come from SportsData.io, API-Tennis, and ESPN instead.
+        Live-only: ~288 calls/day fits within the 1,000/month free trial quota.
+        """
+        live_ids: set[str] = set()
+
         async with httpx.AsyncClient(timeout=20.0) as client:
             try:
                 resp = await client.get(_TENNIS_LIVE_URL, headers=_header(api_key))
                 if resp.status_code == 401:
                     log.error("sportradar_tennis_unauthorized",
                               hint="Check SPORTRADAR_API_KEY")
+                    self._consecutive_failures += 1
                     return
                 if resp.status_code == 403:
                     log.error("sportradar_tennis_forbidden",
                               hint="Trial expired or quota exceeded")
-                    return
-                if resp.status_code != 200:
-                    log.warning("sportradar_tennis_bad_status", status=resp.status_code)
                     self._consecutive_failures += 1
                     return
-                data = resp.json()
+                if resp.status_code == 200:
+                    for summary in resp.json().get("summaries", []):
+                        try:
+                            state = await self._parse_tennis(summary, is_scheduled=False)
+                            if state:
+                                await self.tennis_store.update(state)
+                                live_ids.add(state.match_id)
+                        except Exception:
+                            log.exception("sportradar_tennis_parse_error",
+                                          event=summary.get("sport_event", {}).get("id", "?"))
+                else:
+                    log.warning("sportradar_tennis_bad_status", status=resp.status_code)
+                    self._consecutive_failures += 1
             except Exception:
                 self._consecutive_failures += 1
                 log.exception("sportradar_tennis_fetch_failed")
-                return
 
-        self._consecutive_failures = 0
-        summaries = data.get("summaries", [])
-        live_ids: set[str] = set()
-
-        for summary in summaries:
-            try:
-                state = await self._parse_tennis(summary)
-                if state:
-                    await self.tennis_store.update(state)
-                    live_ids.add(state.match_id)
-            except Exception:
-                log.exception("sportradar_tennis_parse_error",
-                              event=summary.get("sport_event", {}).get("id", "?"))
-
-        # Remove finished matches
+        # Remove stale sr_ states not in today's live+scheduled set
         for s in await self.tennis_store.get_all():
             if s.match_id.startswith("sr_") and s.match_id not in live_ids:
                 await self.tennis_store.remove(s.match_id)
 
-        log.info("sportradar_tennis_done", live=len(live_ids))
+        self._consecutive_failures = 0
+        log.info("sportradar_tennis_done", tracked=len(live_ids))
 
-    async def _parse_tennis(self, summary: dict) -> MatchState | None:
+    async def _parse_tennis_scheduled(self, sport_event: dict) -> MatchState | None:
+        """Parse a sport_event from the daily schedule (upcoming match)."""
+        from datetime import timezone as _tz
+        from dateutil import parser as _dtparser
+
+        status = sport_event.get("status", "")
+        if status in ("closed", "ended", "cancelled"):
+            return None
+
+        match_id = f"sr_{sport_event.get('id', '').replace(':', '_')}"
+
+        competitors = sport_event.get("competitors", [])
+        if len(competitors) < 2:
+            return None
+
+        home = next((c for c in competitors if c.get("qualifier") == "home"), competitors[0])
+        away = next((c for c in competitors if c.get("qualifier") == "away"), competitors[1])
+        p1_name = home.get("name", "Unknown")
+        p2_name = away.get("name", "Unknown")
+        if "/" in p1_name or "/" in p2_name:
+            return None
+
+        tournament_obj = sport_event.get("tournament") or sport_event.get("season") or {}
+        tournament = tournament_obj.get("name", "Unknown Tournament")
+        venue = sport_event.get("venue") or {}
+        surface_raw = (venue.get("surface") or "hard").lower().replace(" ", "_")
+        surface = _SURFACE_MAP.get(surface_raw, "hard")
+
+        start_time: datetime | None = None
+        raw_start = sport_event.get("start_time") or sport_event.get("scheduled")
+        if raw_start:
+            try:
+                start_time = _dtparser.parse(raw_start)
+                if start_time.tzinfo is None:
+                    start_time = start_time.replace(tzinfo=_tz.utc)
+            except Exception:
+                pass
+
+        existing = await self.tennis_store.get(match_id)
+        log.info("sportradar_scheduled", match_id=match_id, p1=p1_name, p2=p2_name,
+                 tournament=tournament, start=raw_start)
+        return MatchState(
+            match_id=match_id,
+            player1_name=p1_name,
+            player2_name=p2_name,
+            surface=surface,
+            tournament=tournament,
+            current_server=0,
+            sets_p1=0, sets_p2=0,
+            games_in_set_p1=0, games_in_set_p2=0,
+            current_set=1,
+            is_tiebreak=False,
+            serve_stats_p1=ServeStats(),
+            serve_stats_p2=ServeStats(),
+            odds_p1=existing.odds_p1 if existing else 0.0,
+            odds_p2=existing.odds_p2 if existing else 0.0,
+            odds_history=existing.odds_history.copy() if existing else [],
+            game_log=[],
+            match_duration_mins=0,
+            timestamp=datetime.utcnow(),
+            is_scheduled=True,
+            start_time=start_time,
+        )
+
+    async def _parse_tennis(self, summary: dict, is_scheduled: bool = False) -> MatchState | None:
         event = summary.get("sport_event", {})
         status = summary.get("sport_event_status", {})
         stats_block = summary.get("statistics", {})

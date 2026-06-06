@@ -53,15 +53,28 @@ class Settings(BaseSettings):
     # How far ahead to show upcoming matches (the API itself returns ~24h of fixtures).
     # Widened from 3h so the dashboard isn't empty when nothing is live right now.
     odds_upcoming_window_hours: int = 24
+    odds_regions: str = "eu,uk,us"
 
     # BetsAPI — https://betsapi.com (live scores + in-play odds, cloud-safe)
     bets_api_token: str | None = None
 
     # Sportradar — https://developer.sportradar.com (free 30-day trial)
     # One call returns ALL live matches across every competition (Challengers, ITF, all football)
-    # Trial quota: 1,000 calls/product/30 days — poll every 2 min = ~720 calls/30 days
+    # Trial quota: 1,000 calls/product/30 days
     sportradar_api_key: str | None = None
-    sportradar_poll_interval_seconds: int = 120  # 2 min → stays within trial quota
+    sportradar_poll_interval_seconds: int = 300  # 5 min, use /settings toggle to pause
+
+    # API-Sports Tennis — https://api-sports.io (100 req/day FREE, cloud-safe)
+    api_sports_key: str | None = None
+    api_sports_poll_interval_seconds: int = 900  # 15 min → 96 calls/day
+
+    # SportsData.io Tennis — https://www.sportsdata.io (250 req/day free trial)
+    sportsdata_api_key: str | None = None
+    sportsdata_poll_interval_seconds: int = 600  # 10 min = 144 calls/day
+
+    # API-Tennis.com — https://api-tennis.com (no hard credit limits)
+    api_tennis_key: str | None = None
+    api_tennis_poll_interval_seconds: int = 300  # 5 min, no quota restrictions
 
     # Tournament filter — "tier1" = Slams + Masters 1000/WTA 1000 only, "all" = everything
     tournament_tier: str = "tier1"

@@ -32,18 +32,24 @@ def _last_name(full_name: str) -> str:
     return full_name.strip().split()[-1].lower() if full_name.strip() else ""
 
 
-def _best_odds(bookmakers: list[dict], idx: int) -> float:
-    """Lowest decimal back price for outcome at position idx across all bookmakers."""
+def _best_odds(bookmakers: list[dict], team_name: str) -> float:
+    """Best (highest) decimal price for the named team/player across all bookmakers.
+
+    The Odds API h2h outcomes array has {name, price} objects. Bookmakers may list
+    them in any order (alphabetical etc.), so we must match by name not by index.
+    Returns 0.0 if no price is found.
+    """
     best: float = 0.0
+    name_lower = team_name.strip().lower()
     for bm in bookmakers:
         for market in bm.get("markets", []):
             if market.get("key") != "h2h":
                 continue
-            outcomes = market.get("outcomes", [])
-            if len(outcomes) > idx:
-                price = float(outcomes[idx].get("price", 0.0))
-                if price > 1.0 and (best == 0.0 or price < best):
-                    best = price
+            for outcome in market.get("outcomes", []):
+                if outcome.get("name", "").strip().lower() == name_lower:
+                    price = float(outcome.get("price", 0.0))
+                    if price > 1.0 and (best == 0.0 or price > best):
+                        best = price
     return best
 
 
@@ -79,41 +85,46 @@ class OddsApiCollector:
         self.quota_remaining: str | None = None
         self.quota_used: str | None = None
         self.last_events_fetched: int = 0
+        # Keys that returned ≥1 event last poll — tried first next time
+        self._known_active_keys: list[str] = []
 
-    # Fallback keys tried even when the sports-list returns nothing (always-on tournaments).
-    _FALLBACK_KEYS = [
+    # Always-on Grand Slam / major keys (tried even when sports-list returns nothing)
+    _GRAND_SLAM_KEYS = [
         "tennis_atp_french_open", "tennis_wta_french_open",
         "tennis_atp_wimbledon", "tennis_wta_wimbledon",
         "tennis_atp_us_open", "tennis_wta_us_open",
         "tennis_atp_australian_open", "tennis_wta_australian_open",
-        "tennis_atp", "tennis_wta",
     ]
+    _GENERIC_KEYS = ["tennis_atp", "tennis_wta"]
 
     async def _get_active_tennis_sports(self, client: httpx.AsyncClient, api_key: str) -> list[str]:
         """
         GET /v4/sports/?all=true — free, doesn't count against quota.
-        Returns all tennis sport keys (active or not), deduped against fallbacks.
+        Returns tennis sport keys to poll, prioritising keys that had events last time.
         """
         discovered: list[str] = []
         try:
             resp = await client.get(f"{_API_BASE}/sports/",
                                     params={"apiKey": api_key, "all": "true"})
-            if resp.status_code != 200:
-                log.error("odds_api_sports_error", status=resp.status_code, body=resp.text[:300])
-            else:
+            if resp.status_code == 200:
                 all_sports: list[dict] = resp.json()
-                discovered = [
-                    s["key"] for s in all_sports
-                    if "tennis" in s.get("key", "").lower()
-                ]
-                log.info("odds_api_sports_fetched", all_tennis=discovered)
+                # Active-only first (have current odds), then inactive (upcoming)
+                active = [s["key"] for s in all_sports
+                          if "tennis" in s.get("key", "") and s.get("active")]
+                discovered = active or [s["key"] for s in all_sports
+                                        if "tennis" in s.get("key", "")]
+                log.info("odds_api_sports_fetched",
+                         active_tennis=active, all_tennis_count=len(discovered))
+            else:
+                log.warning("odds_api_sports_error", status=resp.status_code)
         except Exception as exc:
             log.error("odds_api_sports_fetch_failed", error=str(exc))
 
-        # Merge with fallbacks (fallbacks first so Grand Slams are always tried)
+        # Priority: known-active keys first, then discovered, then Grand Slams, then generic
         seen: set[str] = set()
         merged: list[str] = []
-        for k in self._FALLBACK_KEYS + discovered:
+        for k in (self._known_active_keys + discovered
+                  + self._GRAND_SLAM_KEYS + self._GENERIC_KEYS):
             if k not in seen:
                 seen.add(k)
                 merged.append(k)
@@ -134,6 +145,7 @@ class OddsApiCollector:
         total_fetched = 0
         quota_remaining: str | None = None
         current_live_ids: set[str] = set()
+        newly_active_keys: list[str] = []
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             sports = await self._get_active_tennis_sports(client, api_key)
@@ -145,7 +157,7 @@ class OddsApiCollector:
                         f"{_API_BASE}/sports/{sport}/odds/",
                         params={
                             "apiKey": api_key,
-                            "regions": "eu,uk,us",
+                            "regions": settings.odds_regions,
                             "markets": "h2h",
                             "oddsFormat": "decimal",
                             "commenceTimeFrom": commence_time_from,
@@ -174,6 +186,9 @@ class OddsApiCollector:
                     continue
 
                 total_fetched += len(events)
+                if events:
+                    newly_active_keys.append(sport)
+                    log.info("odds_api_sport_events", sport=sport, count=len(events))
 
                 for event in events:
                     home = event.get("home_team", "?")
@@ -230,6 +245,7 @@ class OddsApiCollector:
         self.quota_remaining = quota_remaining
         self.quota_used = quota_used
         self.last_events_fetched = total_fetched
+        self._known_active_keys = newly_active_keys
         log.info(
             "odds_api_done",
             matches_updated=total_updated,
@@ -263,8 +279,8 @@ class OddsApiCollector:
             log.info("odds_api_skipped_doubles", home=home_team[:40], away=away_team[:40])
             return None
 
-        odds_home = _best_odds(bookmakers, 0)
-        odds_away = _best_odds(bookmakers, 1)
+        odds_home = _best_odds(bookmakers, home_team)
+        odds_away = _best_odds(bookmakers, away_team)
         # Still create the match state even if odds are missing (bookmakers may be empty)
 
         home_last = _last_name(home_team)

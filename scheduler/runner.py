@@ -38,6 +38,8 @@ from collectors.flashscore import FlashscoreCollector
 from collectors.football_espn import FootballESPNCollector
 from collectors.football_odds_api import FootballOddsApiCollector
 from collectors.sportradar import SportradarCollector
+from collectors.sportsdata import SportsDataCollector
+from collectors.api_tennis import ApiTennisCollector
 from collectors.historical_importer import run_import
 from collectors.odds_api import OddsApiCollector
 from collectors.slam_pbp_importer import run_slam_import
@@ -93,8 +95,22 @@ class AppRunner:
         self.football_engine = FootballEngine()
         # Sportradar — covers ALL tennis (Challengers, ITF) + ALL football in one call each
         self.sportradar = SportradarCollector(self.store, self.football_store)
+        # SportsData.io — live + scheduled tennis
+        self.sportsdata = SportsDataCollector(self.store)
+        # API-Tennis — live + scheduled, no quota limits
+        self.api_tennis = ApiTennisCollector(self.store)
         # Scalping alerts — track last Telegram ping per match to avoid spam
         self._scalp_alert_times: dict[str, datetime] = {}
+        # Collector enable/disable toggles (runtime, not persisted across restarts)
+        self.collector_enabled: dict[str, bool] = {
+            "sportradar": True,
+            "sportsdata": True,
+            "api_tennis": True,
+            "odds_api": True,
+            "api_sports": True,
+            "espn": True,
+            "bets_api": True,
+        }
 
     async def _data_poll_job(self) -> None:
         await self.flashscore.fetch()
@@ -330,6 +346,26 @@ class AppRunner:
         except Exception:
             log.exception("sportradar_soccer_job_failed")
 
+    async def _sportsdata_job(self) -> None:
+        if not settings.sportsdata_api_key:
+            return
+        if not self.collector_enabled.get("sportsdata", True):
+            return
+        try:
+            await self.sportsdata.fetch()
+        except Exception:
+            log.exception("sportsdata_job_failed")
+
+    async def _api_tennis_job(self) -> None:
+        if not settings.api_tennis_key:
+            return
+        if not self.collector_enabled.get("api_tennis", True):
+            return
+        try:
+            await self.api_tennis.fetch()
+        except Exception:
+            log.exception("api_tennis_job_failed")
+
     async def _cleanup_job(self) -> None:
         async with AsyncSessionFactory() as session:
             repo = Repository(session)
@@ -411,6 +447,24 @@ class AppRunner:
                 max_instances=1,
                 next_run_time=datetime.now(timezone.utc),
             )
+        if settings.sportsdata_api_key:
+            self.scheduler.add_job(
+                self._sportsdata_job,
+                "interval",
+                seconds=settings.sportsdata_poll_interval_seconds,
+                id="sportsdata",
+                max_instances=1,
+                next_run_time=datetime.now(timezone.utc),
+            )
+        if settings.api_tennis_key:
+            self.scheduler.add_job(
+                self._api_tennis_job,
+                "interval",
+                seconds=settings.api_tennis_poll_interval_seconds,
+                id="api_tennis",
+                max_instances=1,
+                next_run_time=datetime.now(timezone.utc),
+            )
         self.scheduler.add_job(
             self._self_ping_job,
             "interval",
@@ -484,6 +538,22 @@ class AppRunner:
                 "key_set": bool(settings.sportradar_api_key),
                 "consecutive_failures": self.sportradar._consecutive_failures,
                 "poll_interval_secs": settings.sportradar_poll_interval_seconds,
+            },
+            "sportsdata": {
+                "key_set": bool(settings.sportsdata_api_key),
+                "consecutive_failures": self.sportsdata._consecutive_failures,
+                "poll_interval_secs": settings.sportsdata_poll_interval_seconds,
+                "quota_remaining": self.sportsdata.quota_remaining,
+                "quota_total": self.sportsdata.quota_total,
+                "last_live": self.sportsdata.last_live_count,
+                "last_scheduled": self.sportsdata.last_scheduled_count,
+            },
+            "api_tennis": {
+                "key_set": bool(settings.api_tennis_key),
+                "consecutive_failures": self.api_tennis._consecutive_failures,
+                "poll_interval_secs": settings.api_tennis_poll_interval_seconds,
+                "last_live": self.api_tennis.last_live_count,
+                "last_scheduled": self.api_tennis.last_scheduled_count,
             },
             "football": {
                 "live_matches": 0,  # filled by health.py via football_store.count()
