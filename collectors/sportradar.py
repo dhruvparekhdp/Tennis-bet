@@ -189,19 +189,34 @@ class SportradarCollector:
         if len(competitors) < 2:
             return None
 
+        # Sportradar doubles: >2 competitors OR "double"/"mixed" in tournament/category
+        tournament_obj = event.get("tournament") or event.get("season") or {}
+        tournament = tournament_obj.get("name", "Unknown Tournament")
+        category_name = (
+            event.get("sport_event_context", {})
+            .get("category", {})
+            .get("name", "")
+        ).lower()
+        if len(competitors) > 2:
+            log.debug("sportradar_skipped_doubles_count", competitors=len(competitors),
+                      tournament=tournament)
+            return None
+        if any(kw in tournament.lower() for kw in ("double", "dbl", "mixed")):
+            log.debug("sportradar_skipped_doubles_tournament", tournament=tournament)
+            return None
+        if any(kw in category_name for kw in ("double", "dbl", "mixed")):
+            log.debug("sportradar_skipped_doubles_category", category=category_name)
+            return None
+
         home = next((c for c in competitors if c.get("qualifier") == "home"), competitors[0])
         away = next((c for c in competitors if c.get("qualifier") == "away"), competitors[1])
 
         p1_name = home.get("name", "Unknown")
         p2_name = away.get("name", "Unknown")
 
-        # Skip doubles
+        # Skip doubles where names contain "/" (some APIs use this format)
         if "/" in p1_name or "/" in p2_name:
             return None
-
-        # Tournament & surface
-        tournament_obj = event.get("tournament") or event.get("season") or {}
-        tournament = tournament_obj.get("name", "Unknown Tournament")
         venue = event.get("venue") or {}
         surface_raw = (venue.get("surface") or "hard").lower().replace(" ", "_")
         surface = _SURFACE_MAP.get(surface_raw, "hard")
