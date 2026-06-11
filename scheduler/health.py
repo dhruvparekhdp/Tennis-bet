@@ -465,6 +465,47 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .mc-odds-val.none{color:#334155;font-size:16px}
 .mc-odds-hint{font-size:9px;color:#475569;margin-top:2px}
 
+/* ── Redesigned match card (v2 — app style) ── */
+.mc2{background:#0d1b2e;border:1px solid #1e3a5f;border-radius:14px;overflow:hidden;margin-bottom:14px}
+.mc2-top{display:flex;align-items:center;gap:7px;padding:9px 14px;background:#0a1422;font-size:11px;color:#64748b;border-bottom:1px solid #14263d;flex-wrap:wrap}
+.mc2-live{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:10px;font-weight:800;color:#f87171;white-space:nowrap}
+.mc2-livedot{width:7px;height:7px;border-radius:50%;background:#ef4444;animation:fbpulse 1s infinite}
+.mc2-score{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:16px 14px 13px;gap:6px}
+.mc2-pl{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0}
+.mc2-plname{font-size:14px;font-weight:800;color:#f1f5f9;text-align:center;line-height:1.2;overflow:hidden;text-overflow:ellipsis;max-width:140px}
+.mc2-lead{font-size:9px;padding:1px 6px;border-radius:4px;background:#14532d;color:#4ade80;font-weight:800}
+.mc2-center{display:flex;flex-direction:column;align-items:center;gap:5px;min-width:104px}
+.mc2-sets{font-size:38px;font-weight:900;color:#f87171;letter-spacing:4px;line-height:1}
+.mc2-setnow{font-size:12px;color:#94a3b8;font-weight:700}
+.mc2-setnow b{color:#f1f5f9}
+.mc2-tb{font-size:9px;font-weight:900;color:#0f172a;background:#facc15;border-radius:5px;padding:2px 8px;letter-spacing:.06em}
+.mc2-blk{border-top:1px solid #14263d;padding:10px 14px}
+.mc2-lbl{display:flex;align-items:baseline;gap:8px;margin-bottom:7px;flex-wrap:wrap}
+.mc2-lbl h3{font-size:10px;font-weight:800;letter-spacing:.1em;color:#7dd3fc;text-transform:uppercase}
+.mc2-lbl span{font-size:9px;color:#475569}
+.mvm{display:grid;grid-template-columns:84px 1fr 1fr;gap:4px;font-size:11px}
+.mvm .h{color:#94a3b8;font-weight:700;font-size:10px;text-align:center;padding:3px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mvm .lab{color:#64748b;padding:4px 0;font-size:10px}
+.mvm .val{text-align:center;font-weight:800;color:#f1f5f9;padding:4px 0;border-radius:5px}
+.mvm .val.best{background:#0c2e1a;color:#4ade80}
+.mc2-probbar{display:flex;height:9px;border-radius:5px;overflow:hidden;margin:7px 0 4px;background:#1e293b}
+.mc2-pb1{background:#38bdf8}.mc2-pb2{background:#f97316}
+.mc2-problbl{display:flex;justify-content:space-between;font-size:10px;color:#94a3b8}
+.mc2-problbl b{color:#f1f5f9}
+.mc2-odds{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.mc2-ob{background:#0a1422;border:1px solid #1e3a5f;border-radius:9px;padding:9px;text-align:center}
+.mc2-ob.fav{border-color:#14532d;background:#0c2014}
+.mc2-obname{font-size:10px;color:#94a3b8;font-weight:700;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mc2-obval{font-size:22px;font-weight:900;color:#38bdf8;line-height:1}
+.mc2-ob.fav .mc2-obval{color:#34d399}
+.mc2-obval.none{color:#334155;font-size:14px}
+.mc2-obimp{font-size:9px;color:#64748b;margin-top:3px}
+.mc2-obtag{font-size:8px;font-weight:800;color:#4ade80;letter-spacing:.08em}
+.mc2-dt{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#0a1422;border-top:1px solid #14263d;cursor:pointer}
+.mc2-dt span{font-size:10px;font-weight:800;letter-spacing:.08em;color:#64748b;text-transform:uppercase}
+.mc2-dt .arr{font-size:13px;color:#475569}
+.mc2-details{display:none;border-top:1px solid #14263d;background:#0a1422}
+
 /* ── Signal cards — clearer BET ON ── */
 .signal-card{background:#1e293b;border:1px solid #334155;border-radius:10px;overflow:hidden;margin-bottom:10px}
 .sc-header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#0f172a;border-bottom:1px solid #334155}
@@ -625,16 +666,16 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 
 <div id="tab-tennis" class="tab-content active">
   <section>
-    <h2>Data Sources</h2>
-    <div class="status-grid" id="sources"></div>
-  </section>
-  <section>
     <h2>Live Tennis Matches</h2>
     <div id="matches"><div class="empty">No live matches tracked</div></div>
   </section>
   <section>
     <h2>Tennis Signals (last 24h)</h2>
     <div id="signals"><div class="empty">No signals fired yet</div></div>
+  </section>
+  <section>
+    <h2>Data Sources</h2>
+    <div class="status-grid" id="sources"></div>
   </section>
 </div>
 
@@ -809,169 +850,142 @@ function renderMatch(m){
   const surf=SURFACE_CLASS[m.surface]||'';
   const surfLabel=m.surface.replace('_',' ');
   const hasOdds=m.odds_p1>1.01&&m.odds_p2>1.01;
-  const hasScore=m.sets_p1>0||m.sets_p2>0||m.games_p1>0||m.games_p2>0;
   const isOddsOnly=m.source==='odds';
   const sets=m.set_scores||[];
-  const numSets=sets.length;
+  const p1s=esc(m.player1.split(' ').pop());
+  const p2s=esc(m.player2.split(' ').pop());
+  const mid=m.match_id.replace(/[^a-z0-9]/gi,'_');
 
-  // Odds-only match (no live score data from ESPN/BetsAPI)
+  // ── Header ──
+  const dur=m.duration_mins>0?` · ${m.duration_mins}m`:'';
+  const header=`<div class="mc2-top">
+    <span class="source-tag">${isOddsOnly?'ODDS':m.source.toUpperCase()}</span>
+    <span class="${surf}">${surfLabel}</span>
+    <span>&middot; ${esc(m.tournament)}</span>
+    <span class="mc2-live"><span class="mc2-livedot"></span>LIVE${dur}</span>
+  </div>`;
+
+  // ── Score block (app style: names at sides, big set score centered) ──
+  const p1Lead=m.sets_p1>m.sets_p2||(m.sets_p1===m.sets_p2&&m.games_p1>m.games_p2);
+  const p2Lead=m.sets_p2>m.sets_p1||(m.sets_p1===m.sets_p2&&m.games_p2>m.games_p1);
+  let center;
   if(isOddsOnly){
-    const favP1=hasOdds&&m.odds_p1<m.odds_p2;
-    const impliedP1=hasOdds?Math.round(100/m.odds_p1)+'%':'—';
-    const impliedP2=hasOdds?Math.round(100/m.odds_p2)+'%':'—';
-    const mid2=m.match_id.replace(/[^a-z0-9]/gi,'_');
-    return `<div class="match-card">
-      <div class="mc-header">
-        <span class="source-tag" style="background:#1a2e1a;color:#86efac">LIVE</span>
-        <span class="${surf}">${surfLabel}</span>
-        <span>&middot; ${esc(m.tournament)}</span>
-        <span style="margin-left:auto;font-size:10px;color:#475569">odds only · no score feed</span>
+    center=`<div style="font-size:18px;font-weight:900;color:#475569;letter-spacing:2px">vs</div>
+      <div class="mc2-setnow" style="font-size:10px">in play · no score feed</div>`;
+  }else{
+    center=`<div class="mc2-sets">${m.sets_p1} : ${m.sets_p2}</div>
+      <div class="mc2-setnow">SET ${m.current_set} · <b>${m.games_p1} : ${m.games_p2}</b></div>
+      ${m.is_tiebreak?'<div class="mc2-tb">TIEBREAK</div>':''}`;
+  }
+  const scoreBlock=`<div class="mc2-score">
+    <div class="mc2-pl">
+      <div class="mc2-plname">${esc(m.player1)}</div>
+      ${p1Lead&&!isOddsOnly?'<span class="mc2-lead">LEADING</span>':''}
+    </div>
+    <div class="mc2-center">${center}</div>
+    <div class="mc2-pl">
+      <div class="mc2-plname">${esc(m.player2)}</div>
+      ${p2Lead&&!isOddsOnly?'<span class="mc2-lead">LEADING</span>':''}
+    </div>
+  </div>`;
+
+  // ── Who wins? Model vs Market (labeled — this is what the bare % bar was) ──
+  const hasModel=m.win_prob_p1>0||m.win_prob_p2>0;
+  let mvmBlock='';
+  if(hasModel||hasOdds){
+    const imp1=hasOdds?Math.round(100/m.odds_p1):null;
+    const imp2=hasOdds?Math.round(100/m.odds_p2):null;
+    let rows='';
+    if(hasModel){
+      rows+=`<div class="lab">Our model</div>
+        <div class="val ${m.win_prob_p1>=m.win_prob_p2?'best':''}">${m.win_prob_p1}%</div>
+        <div class="val ${m.win_prob_p2>m.win_prob_p1?'best':''}">${m.win_prob_p2}%</div>`;
+    }
+    if(hasOdds){
+      rows+=`<div class="lab">Bookmakers</div>
+        <div class="val ${imp1>=imp2?'best':''}">${imp1}%</div>
+        <div class="val ${imp2>imp1?'best':''}">${imp2}%</div>`;
+    }
+    let bar='';
+    if(hasModel){
+      const w1=Math.max(5,Math.min(95,m.win_prob_p1));
+      bar=`<div class="mc2-probbar"><div class="mc2-pb1" style="width:${w1}%"></div><div class="mc2-pb2" style="width:${100-w1}%"></div></div>
+      <div class="mc2-problbl"><span>◀ <b>${m.win_prob_p1}%</b> ${p1s}</span><span>model win probability</span><span>${p2s} <b>${m.win_prob_p2}%</b> ▶</span></div>`;
+    }
+    mvmBlock=`<div class="mc2-blk">
+      <div class="mc2-lbl"><h3>Who wins? — Model vs Market</h3><span>model = our estimate from live score · market = from bookmaker odds</span></div>
+      <div class="mvm">
+        <div class="h"></div><div class="h">${p1s}</div><div class="h">${p2s}</div>
+        ${rows}
       </div>
-      <div class="mc-players">
-        <div class="mc-player">
-          <div class="mc-name">${esc(m.player1)}</div>
-          <div style="font-size:11px;color:#64748b;margin-top:3px">impl. ${impliedP1}</div>
-        </div>
-        <div class="mc-center">
-          <div class="mc-set-label">IN PLAY</div>
-          <div style="font-size:20px;font-weight:900;color:#475569;letter-spacing:2px">vs</div>
-        </div>
-        <div class="mc-player right">
-          <div class="mc-name">${esc(m.player2)}</div>
-          <div style="font-size:11px;color:#64748b;margin-top:3px">impl. ${impliedP2}</div>
-        </div>
-      </div>
-      <div class="mc-odds-row">
-        <div class="mc-odds-box">
-          <div class="mc-odds-label">Back ${esc(m.player1.split(' ').pop())}</div>
-          <div class="mc-odds-val ${hasOdds?(favP1?'fav':'dog'):'none'}">${hasOdds?m.odds_p1.toFixed(2):'—'}</div>
-        </div>
-        <div class="mc-odds-box">
-          <div class="mc-odds-label">Back ${esc(m.player2.split(' ').pop())}</div>
-          <div class="mc-odds-val ${hasOdds?(!favP1?'fav':'dog'):'none'}">${hasOdds?m.odds_p2.toFixed(2):'—'}</div>
-        </div>
-      </div>
-      <div onclick="toggleH2H('${mid2}','${esc(m.player1)}','${esc(m.player2)}','${m.surface}')"
-        style="padding:8px 12px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;background:#0c1929;border-top:1px solid #1e293b">
-        <span style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em">H2H &amp; Player Stats</span>
-        <span style="font-size:14px;color:#475569">▾</span>
-      </div>
-      <div id="h2h-${mid2}" style="display:none;border-top:1px solid #1e293b"></div>
+      ${bar}
     </div>`;
   }
 
-  // Header
-  const tbBadge=m.is_tiebreak?'<span style="background:#7c3aed;color:#ddd6fe;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700;margin-left:auto">TIEBREAK</span>':'';
-  const dur=m.duration_mins>0?`<span>${m.duration_mins} min</span>`:'';
-  const header=`<div class="mc-header">
-    <span class="source-tag">${m.source.toUpperCase()}</span>
-    <span class="${surf}">${surfLabel}</span>
-    <span>&middot; ${esc(m.tournament)}</span>
-    ${dur}
-    ${tbBadge}
-  </div>`;
-
-  // Player row
-  const p1Lead=m.sets_p1>m.sets_p2||(!m.sets_p1&&!m.sets_p2&&m.games_p1>m.games_p2);
-  const p2Lead=m.sets_p2>m.sets_p1||(!m.sets_p1&&!m.sets_p2&&m.games_p2>m.games_p1);
-  const p1LeadBadge=p1Lead?'<span class="mc-leading">LEADING</span>':'';
-  const p2LeadBadge=p2Lead?'<span class="mc-leading">LEADING</span>':'';
-
-  const gameScore=hasScore?`${m.games_p1} : ${m.games_p2}`:'— : —';
-  const setLabel=`Set ${m.current_set}${m.is_tiebreak?' · TB':''}`;
-
-  const players=`<div class="mc-players">
-    <div class="mc-player">
-      <div class="mc-name">${esc(m.player1)}</div>
-      ${hasScore?`<div class="mc-sets-won">${m.sets_p1}</div>`:''}
-      ${p1LeadBadge}
-    </div>
-    <div class="mc-center">
-      <div class="mc-set-label">${setLabel}</div>
-      <div class="mc-game-score">${gameScore}</div>
-      ${m.duration_mins>0?`<div class="mc-duration">${m.duration_mins} min</div>`:''}
-    </div>
-    <div class="mc-player right">
-      <div class="mc-name">${esc(m.player2)}</div>
-      ${hasScore?`<div class="mc-sets-won">${m.sets_p2}</div>`:''}
-      ${p2LeadBadge}
+  // ── Match winner odds (decimal + implied %, favourite tagged) ──
+  const favP1=hasOdds&&m.odds_p1<m.odds_p2;
+  const oddsBlock=`<div class="mc2-blk">
+    <div class="mc2-lbl"><h3>Match Winner Odds</h3><span>decimal · lower = favourite · % = chance bookies imply</span></div>
+    <div class="mc2-odds">
+      <div class="mc2-ob ${hasOdds&&favP1?'fav':''}">
+        <div class="mc2-obname">${p1s}</div>
+        <div class="mc2-obval ${hasOdds?'':'none'}">${hasOdds?m.odds_p1.toFixed(2):'no odds yet'}</div>
+        ${hasOdds?`<div class="mc2-obimp">implies ${Math.round(100/m.odds_p1)}% chance${favP1?' · <span class="mc2-obtag">FAVOURITE</span>':' · underdog'}</div>`:''}
+      </div>
+      <div class="mc2-ob ${hasOdds&&!favP1?'fav':''}">
+        <div class="mc2-obname">${p2s}</div>
+        <div class="mc2-obval ${hasOdds?'':'none'}">${hasOdds?m.odds_p2.toFixed(2):'no odds yet'}</div>
+        ${hasOdds?`<div class="mc2-obimp">implies ${Math.round(100/m.odds_p2)}% chance${!favP1?' · <span class="mc2-obtag">FAVOURITE</span>':' · underdog'}</div>`:''}
+      </div>
     </div>
   </div>`;
 
-  // Fairplay-style scoreboard
+  // ── Collapsed details at the bottom of the card: set-by-set + H2H ──
   let scoreboard='';
-  if(numSets>0){
-    const p1Short=m.player1.split(' ').pop();
-    const p2Short=m.player2.split(' ').pop();
+  if(sets.length>0){
     const setHeaders=sets.map((_,i)=>`<th>S${i+1}</th>`).join('');
-    const p1Cells=sets.map((s,i)=>{
-      if(s.current) return `<td class="sb-cur">${s.p1}</td>`;
-      return `<td class="${s.p1>s.p2?'sb-won':'sb-lost'}">${s.p1}</td>`;
+    const cells=(key,other)=>sets.map(s=>{
+      if(s.current) return `<td class="sb-cur">${s[key]}</td>`;
+      return `<td class="${s[key]>s[other]?'sb-won':'sb-lost'}">${s[key]}</td>`;
     }).join('');
-    const p2Cells=sets.map((s,i)=>{
-      if(s.current) return `<td class="sb-cur">${s.p2}</td>`;
-      return `<td class="${s.p2>s.p1?'sb-won':'sb-lost'}">${s.p2}</td>`;
-    }).join('');
-    scoreboard=`<div class="mc-scoreboard"><table class="sb-table">
-      <thead><tr>
-        <th class="pname"></th>${setHeaders}
-        <th>Sets</th>
-      </tr></thead>
+    scoreboard=`<div class="mc-scoreboard" style="border-top:none"><table class="sb-table">
+      <thead><tr><th class="pname"></th>${setHeaders}<th>Sets</th></tr></thead>
       <tbody>
-        <tr>
-          <td class="pname">${esc(p1Short)}</td>${p1Cells}
-          <td class="${m.sets_p1>=m.sets_p2?'sb-sets-total sb-won':'sb-sets-total sb-lost'}">${m.sets_p1}</td>
-        </tr>
-        <tr>
-          <td class="pname">${esc(p2Short)}</td>${p2Cells}
-          <td class="${m.sets_p2>=m.sets_p1?'sb-sets-total sb-won':'sb-sets-total sb-lost'}">${m.sets_p2}</td>
-        </tr>
+        <tr><td class="pname">${p1s}</td>${cells('p1','p2')}
+          <td class="${m.sets_p1>=m.sets_p2?'sb-sets-total sb-won':'sb-sets-total sb-lost'}">${m.sets_p1}</td></tr>
+        <tr><td class="pname">${p2s}</td>${cells('p2','p1')}
+          <td class="${m.sets_p2>=m.sets_p1?'sb-sets-total sb-won':'sb-sets-total sb-lost'}">${m.sets_p2}</td></tr>
       </tbody>
     </table></div>`;
   }
-
-  // Win probability bar
-  let probBar='';
-  if(m.win_prob_p1>0||m.win_prob_p2>0){
-    const p1w=Math.max(5,Math.min(95,m.win_prob_p1));
-    const p2w=Math.max(5,Math.min(95,m.win_prob_p2));
-    const p1Short=m.player1.split(' ').pop();
-    const p2Short=m.player2.split(' ').pop();
-    probBar=`<div class="mc-prob">
-      <span class="prob-name">${esc(p1Short)}</span>
-      <span class="prob-pct">${m.win_prob_p1}%</span>
-      <div class="prob-bar-wrap">
-        <div class="prob-bar-p1" style="width:${p1w}%"></div>
-        <div class="prob-bar-p2" style="width:${p2w}%"></div>
-      </div>
-      <span class="prob-pct right">${m.win_prob_p2}%</span>
-      <span class="prob-name right">${esc(p2Short)}</span>
-    </div>`;
-  }
-
-  // Odds
-  const favP1=hasOdds&&m.odds_p1<m.odds_p2;
-  const oddsRow=`<div class="mc-odds-row">
-    <div class="mc-odds-box">
-      <div class="mc-odds-label">Back ${esc(m.player1.split(' ').pop())}</div>
-      <div class="mc-odds-val ${hasOdds?(favP1?'fav':'dog'):'none'}">${hasOdds?m.odds_p1.toFixed(2):'—'}</div>
-      ${!hasOdds?'<div class="mc-odds-hint">No live odds yet</div>':''}
-    </div>
-    <div class="mc-odds-box">
-      <div class="mc-odds-label">Back ${esc(m.player2.split(' ').pop())}</div>
-      <div class="mc-odds-val ${hasOdds?(!favP1?'fav':'dog'):'none'}">${hasOdds?m.odds_p2.toFixed(2):'—'}</div>
-    </div>
+  const details=`<div class="mc2-dt" onclick="toggleDetails('${mid}','${esc(m.player1)}','${esc(m.player2)}','${m.surface}')">
+    <span>📊 Match details — sets · H2H · stats</span><span class="arr" id="arr-${mid}">▾</span>
+  </div>
+  <div class="mc2-details" id="det-${mid}">
+    ${scoreboard}
+    <div id="h2h-${mid}"></div>
   </div>`;
 
-  const mid=m.match_id.replace(/[^a-z0-9]/gi,'_');
-  const h2hBtn=`<div onclick="toggleH2H('${mid}','${esc(m.player1)}','${esc(m.player2)}','${m.surface}')"
-    style="padding:8px 12px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;background:#0c1929;border-top:1px solid #1e293b">
-    <span style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em">H2H &amp; Player Stats</span>
-    <span style="font-size:14px;color:#475569">▾</span>
-  </div>
-  <div id="h2h-${mid}" style="display:none;border-top:1px solid #1e293b"></div>`;
+  return `<div class="mc2">${header}${scoreBlock}${mvmBlock}${oddsBlock}${details}</div>`;
+}
 
-  return `<div class="match-card">${header}${players}${scoreboard}${probBar}${oddsRow}${h2hBtn}</div>`;
+// Expand/collapse the per-card details section; lazy-loads H2H on first open
+function toggleDetails(mid,p1,p2,surface){
+  const det=document.getElementById('det-'+mid);
+  const arr=document.getElementById('arr-'+mid);
+  if(!det) return;
+  const open=det.style.display==='block';
+  det.style.display=open?'none':'block';
+  if(arr) arr.textContent=open?'▾':'▴';
+  if(open) return;
+  const panel=document.getElementById('h2h-'+mid);
+  if(!panel||panel.dataset.loaded) return;
+  panel.innerHTML='<div style="padding:14px;color:#64748b;text-align:center;font-size:12px">Loading H2H data…</div>';
+  loadH2H(mid,p1,p2,surface).then(data=>{
+    if(!data){panel.innerHTML='<div style="padding:12px;color:#475569;font-size:11px;text-align:center">No H2H data in database yet</div>';return;}
+    panel.innerHTML=renderH2HPanel(data,p1,p2);
+    panel.dataset.loaded='1';
+  });
 }
 
 // ── TENNIS UPCOMING ───────────────────────────────────────────────────────────
@@ -982,35 +996,33 @@ function renderTennisUpcoming(m){
   const until=minsUntil(m.start_time);
   const kt=fmtKickoff(m.start_time);
   const favP1=hasOdds&&m.odds_p1<m.odds_p2;
-  return `<div class="match-card" style="opacity:.82">
-    <div class="mc-header">
-      <span class="source-tag" style="background:#1a2e1a;color:#6ee7b7">UPCOMING</span>
+  const p1s=esc(m.player1.split(' ').pop());
+  const p2s=esc(m.player2.split(' ').pop());
+  return `<div class="mc2" style="opacity:.85">
+    <div class="mc2-top">
+      <span class="source-tag" style="background:#14321e;color:#6ee7b7">UPCOMING</span>
       <span class="${surf}">${surfLabel}</span>
       <span>&middot; ${esc(m.tournament)}</span>
-      <span style="margin-left:auto;font-size:11px;color:#6ee7b7;font-weight:700">⏰ ${esc(until||kt||'')}</span>
+      <span style="margin-left:auto;font-size:10px;color:#6ee7b7;font-weight:800;white-space:nowrap">⏰ ${esc(until||'')}${kt?' · '+esc(kt):''}</span>
     </div>
-    <div class="mc-players">
-      <div class="mc-player">
-        <div class="mc-name">${esc(m.player1)}</div>
-        ${hasOdds?`<div style="font-size:11px;color:#64748b;margin-top:3px">impl. ${Math.round(100/m.odds_p1)}%</div>`:''}
-      </div>
-      <div class="mc-center">
-        <div style="font-size:13px;color:#64748b;font-weight:700">vs</div>
-        <div style="font-size:11px;color:#94a3b8;margin-top:4px">${esc(kt)}</div>
-      </div>
-      <div class="mc-player right">
-        <div class="mc-name">${esc(m.player2)}</div>
-        ${hasOdds?`<div style="font-size:11px;color:#64748b;margin-top:3px">impl. ${Math.round(100/m.odds_p2)}%</div>`:''}
-      </div>
+    <div class="mc2-score">
+      <div class="mc2-pl"><div class="mc2-plname">${esc(m.player1)}</div></div>
+      <div class="mc2-center"><div style="font-size:16px;color:#475569;font-weight:800">vs</div></div>
+      <div class="mc2-pl"><div class="mc2-plname">${esc(m.player2)}</div></div>
     </div>
-    ${hasOdds?`<div class="mc-odds-row">
-      <div class="mc-odds-box">
-        <div class="mc-odds-label">Back ${esc(m.player1.split(' ').pop())}</div>
-        <div class="mc-odds-val ${favP1?'fav':'dog'}">${m.odds_p1.toFixed(2)}</div>
-      </div>
-      <div class="mc-odds-box">
-        <div class="mc-odds-label">Back ${esc(m.player2.split(' ').pop())}</div>
-        <div class="mc-odds-val ${!favP1?'fav':'dog'}">${m.odds_p2.toFixed(2)}</div>
+    ${hasOdds?`<div class="mc2-blk">
+      <div class="mc2-lbl"><h3>Match Winner Odds</h3><span>pre-match · decimal · lower = favourite</span></div>
+      <div class="mc2-odds">
+        <div class="mc2-ob ${favP1?'fav':''}">
+          <div class="mc2-obname">${p1s}</div>
+          <div class="mc2-obval">${m.odds_p1.toFixed(2)}</div>
+          <div class="mc2-obimp">implies ${Math.round(100/m.odds_p1)}%${favP1?' · <span class="mc2-obtag">FAVOURITE</span>':' · underdog'}</div>
+        </div>
+        <div class="mc2-ob ${!favP1?'fav':''}">
+          <div class="mc2-obname">${p2s}</div>
+          <div class="mc2-obval">${m.odds_p2.toFixed(2)}</div>
+          <div class="mc2-obimp">implies ${Math.round(100/m.odds_p2)}%${!favP1?' · <span class="mc2-obtag">FAVOURITE</span>':' · underdog'}</div>
+        </div>
       </div>
     </div>`:''}
   </div>`;
@@ -1920,6 +1932,16 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 
 <div class="container">
+  <h2>🎨 Site Theme</h2>
+  <p class="subtitle">Applies instantly across all pages — saved in this browser.</p>
+  <div class="theme-row">
+    <button class="theme-sw" data-t="navy" onclick="setSiteTheme('navy')"><span class="sw" style="background:#0f172a"></span>Deep Navy</button>
+    <button class="theme-sw" data-t="light" onclick="setSiteTheme('light')"><span class="sw" style="background:#eef2f7"></span>Polar White</button>
+    <button class="theme-sw" data-t="violet" onclick="setSiteTheme('violet')"><span class="sw" style="background:#6d28d9"></span>Violet Night</button>
+    <button class="theme-sw" data-t="emerald" onclick="setSiteTheme('emerald')"><span class="sw" style="background:#15803d"></span>Emerald Court</button>
+  </div>
+  <script>setSiteTheme(localStorage.getItem('site_theme')||'navy');</script>
+
   <h2>Data Source Controls</h2>
   <p class="subtitle">Toggle collectors on/off to manage API quota. Changes take effect immediately — no redeploy needed.</p>
 
@@ -2134,6 +2156,63 @@ setInterval(load, 30000);
 </script>
 </body>
 </html>"""
+
+
+# ── Site-wide theme system ────────────────────────────────────────────────────
+# Injected into every page <head>. Theme stored in localStorage ('site_theme'),
+# applied as html[data-theme=...]; 'navy' (default) = no attribute, no overrides.
+_THEME_SNIPPET = """
+<style>
+/* Theme palettes */
+html[data-theme="light"]{--bg:#eef2f7;--panel:#ffffff;--panel2:#f8fafc;--line:#dbe3ee;--line2:#e8edf5;--text:#0f172a;--text-strong:#0f172a;--muted:#64748b;--accent:#2563eb;--score:#dc2626;--p1:#2563eb;--p2:#f97316;--barbg:#e2e8f0;--bestbg:#dcfce7;--best:#15803d;--favbg:#f0fdf4;--favline:#86efac;--fav:#16a34a}
+html[data-theme="violet"]{--bg:#13111c;--panel:#1c1729;--panel2:#181226;--line:#322b4d;--line2:#241f38;--text:#e9e4f5;--text-strong:#f5f3fa;--muted:#8b81a8;--accent:#a78bfa;--score:#f472b6;--p1:#a78bfa;--p2:#fbbf24;--barbg:#241f38;--bestbg:#2e1065;--best:#c4b5fd;--favbg:#21163a;--favline:#6d28d9;--fav:#c4b5fd}
+html[data-theme="emerald"]{--bg:#0a1410;--panel:#102219;--panel2:#0c1b13;--line:#1d3b2d;--line2:#12281d;--text:#dcefe6;--text-strong:#f0fdf4;--muted:#6b9080;--accent:#34d399;--score:#fbbf24;--p1:#34d399;--p2:#60a5fa;--barbg:#12281d;--bestbg:#14532d;--best:#86efac;--favbg:#0c2415;--favline:#15803d;--fav:#4ade80}
+/* Overrides applied only when a non-default theme is active */
+html[data-theme] body{background:var(--bg)!important;color:var(--text)!important}
+html[data-theme] header,html[data-theme] .topbar,html[data-theme] .tab-bar{background:var(--panel)!important;border-color:var(--line)!important}
+html[data-theme] header h1,html[data-theme] .topbar h1,html[data-theme] h2,html[data-theme] .tab-btn.active{color:var(--text-strong)!important}
+html[data-theme] .card,html[data-theme] .status-card,html[data-theme] .match-card,html[data-theme] .signal-card,html[data-theme] .fb-card,html[data-theme] .fb-sig-card,html[data-theme] .scalp-card,html[data-theme] .mc2{background:var(--panel)!important;border-color:var(--line)!important}
+html[data-theme] .mc2-top,html[data-theme] .mc2-dt,html[data-theme] .mc2-details,html[data-theme] .mc2-ob,html[data-theme] .mc-scoreboard,html[data-theme] .mc-header,html[data-theme] .sc-header,html[data-theme] .sc-footer,html[data-theme] .sc-probs,html[data-theme] .scalp-head,html[data-theme] .scalp-foot,html[data-theme] .fb-header,html[data-theme] .mc-prob,html[data-theme] .mc-odds-box,html[data-theme] .scroll,html[data-theme] .toc a{background:var(--panel2)!important;border-color:var(--line2)!important}
+html[data-theme] .card-value,html[data-theme] .mc2-plname,html[data-theme] .mc2-setnow b,html[data-theme] .mvm .val,html[data-theme] .sb-cur,html[data-theme] .sb-sets-total,html[data-theme] .mc-name,html[data-theme] .mc-sets-won,html[data-theme] .mc-game-score,html[data-theme] .sc-bet-player,html[data-theme] .scalp-player,html[data-theme] .fb-team-name,html[data-theme] .fb-score,html[data-theme] .status-val,html[data-theme] .prob-pct,html[data-theme] .mc2-problbl b,html[data-theme] .card-name,html[data-theme] .meta-value,html[data-theme] .sc-conf,html[data-theme] .toc a,html[data-theme] .tbl-head h2{color:var(--text-strong)!important}
+html[data-theme] .card-title,html[data-theme] .card-sub,html[data-theme] .refresh,html[data-theme] section h2,html[data-theme] .mc2-lbl span,html[data-theme] .mvm .lab,html[data-theme] .status-name,html[data-theme] .empty,html[data-theme] footer,html[data-theme] .subtitle,html[data-theme] .card-meta,html[data-theme] .meta-label,html[data-theme] .mc2-obimp,html[data-theme] .mc2-obname,html[data-theme] .mc2-setnow,html[data-theme] .mc2-problbl,html[data-theme] .note,html[data-theme] #status,html[data-theme] .mvm .h{color:var(--muted)!important}
+html[data-theme] .mc2-sets{color:var(--score)!important}
+html[data-theme] .mc2-lbl h3{color:var(--accent)!important}
+html[data-theme] .mc2-obval{color:var(--p1)!important}
+html[data-theme] .mc2-obval.none{color:var(--muted)!important}
+html[data-theme] .mc2-pb1,html[data-theme] .prob-bar-p1{background:var(--p1)!important}
+html[data-theme] .mc2-pb2,html[data-theme] .prob-bar-p2{background:var(--p2)!important}
+html[data-theme] .mc2-probbar,html[data-theme] .prob-bar-wrap,html[data-theme] .quota-bar{background:var(--barbg)!important}
+html[data-theme] .mvm .val.best{background:var(--bestbg)!important;color:var(--best)!important}
+html[data-theme] .mc2-ob.fav{border-color:var(--favline)!important;background:var(--favbg)!important}
+html[data-theme] .mc2-ob.fav .mc2-obval{color:var(--fav)!important}
+html[data-theme] table th{background:var(--panel)!important;color:var(--muted)!important;border-color:var(--line2)!important}
+html[data-theme] table td{border-color:var(--line2)!important}
+html[data-theme] tr:nth-child(even) td{background:var(--panel2)!important}
+html[data-theme] .topbar a{color:var(--accent)!important;border-color:var(--line)!important}
+html[data-theme="light"] .src,html[data-theme="light"] .source-tag{background:#dbeafe!important;color:#1d4ed8!important}
+/* Theme picker (settings page) */
+.theme-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:26px}
+.theme-sw{display:flex;align-items:center;gap:8px;background:transparent;border:2px solid #30363d;color:inherit;font-size:13px;font-weight:700;padding:9px 16px;border-radius:10px;cursor:pointer;font-family:inherit}
+.theme-sw.on{border-color:#3fb950;box-shadow:0 0 0 1px #3fb950}
+.theme-sw .sw{width:16px;height:16px;border-radius:50%;display:inline-block;border:1px solid rgba(128,128,128,.4)}
+</style>
+<script>
+(function(){
+  var t=localStorage.getItem('site_theme')||'navy';
+  if(t!=='navy') document.documentElement.setAttribute('data-theme',t);
+})();
+function setSiteTheme(t){
+  localStorage.setItem('site_theme',t);
+  if(t==='navy') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme',t);
+  document.querySelectorAll('.theme-sw').forEach(function(b){b.classList.toggle('on',b.dataset.t===t);});
+}
+</script>
+"""
+
+_HTML = _HTML.replace("</head>", _THEME_SNIPPET + "</head>")
+_DATA_HTML = _DATA_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
+_SETTINGS_HTML = _SETTINGS_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 
 
 async def make_app(runner) -> web.Application:
