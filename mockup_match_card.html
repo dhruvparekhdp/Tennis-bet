@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mockup — New Match Card Design</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;padding:16px;max-width:520px;margin:0 auto}
+h1{font-size:15px;color:#94a3b8;margin-bottom:14px}
+.note{font-size:11px;color:#64748b;background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 12px;margin-bottom:16px;line-height:1.6}
+.note b{color:#e2e8f0}
+
+/* ── New match card ── */
+.mc{background:#0d1b2e;border:1px solid #1e3a5f;border-radius:14px;overflow:hidden;margin-bottom:16px}
+.mc-top{display:flex;align-items:center;gap:7px;padding:9px 14px;background:#0a1422;font-size:11px;color:#64748b;border-bottom:1px solid #14263d}
+.src{font-size:9px;padding:2px 6px;border-radius:4px;background:#1e3a5f;color:#7dd3fc;font-weight:800;letter-spacing:.05em}
+.live-pill{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:10px;font-weight:800;color:#f87171}
+.live-dot{width:7px;height:7px;border-radius:50%;background:#ef4444;animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+/* Score block — app style: names at sides, big set score centered */
+.score-block{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:18px 14px 14px;gap:6px}
+.pl{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:0}
+.pl-name{font-size:14px;font-weight:800;color:#f1f5f9;text-align:center;line-height:1.2}
+.pl-sub{font-size:10px;color:#64748b}
+.serve{font-size:9px;color:#facc15}
+.center{display:flex;flex-direction:column;align-items:center;gap:5px;min-width:110px}
+.big-sets{font-size:40px;font-weight:900;color:#f87171;letter-spacing:4px;line-height:1}
+.set-now{font-size:12px;color:#94a3b8;font-weight:700}
+.set-now b{color:#f1f5f9}
+.points{font-size:13px;font-weight:900;color:#0f172a;background:#facc15;border-radius:6px;padding:2px 10px;letter-spacing:2px}
+/* Labeled blocks */
+.blk{border-top:1px solid #14263d;padding:10px 14px}
+.blk-lbl{display:flex;align-items:baseline;gap:8px;margin-bottom:7px}
+.blk-lbl h3{font-size:10px;font-weight:800;letter-spacing:.1em;color:#7dd3fc;text-transform:uppercase}
+.blk-lbl span{font-size:9px;color:#475569}
+/* Model vs Market comparison */
+.mvm{display:grid;grid-template-columns:80px 1fr 1fr;gap:4px;font-size:11px}
+.mvm .h{color:#64748b;font-size:9px;text-transform:uppercase;letter-spacing:.05em;padding:3px 0}
+.mvm .h.r{text-align:center;color:#94a3b8;font-weight:700;font-size:10px;text-transform:none}
+.mvm .lab{color:#64748b;padding:4px 0}
+.mvm .val{text-align:center;font-weight:800;color:#f1f5f9;padding:4px 0;border-radius:5px}
+.mvm .val.best{background:#0c2e1a;color:#4ade80}
+.probbar{display:flex;height:9px;border-radius:5px;overflow:hidden;margin:7px 0 4px}
+.pb1{background:#38bdf8}.pb2{background:#f97316}
+.probbar-lbl{display:flex;justify-content:space-between;font-size:10px;color:#94a3b8}
+.probbar-lbl b{color:#f1f5f9}
+/* Odds boxes */
+.odds-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.odds-box{background:#0a1422;border:1px solid #1e3a5f;border-radius:9px;padding:9px;text-align:center}
+.odds-box.fav{border-color:#14532d;background:#0c2014}
+.ob-name{font-size:10px;color:#94a3b8;font-weight:700;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ob-val{font-size:22px;font-weight:900;color:#38bdf8;line-height:1}
+.odds-box.fav .ob-val{color:#34d399}
+.ob-imp{font-size:9px;color:#64748b;margin-top:3px}
+.ob-tag{font-size:8px;font-weight:800;color:#4ade80;letter-spacing:.08em}
+/* Collapsed details */
+.details-toggle{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#0a1422;border-top:1px solid #14263d;cursor:pointer}
+.details-toggle span{font-size:10px;font-weight:800;letter-spacing:.08em;color:#64748b;text-transform:uppercase}
+.details-toggle .arr{font-size:13px;color:#475569}
+.details{border-top:1px solid #14263d;padding:10px 14px;background:#0a1422}
+.sb{width:100%;border-collapse:collapse;font-size:12px}
+.sb th{color:#475569;font-size:9px;text-transform:uppercase;padding:3px 6px;text-align:center}
+.sb td{padding:4px 6px;text-align:center;font-weight:800}
+.sb td.n{text-align:left;color:#94a3b8;font-weight:500;font-size:11px}
+.w{color:#38bdf8}.l{color:#475569}.c{color:#f1f5f9}
+.section-order{font-size:11px;color:#94a3b8;background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 12px;line-height:1.9}
+.section-order b{color:#7dd3fc}
+</style>
+</head>
+<body>
+<h1>📐 Mockup — Redesigned Match Card</h1>
+
+<div class="note">
+<b>What changed:</b><br>
+1. Big centered red set score like the app, with current game points in yellow.<br>
+2. The confusing bare "25% / 75%" bar now has a labeled <b>MODEL vs MARKET</b> table — model = our win estimate from the live score; market = what the bookmaker odds imply.<br>
+3. Odds boxes show the decimal price <b>and</b> its implied % underneath, favourite highlighted green.<br>
+4. Set-by-set scoreboard + H2H collapsed into "Match details" at the bottom of each card.<br>
+5. Page order: <b>Live matches first</b>, signals second, data-source status moved to the bottom.
+</div>
+
+<!-- ═══ MOCK CARD ═══ -->
+<div class="mc">
+  <div class="mc-top">
+    <span class="src">SR</span>
+    <span style="color:#38bdf8">hard</span>
+    <span>· Stuttgart ATP · 1/8-Finals</span>
+    <span class="live-pill"><span class="live-dot"></span>LIVE · 2h14m</span>
+  </div>
+
+  <div class="score-block">
+    <div class="pl">
+      <div class="pl-name">Lehecka J.</div>
+      <div class="pl-sub">CZE</div>
+      <div class="serve">🎾 serving</div>
+    </div>
+    <div class="center">
+      <div class="big-sets">1 : 1</div>
+      <div class="set-now">SET 3 · <b>4 : 5</b></div>
+      <div class="points">15 : 15</div>
+    </div>
+    <div class="pl">
+      <div class="pl-name">Duckworth J.</div>
+      <div class="pl-sub">AUS</div>
+    </div>
+  </div>
+
+  <div class="blk">
+    <div class="blk-lbl"><h3>Who wins? — Model vs Market</h3><span>model = our estimate from live score · market = from bookmaker odds</span></div>
+    <div class="mvm">
+      <div class="h"></div><div class="h r">Lehecka</div><div class="h r">Duckworth</div>
+      <div class="lab">Our model</div><div class="val">25%</div><div class="val best">75%</div>
+      <div class="lab">Bookmakers</div><div class="val best">78%</div><div class="val">27%</div>
+    </div>
+    <div class="probbar"><div class="pb1" style="width:25%"></div><div class="pb2" style="width:75%"></div></div>
+    <div class="probbar-lbl"><span>◀ <b>25%</b> Lehecka</span><span>model win probability</span><span>Duckworth <b>75%</b> ▶</span></div>
+  </div>
+
+  <div class="blk">
+    <div class="blk-lbl"><h3>Match Winner Odds</h3><span>decimal · lower = favourite · % = chance bookies imply</span></div>
+    <div class="odds-grid">
+      <div class="odds-box fav">
+        <div class="ob-name">Lehecka J.</div>
+        <div class="ob-val">1.29</div>
+        <div class="ob-imp">implies 78% chance · <span class="ob-tag">FAVOURITE</span></div>
+      </div>
+      <div class="odds-box">
+        <div class="ob-name">Duckworth J.</div>
+        <div class="ob-val">3.75</div>
+        <div class="ob-imp">implies 27% chance · underdog</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="details-toggle"><span>📊 Match details — sets · H2H · stats</span><span class="arr">▾</span></div>
+  <div class="details">
+    <table class="sb">
+      <tr><th></th><th>S1</th><th>S2</th><th>S3</th><th>Sets</th></tr>
+      <tr><td class="n">Lehecka</td><td class="l">5</td><td class="w">6</td><td class="c">4</td><td class="w">1</td></tr>
+      <tr><td class="n">Duckworth</td><td class="w">7</td><td class="l">4</td><td class="c">5</td><td class="l">1</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ═══ UPCOMING MOCK ═══ -->
+<div class="mc" style="opacity:.85">
+  <div class="mc-top">
+    <span class="src" style="background:#14321e;color:#6ee7b7">UPCOMING</span>
+    <span style="color:#f97316">clay</span>
+    <span>· ATP Lyon</span>
+    <span style="margin-left:auto;color:#6ee7b7;font-weight:800;font-size:10px">⏰ in 1h 20m · 8:00 pm IST</span>
+  </div>
+  <div class="score-block">
+    <div class="pl"><div class="pl-name">Mannarino A.</div></div>
+    <div class="center"><div style="font-size:16px;color:#475569;font-weight:800">vs</div></div>
+    <div class="pl"><div class="pl-name">Rinderknech A.</div></div>
+  </div>
+  <div class="blk">
+    <div class="blk-lbl"><h3>Match Winner Odds</h3><span>pre-match · decimal · lower = favourite</span></div>
+    <div class="odds-grid">
+      <div class="odds-box fav"><div class="ob-name">Mannarino</div><div class="ob-val">1.65</div><div class="ob-imp">implies 61% · <span class="ob-tag">FAVOURITE</span></div></div>
+      <div class="odds-box"><div class="ob-name">Rinderknech</div><div class="ob-val">2.20</div><div class="ob-imp">implies 45% · underdog</div></div>
+    </div>
+  </div>
+</div>
+
+<h1 style="margin-top:22px">📑 New page order (tennis tab)</h1>
+<div class="section-order">
+1. <b>Live Tennis Matches</b> (top — what you came to see)<br>
+2. <b>Tennis Signals</b> (last 24h)<br>
+3. <b>Data Sources status</b> (moved to bottom — diagnostic info)
+</div>
+</body>
+</html>

@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Theme Options — Tennis Bet Monitor</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;padding:0;margin:0}
+.theme{padding:18px 14px 26px;max-width:520px;margin:0 auto}
+.theme-head{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}
+.theme-head h1{font-size:16px;font-weight:900}
+.theme-head span{font-size:11px;opacity:.65}
+.pick{font-size:11px;font-weight:800;border-radius:9999px;padding:3px 12px;margin-left:auto}
+
+/* card structure (shared) */
+.mc{border-radius:14px;overflow:hidden;margin-bottom:14px;border:1px solid var(--line)}
+.mc-top{display:flex;align-items:center;gap:7px;padding:9px 14px;font-size:11px;border-bottom:1px solid var(--line2)}
+.src{font-size:9px;padding:2px 6px;border-radius:4px;font-weight:800;letter-spacing:.05em}
+.live{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:10px;font-weight:800;color:var(--live)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--live);animation:p 1s infinite}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.25}}
+.score{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:16px 14px 13px;gap:6px}
+.pl{display:flex;flex-direction:column;align-items:center;gap:4px}
+.pln{font-size:14px;font-weight:800;text-align:center}
+.lead{font-size:9px;padding:1px 6px;border-radius:4px;font-weight:800}
+.ctr{display:flex;flex-direction:column;align-items:center;gap:5px;min-width:104px}
+.sets{font-size:38px;font-weight:900;color:var(--score);letter-spacing:4px;line-height:1}
+.setnow{font-size:12px;font-weight:700;opacity:.75}
+.setnow b{opacity:1}
+.blk{border-top:1px solid var(--line2);padding:10px 14px}
+.lbl{display:flex;align-items:baseline;gap:8px;margin-bottom:7px;flex-wrap:wrap}
+.lbl h3{font-size:10px;font-weight:800;letter-spacing:.1em;color:var(--accent);text-transform:uppercase}
+.lbl span{font-size:9px;opacity:.5}
+.mvm{display:grid;grid-template-columns:84px 1fr 1fr;gap:4px;font-size:11px}
+.mvm .h{font-weight:700;font-size:10px;text-align:center;padding:3px 0;opacity:.8}
+.mvm .lab{opacity:.55;padding:4px 0;font-size:10px}
+.mvm .val{text-align:center;font-weight:800;padding:4px 0;border-radius:5px}
+.bar{display:flex;height:9px;border-radius:5px;overflow:hidden;margin:7px 0 4px;background:var(--barbg)}
+.b1{background:var(--p1)}.b2{background:var(--p2)}
+.barlbl{display:flex;justify-content:space-between;font-size:10px;opacity:.8}
+.og{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ob{border:1px solid var(--line);border-radius:9px;padding:9px;text-align:center;background:var(--obbg)}
+.obv{font-size:22px;font-weight:900;line-height:1;color:var(--p1)}
+.obn{font-size:10px;font-weight:700;margin-bottom:3px;opacity:.75}
+.obi{font-size:9px;opacity:.55;margin-top:3px}
+.dt{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-top:1px solid var(--line2);background:var(--dtbg)}
+.dt span{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;opacity:.55}
+
+/* ════ THEME 1: POLAR WHITE (light) ════ */
+.t1{background:#eef2f7;color:#0f172a;
+  --line:#dbe3ee;--line2:#e8edf5;--live:#dc2626;--score:#dc2626;
+  --accent:#2563eb;--p1:#2563eb;--p2:#f97316;--barbg:#e2e8f0;--obbg:#f8fafc;--dtbg:#f1f5f9}
+.t1 .mc{background:#ffffff;box-shadow:0 1px 4px rgba(15,23,42,.08)}
+.t1 .mc-top{background:#f8fafc;color:#64748b}
+.t1 .src{background:#dbeafe;color:#1d4ed8}
+.t1 .lead{background:#dcfce7;color:#15803d}
+.t1 .mvm .val.best{background:#dcfce7;color:#15803d}
+.t1 .ob.fav{border-color:#86efac;background:#f0fdf4}
+.t1 .ob.fav .obv{color:#16a34a}
+.t1 .pick{background:#2563eb;color:#fff}
+
+/* ════ THEME 2: DEEP NAVY (current, refined) ════ */
+.t2{background:#0f172a;color:#e2e8f0;
+  --line:#1e3a5f;--line2:#14263d;--live:#f87171;--score:#f87171;
+  --accent:#7dd3fc;--p1:#38bdf8;--p2:#f97316;--barbg:#1e293b;--obbg:#0a1422;--dtbg:#0a1422}
+.t2 .mc{background:#0d1b2e}
+.t2 .mc-top{background:#0a1422;color:#64748b}
+.t2 .src{background:#1e3a5f;color:#7dd3fc}
+.t2 .lead{background:#14532d;color:#4ade80}
+.t2 .mvm .val.best{background:#0c2e1a;color:#4ade80}
+.t2 .ob.fav{border-color:#14532d;background:#0c2014}
+.t2 .ob.fav .obv{color:#34d399}
+.t2 .pick{background:#38bdf8;color:#0f172a}
+
+/* ════ THEME 3: VIOLET NIGHT ════ */
+.t3{background:#13111c;color:#e9e4f5;
+  --line:#322b4d;--line2:#241f38;--live:#f472b6;--score:#f472b6;
+  --accent:#a78bfa;--p1:#a78bfa;--p2:#fbbf24;--barbg:#241f38;--obbg:#181226;--dtbg:#181226}
+.t3 .mc{background:#1c1729}
+.t3 .mc-top{background:#181226;color:#8b81a8}
+.t3 .src{background:#322b4d;color:#c4b5fd}
+.t3 .lead{background:#3b0764;color:#e9d5ff}
+.t3 .mvm .val.best{background:#2e1065;color:#c4b5fd}
+.t3 .ob.fav{border-color:#6d28d9;background:#21163a}
+.t3 .ob.fav .obv{color:#c4b5fd}
+.t3 .pick{background:#a78bfa;color:#13111c}
+
+/* ════ THEME 4: EMERALD COURT ════ */
+.t4{background:#0a1410;color:#dcefe6;
+  --line:#1d3b2d;--line2:#12281d;--live:#fbbf24;--score:#fbbf24;
+  --accent:#34d399;--p1:#34d399;--p2:#60a5fa;--barbg:#12281d;--obbg:#0c1b13;--dtbg:#0c1b13}
+.t4 .mc{background:#102219}
+.t4 .mc-top{background:#0c1b13;color:#6b9080}
+.t4 .src{background:#1d3b2d;color:#6ee7b7}
+.t4 .lead{background:#14532d;color:#4ade80}
+.t4 .mvm .val.best{background:#14532d;color:#86efac}
+.t4 .ob.fav{border-color:#15803d;background:#0c2415}
+.t4 .ob.fav .obv{color:#4ade80}
+.t4 .pick{background:#34d399;color:#0a1410}
+</style>
+</head>
+<body>
+
+<!-- ═══════ repeated card per theme ═══════ -->
+<div class="theme t1">
+  <div class="theme-head"><h1>1️⃣ Polar White</h1><span>clean light theme — easy daytime reading</span><span class="pick">OPTION 1</span></div>
+  <div class="mc">
+    <div class="mc-top"><span class="src">SR</span><span>hard · Stuttgart ATP · 1/8-Finals</span><span class="live"><span class="dot"></span>LIVE · 2h14m</span></div>
+    <div class="score">
+      <div class="pl"><div class="pln">Lehecka J.</div></div>
+      <div class="ctr"><div class="sets">1 : 1</div><div class="setnow">SET 3 · <b>4 : 5</b></div></div>
+      <div class="pl"><div class="pln">Duckworth J.</div><span class="lead">LEADING</span></div>
+    </div>
+    <div class="blk">
+      <div class="lbl"><h3>Who wins? — Model vs Market</h3><span>model = live-score estimate · market = bookmaker odds</span></div>
+      <div class="mvm"><div class="h"></div><div class="h">Lehecka</div><div class="h">Duckworth</div>
+        <div class="lab">Our model</div><div class="val">25%</div><div class="val best">75%</div>
+        <div class="lab">Bookmakers</div><div class="val best">78%</div><div class="val">27%</div></div>
+      <div class="bar"><div class="b1" style="width:25%"></div><div class="b2" style="width:75%"></div></div>
+      <div class="barlbl"><span>◀ <b>25%</b> Lehecka</span><span>model win probability</span><span>Duckworth <b>75%</b> ▶</span></div>
+    </div>
+    <div class="blk">
+      <div class="lbl"><h3>Match Winner Odds</h3><span>decimal · lower = favourite</span></div>
+      <div class="og">
+        <div class="ob fav"><div class="obn">Lehecka</div><div class="obv">1.29</div><div class="obi">implies 78% · FAVOURITE</div></div>
+        <div class="ob"><div class="obn">Duckworth</div><div class="obv">3.75</div><div class="obi">implies 27% · underdog</div></div>
+      </div>
+    </div>
+    <div class="dt"><span>📊 Match details — sets · H2H · stats</span><span>▾</span></div>
+  </div>
+</div>
+
+<div class="theme t2">
+  <div class="theme-head"><h1>2️⃣ Deep Navy</h1><span>current theme, refined — neutral & focused</span><span class="pick">OPTION 2</span></div>
+  <div class="mc">
+    <div class="mc-top"><span class="src">SR</span><span>hard · Stuttgart ATP · 1/8-Finals</span><span class="live"><span class="dot"></span>LIVE · 2h14m</span></div>
+    <div class="score">
+      <div class="pl"><div class="pln">Lehecka J.</div></div>
+      <div class="ctr"><div class="sets">1 : 1</div><div class="setnow">SET 3 · <b>4 : 5</b></div></div>
+      <div class="pl"><div class="pln">Duckworth J.</div><span class="lead">LEADING</span></div>
+    </div>
+    <div class="blk">
+      <div class="lbl"><h3>Who wins? — Model vs Market</h3><span>model = live-score estimate · market = bookmaker odds</span></div>
+      <div class="mvm"><div class="h"></div><div class="h">Lehecka</div><div class="h">Duckworth</div>
+        <div class="lab">Our model</div><div class="val">25%</div><div class="val best">75%</div>
+        <div class="lab">Bookmakers</div><div class="val best">78%</div><div class="val">27%</div></div>
+      <div class="bar"><div class="b1" style="width:25%"></div><div class="b2" style="width:75%"></div></div>
+      <div class="barlbl"><span>◀ <b>25%</b> Lehecka</span><span>model win probability</span><span>Duckworth <b>75%</b> ▶</span></div>
+    </div>
+    <div class="blk">
+      <div class="lbl"><h3>Match Winner Odds</h3><span>decimal · lower = favourite</span></div>
+      <div class="og">
+        <div class="ob fav"><div class="obn">Lehecka</div><div class="obv">1.29</div><div class="obi">implies 78% · FAVOURITE</div></div>
+        <div class="ob"><div class="obn">Duckworth</div><div class="obv">3.75</div><div class="obi">implies 27% · underdog</div></div>
+      </div>
+    </div>
+    <div class="dt"><span>📊 Match details — sets · H2H · stats</span><span>▾</span></div>
+  </div>
+</div>
+
+<div class="theme t3">
+  <div class="theme-head"><h1>3️⃣ Violet Night</h1><span>premium betting-app feel — purple & pink</span><span class="pick">OPTION 3</span></div>
+  <div class="mc">
+    <div class="mc-top"><span class="src">SR</span><span>hard · Stuttgart ATP · 1/8-Finals</span><span class="live"><span class="dot"></span>LIVE · 2h14m</span></div>
+    <div class="score">
+      <div class="pl"><div class="pln">Lehecka J.</div></div>
+      <div class="ctr"><div class="sets">1 : 1</div><div class="setnow">SET 3 · <b>4 : 5</b></div></div>
+      <div class="pl"><div class="pln">Duckworth J.</div><span class="lead">LEADING</span></div>
+    </div>
+    <div class="blk">
+      <div class="lbl"><h3>Who wins? — Model vs Market</h3><span>model = live-score estimate · market = bookmaker odds</span></div>
+      <div class="mvm"><div class="h"></div><div class="h">Lehecka</div><div class="h">Duckworth</div>
+        <div class="lab">Our model</div><div class="val">25%</div><div class="val best">75%</div>
+        <div class="lab">Bookmakers</div><div class="val best">78%</div><div class="val">27%</div></div>
+      <div class="bar"><div class="b1" style="width:25%"></div><div class="b2" style="width:75%"></div></div>
+      <div class="barlbl"><span>◀ <b>25%</b> Lehecka</span><span>model win probability</span><span>Duckworth <b>75%</b> ▶</span></div>
+    </div>
+    <div class="blk">
+      <div class="lbl"><h3>Match Winner Odds</h3><span>decimal · lower = favourite</span></div>
+      <div class="og">
+        <div class="ob fav"><div class="obn">Lehecka</div><div class="obv">1.29</div><div class="obi">implies 78% · FAVOURITE</div></div>
+        <div class="ob"><div class="obn">Duckworth</div><div class="obv">3.75</div><div class="obi">implies 27% · underdog</div></div>
+      </div>
+    </div>
+    <div class="dt"><span>📊 Match details — sets · H2H · stats</span><span>▾</span></div>
+  </div>
+</div>
+
+<div class="theme t4">
+  <div class="theme-head"><h1>4️⃣ Emerald Court</h1><span>tennis-court green — gold score accents</span><span class="pick">OPTION 4</span></div>
+  <div class="mc">
+    <div class="mc-top"><span class="src">SR</span><span>hard · Stuttgart ATP · 1/8-Finals</span><span class="live"><span class="dot"></span>LIVE · 2h14m</span></div>
+    <div class="score">
+      <div class="pl"><div class="pln">Lehecka J.</div></div>
+      <div class="ctr"><div class="sets">1 : 1</div><div class="setnow">SET 3 · <b>4 : 5</b></div></div>
+      <div class="pl"><div class="pln">Duckworth J.</div><span class="lead">LEADING</span></div>
+    </div>
+    <div class="blk">
+      <div class="lbl"><h3>Who wins? — Model vs Market</h3><span>model = live-score estimate · market = bookmaker odds</span></div>
+      <div class="mvm"><div class="h"></div><div class="h">Lehecka</div><div class="h">Duckworth</div>
+        <div class="lab">Our model</div><div class="val">25%</div><div class="val best">75%</div>
+        <div class="lab">Bookmakers</div><div class="val best">78%</div><div class="val">27%</div></div>
+      <div class="bar"><div class="b1" style="width:25%"></div><div class="b2" style="width:75%"></div></div>
+      <div class="barlbl"><span>◀ <b>25%</b> Lehecka</span><span>model win probability</span><span>Duckworth <b>75%</b> ▶</span></div>
+    </div>
+    <div class="blk">
+      <div class="lbl"><h3>Match Winner Odds</h3><span>decimal · lower = favourite</span></div>
+      <div class="og">
+        <div class="ob fav"><div class="obn">Lehecka</div><div class="obv">1.29</div><div class="obi">implies 78% · FAVOURITE</div></div>
+        <div class="ob"><div class="obn">Duckworth</div><div class="obv">3.75</div><div class="obi">implies 27% · underdog</div></div>
+      </div>
+    </div>
+    <div class="dt"><span>📊 Match details — sets · H2H · stats</span><span>▾</span></div>
+  </div>
+</div>
+
+</body>
+</html>
