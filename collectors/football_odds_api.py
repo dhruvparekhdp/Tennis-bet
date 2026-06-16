@@ -61,7 +61,7 @@ def _sport_to_league_key(sport_key: str) -> str:
         "soccer_mexico_ligamx": "mex.1",
         "soccer_brazil_campeonato": "bra.1",
         "soccer_argentina_primera_division": "arg.1",
-        "soccer_uefa_champs_league": "uefa.champions_league",
+        "soccer_uefa_champs_league": "uefa.champions",
         "soccer_uefa_europa_league": "uefa.europa",
         "soccer_uefa_euro_qualification": "uefa.euro_qual",
         "soccer_conmebol_copa_libertadores": "conmebol.libertadores",

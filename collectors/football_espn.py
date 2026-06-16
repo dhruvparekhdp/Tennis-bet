@@ -29,7 +29,7 @@ _LEAGUES = [
     "ita.1",                    # Serie A
     "fra.1",                    # Ligue 1
     # European cups
-    "uefa.champions_league",
+    "uefa.champions",           # Champions League
     "uefa.europa",
     "uefa.europa.conf",         # Conference League
     # Other top leagues
@@ -66,7 +66,7 @@ _HALFTIME_STATUSES = {"STATUS_HALFTIME", "HALFTIME"}
 
 _SCHEDULED_STATUSES = {"STATUS_SCHEDULED", "SCHEDULED", "STATUS_PRE", "PRE"}
 
-_SOON_HOURS = 12  # show scheduled matches starting within this many hours
+_SOON_HOURS = 24  # show scheduled matches starting within this many hours
 
 
 def _parse_minute(status: dict) -> int:
