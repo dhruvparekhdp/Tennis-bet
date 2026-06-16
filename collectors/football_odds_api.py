@@ -65,6 +65,9 @@ def _sport_to_league_key(sport_key: str) -> str:
         "soccer_uefa_europa_league": "uefa.europa",
         "soccer_uefa_euro_qualification": "uefa.euro_qual",
         "soccer_conmebol_copa_libertadores": "conmebol.libertadores",
+        "soccer_fifa_world_cup": "fifa.world",
+        "soccer_conmebol_copa_america": "conmebol.america",
+        "soccer_uefa_euro": "uefa.euro",
     }
     return mapping.get(sport_key, sport_key.replace("soccer_", ""))
 
@@ -76,24 +79,38 @@ class FootballOddsApiCollector:
         self.store = store
         self._odds_ids: set[str] = set()
 
+    # Always-try keys even if not in the sports list (World Cup, Copa America)
+    _ALWAYS_TRY = [
+        "soccer_fifa_world_cup",
+        "soccer_conmebol_copa_america",
+        "soccer_uefa_euro",
+    ]
+
     async def _get_active_soccer_sports(
         self, client: httpx.AsyncClient, api_key: str
     ) -> list[str]:
         try:
             resp = await client.get(f"{_API_BASE}/sports/", params={"apiKey": api_key})
             if resp.status_code != 200:
-                return []
+                return list(self._ALWAYS_TRY)
             all_sports: list[dict] = resp.json()
             keys = [
                 s["key"]
                 for s in all_sports
                 if "soccer" in s.get("key", "").lower() and s.get("active", False)
             ]
-            log.info("football_odds_api_sports", active_soccer=keys)
-            return keys
+            # Merge always-try keys first so WC is prioritised
+            seen: set[str] = set(self._ALWAYS_TRY)
+            merged = list(self._ALWAYS_TRY)
+            for k in keys:
+                if k not in seen:
+                    seen.add(k)
+                    merged.append(k)
+            log.info("football_odds_api_sports", active_soccer=merged)
+            return merged
         except Exception as exc:
             log.error("football_odds_api_sports_failed", error=str(exc))
-            return []
+            return list(self._ALWAYS_TRY)
 
     async def fetch(self, api_key: str) -> None:
         now = datetime.now(timezone.utc)

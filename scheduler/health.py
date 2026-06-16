@@ -165,6 +165,59 @@ async def _api_football_signals(runner, request: web.Request) -> web.Response:
     return web.Response(text=json.dumps(result), content_type="application/json")
 
 
+async def _api_wc_groups(request: web.Request) -> web.Response:
+    """Fetch FIFA World Cup group standings from ESPN and return as JSON."""
+    import httpx
+    _ESPN_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+    url = "https://site.api.espn.com/apis/v2/sports/soccer/fifa.world/standings"
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=_ESPN_HEADERS) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return web.Response(
+                text=json.dumps({"error": f"ESPN returned {resp.status_code}"}),
+                content_type="application/json",
+                status=502,
+            )
+        data = resp.json()
+        groups: list[dict] = []
+        for grp in (data.get("standings") or []):
+            grp_name = grp.get("name") or grp.get("displayName") or "Group"
+            entries = []
+            for e in grp.get("entries") or []:
+                team = (e.get("team") or {})
+                stats: dict[str, int | str] = {}
+                for s in e.get("stats") or []:
+                    key = s.get("abbreviation") or s.get("name") or ""
+                    val = s.get("value")
+                    if key and val is not None:
+                        stats[key.upper()] = val
+                entries.append({
+                    "team": team.get("displayName") or team.get("shortDisplayName") or "?",
+                    "abbr": team.get("abbreviation") or "",
+                    "p": int(stats.get("GP") or stats.get("P") or 0),
+                    "w": int(stats.get("W") or 0),
+                    "d": int(stats.get("D") or 0),
+                    "l": int(stats.get("L") or 0),
+                    "gf": int(stats.get("GF") or 0),
+                    "ga": int(stats.get("GA") or 0),
+                    "gd": int(stats.get("DIFF") or stats.get("GD") or 0),
+                    "pts": int(stats.get("PTS") or 0),
+                })
+            if entries:
+                groups.append({"group": grp_name, "teams": entries})
+        return web.Response(text=json.dumps({"groups": groups}), content_type="application/json")
+    except Exception as exc:
+        return web.Response(
+            text=json.dumps({"error": str(exc)}),
+            content_type="application/json",
+            status=500,
+        )
+
+
 async def _api_signals(runner, request: web.Request) -> web.Response:
     from storage.database import AsyncSessionFactory
     from storage.repository import Repository
@@ -630,6 +683,18 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .fb-odds-val.fav{color:#34d399}
 .fb-odds-val.draw{color:#94a3b8}
 .fb-odds-val.none{color:#334155;font-size:14px}
+/* WC group standings */
+.wc-groups{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-top:8px}
+.wc-group{background:#1e293b;border:1px solid #334155;border-radius:10px;overflow:hidden}
+.wc-group-hd{background:#1a1f2e;padding:7px 12px;font-size:11px;font-weight:800;color:#fbbf24;letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid #2d3748}
+.wc-table{width:100%;border-collapse:collapse;font-size:11px}
+.wc-table th{padding:4px 8px;text-align:center;font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.04em}
+.wc-table th.team-col{text-align:left}
+.wc-table td{padding:5px 8px;text-align:center;font-weight:700;color:#e2e8f0;border-top:1px solid #1a2235}
+.wc-table td.team-col{text-align:left;color:#f1f5f9;font-size:11px}
+.wc-table tr:nth-child(1) td,.wc-table tr:nth-child(2) td{background:rgba(52,211,153,.04)}
+.wc-table .pts{color:#fbbf24;font-size:12px;font-weight:900}
+.wc-table .gd.pos{color:#4ade80}.wc-table .gd.neg{color:#f87171}
 
 /* ── Football signal card ── */
 .fb-sig-card{background:#1e293b;border:1px solid #334155;border-radius:10px;overflow:hidden;margin-bottom:10px}
@@ -691,6 +756,10 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   <section>
     <h2>Live Football Matches</h2>
     <div id="fb-matches"><div class="empty">No live football matches tracked</div></div>
+  </section>
+  <section id="wc-groups-section" style="display:none">
+    <h2>FIFA World Cup 2026 — Group Standings</h2>
+    <div id="wc-groups"><div class="empty">Loading group standings…</div></div>
   </section>
   <section>
     <h2>Football Signals (last 24h)</h2>
@@ -1360,18 +1429,35 @@ function renderScalpCard(o){
   </div>`;
 }
 
+// ── WC GROUP STANDINGS ───────────────────────────────────────────────────────
+function renderWcGroups(data){
+  const sec=document.getElementById('wc-groups-section');
+  const el=document.getElementById('wc-groups');
+  const groups=(data&&data.groups)||[];
+  if(!groups.length){sec.style.display='none';return;}
+  sec.style.display='';
+  el.innerHTML='<div class="wc-groups">'+groups.map(g=>{
+    const rows=g.teams.map((t,i)=>{
+      const gd=t.gd>0?`<span class="gd pos">+${t.gd}</span>`:t.gd<0?`<span class="gd neg">${t.gd}</span>`:`<span class="gd">0</span>`;
+      return `<tr><td class="team-col">${esc(t.team)}</td><td>${t.p}</td><td>${t.w}</td><td>${t.d}</td><td>${t.l}</td><td>${t.gf}:${t.ga}</td><td>${gd}</td><td class="pts">${t.pts}</td></tr>`;
+    }).join('');
+    return `<div class="wc-group"><div class="wc-group-hd">${esc(g.group)}</div><table class="wc-table"><tr><th class="team-col">Team</th><th>P</th><th>W</th><th>D</th><th>L</th><th>GF:GA</th><th>GD</th><th>Pts</th></tr>${rows}</table></div>`;
+  }).join('')+'</div>';
+}
+
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 // Fetch JSON that never rejects — a single failing endpoint must not blank the whole dashboard.
 function jget(url,fallback){return fetch(url).then(r=>r.ok?r.json():fallback).catch(()=>fallback);}
 async function refresh(){
   try{
-    const [status,matches,signals,fbMatches,fbSignals,scalps]=await Promise.all([
+    const [status,matches,signals,fbMatches,fbSignals,scalps,wcGroups]=await Promise.all([
       jget('/api/status',{}),
       jget('/api/matches',[]),
       jget('/api/signals',[]),
       jget('/api/football/matches',[]),
       jget('/api/football/signals',[]),
       jget('/api/scalping',[]),
+      jget('/api/football/wc-groups',{}),
     ]);
     document.getElementById('stat-matches').textContent=matches.length;
     document.getElementById('stat-fb-matches').textContent=fbMatches.length;
@@ -1382,6 +1468,7 @@ async function refresh(){
     renderMatches(matches);
     renderSignals(signals);
     renderFootballMatches(fbMatches);
+    renderWcGroups(wcGroups);
     renderFootballSignals(fbSignals);
     renderScalping(scalps||[]);
     document.getElementById('last-updated').textContent='Updated: '+new Date().toLocaleTimeString('en-IN',_IST)+' IST';
@@ -2171,8 +2258,8 @@ html[data-theme="emerald"]{--bg:#0a1410;--panel:#102219;--panel2:#0c1b13;--line:
 html[data-theme] body{background:var(--bg)!important;color:var(--text)!important}
 html[data-theme] header,html[data-theme] .topbar,html[data-theme] .tab-bar{background:var(--panel)!important;border-color:var(--line)!important}
 html[data-theme] header h1,html[data-theme] .topbar h1,html[data-theme] h2,html[data-theme] .tab-btn.active{color:var(--text-strong)!important}
-html[data-theme] .card,html[data-theme] .status-card,html[data-theme] .match-card,html[data-theme] .signal-card,html[data-theme] .fb-card,html[data-theme] .fb-sig-card,html[data-theme] .scalp-card,html[data-theme] .mc2{background:var(--panel)!important;border-color:var(--line)!important}
-html[data-theme] .mc2-top,html[data-theme] .mc2-dt,html[data-theme] .mc2-details,html[data-theme] .mc2-ob,html[data-theme] .mc-scoreboard,html[data-theme] .mc-header,html[data-theme] .sc-header,html[data-theme] .sc-footer,html[data-theme] .sc-probs,html[data-theme] .scalp-head,html[data-theme] .scalp-foot,html[data-theme] .fb-header,html[data-theme] .mc-prob,html[data-theme] .mc-odds-box,html[data-theme] .scroll,html[data-theme] .toc a{background:var(--panel2)!important;border-color:var(--line2)!important}
+html[data-theme] .card,html[data-theme] .status-card,html[data-theme] .match-card,html[data-theme] .signal-card,html[data-theme] .fb-card,html[data-theme] .fb-sig-card,html[data-theme] .scalp-card,html[data-theme] .mc2,html[data-theme] .wc-group{background:var(--panel)!important;border-color:var(--line)!important}
+html[data-theme] .mc2-top,html[data-theme] .mc2-dt,html[data-theme] .mc2-details,html[data-theme] .mc2-ob,html[data-theme] .mc-scoreboard,html[data-theme] .mc-header,html[data-theme] .sc-header,html[data-theme] .sc-footer,html[data-theme] .sc-probs,html[data-theme] .scalp-head,html[data-theme] .scalp-foot,html[data-theme] .fb-header,html[data-theme] .mc-prob,html[data-theme] .mc-odds-box,html[data-theme] .scroll,html[data-theme] .toc a,html[data-theme] .wc-group-hd{background:var(--panel2)!important;border-color:var(--line2)!important}
 html[data-theme] .card-value,html[data-theme] .mc2-plname,html[data-theme] .mc2-setnow b,html[data-theme] .mvm .val,html[data-theme] .sb-cur,html[data-theme] .sb-sets-total,html[data-theme] .mc-name,html[data-theme] .mc-sets-won,html[data-theme] .mc-game-score,html[data-theme] .sc-bet-player,html[data-theme] .scalp-player,html[data-theme] .fb-team-name,html[data-theme] .fb-score,html[data-theme] .status-val,html[data-theme] .prob-pct,html[data-theme] .mc2-problbl b,html[data-theme] .card-name,html[data-theme] .meta-value,html[data-theme] .sc-conf,html[data-theme] .toc a,html[data-theme] .tbl-head h2{color:var(--text-strong)!important}
 html[data-theme] .card-title,html[data-theme] .card-sub,html[data-theme] .refresh,html[data-theme] section h2,html[data-theme] .mc2-lbl span,html[data-theme] .mvm .lab,html[data-theme] .status-name,html[data-theme] .empty,html[data-theme] footer,html[data-theme] .subtitle,html[data-theme] .card-meta,html[data-theme] .meta-label,html[data-theme] .mc2-obimp,html[data-theme] .mc2-obname,html[data-theme] .mc2-setnow,html[data-theme] .mc2-problbl,html[data-theme] .note,html[data-theme] #status,html[data-theme] .mvm .h{color:var(--muted)!important}
 html[data-theme] .mc2-sets{color:var(--score)!important}
@@ -2226,6 +2313,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/signals", lambda req: _api_signals(runner, req))
     app.router.add_get("/api/football/matches", lambda req: _api_football_matches(runner, req))
     app.router.add_get("/api/football/signals", lambda req: _api_football_signals(runner, req))
+    app.router.add_get("/api/football/wc-groups", _api_wc_groups)
     app.router.add_get("/api/debug", lambda req: _api_debug(runner, req))
     app.router.add_get("/api/debug/collectors", lambda req: _api_collectors_debug(runner, req))
     app.router.add_get("/api/h2h", lambda req: _api_h2h(runner, req))
