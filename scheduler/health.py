@@ -1144,7 +1144,7 @@ const FB_MKT={match_winner:'Match Winner',draw_no_bet:'Draw No Bet',asian_handic
 
 function renderFootballMatches(matches){
   const el=document.getElementById('fb-matches');
-  if(!matches.length){el.innerHTML='<div class="empty">No live or upcoming football matches in next 3 hours</div>';return;}
+  if(!matches.length){el.innerHTML='<div class="empty">No live or upcoming football matches in next 24 hours</div>';return;}
   el.innerHTML=matches.map(renderFootballMatch).join('');
 }
 
