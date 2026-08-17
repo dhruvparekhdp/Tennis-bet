@@ -323,3 +323,15 @@ class CryptoSignalLog(Base):
     pnl_pct: Mapped[float] = mapped_column(Float, default=0.0)
     timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)
 
+
+class CryptoWatchlistEntry(Base):
+    """
+    Crypto symbols the Binance WS collector streams. Lives in the DB — not an
+    env var — so it can be edited at runtime from the dashboard's Crypto tab
+    without a redeploy.
+    """
+
+    __tablename__ = "crypto_watchlist"
+
+    symbol: Mapped[str] = mapped_column(String, primary_key=True)   # e.g. "btcusdt"
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
