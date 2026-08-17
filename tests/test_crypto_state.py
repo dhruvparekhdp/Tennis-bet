@@ -59,8 +59,14 @@ class TestCryptoState(unittest.TestCase):
 
     def test_crypto_state_store_watchlist_management(self):
         async def _run():
+            # Watchlist is DB-backed now — the store starts empty until seed()
+            # is called (normally with symbols loaded from the crypto_watchlist
+            # table at startup), not pre-populated from a settings field.
             store = CryptoStateStore()
-            self.assertGreaterEqual(await store.count(), 50)
+            self.assertEqual(await store.count(), 0)
+
+            await store.seed(["btcusdt", "ethusdt"])
+            self.assertEqual(await store.count(), 2)
 
             await store.add_symbol("kasusdt")
             state = await store.get("kasusdt")

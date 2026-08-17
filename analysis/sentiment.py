@@ -26,9 +26,10 @@ _BEARISH_KEYWORDS = {
 
 class SentimentAnalyzer:
     """
-    Analyzes news headlines and geopolitical events.
-    Supports lightweight lexicon + VADER scoring by default (cloud-safe on 512MB RAM),
-    or FinBERT transformer pipeline when USE_FINBERT=true.
+    Analyzes news headlines with a lightweight bullish/bearish keyword lexicon —
+    self-contained, no corpus download needed, cloud-safe on Render's free
+    512MB tier. Set USE_FINBERT=true to use the (much heavier, ~440MB RAM)
+    FinBERT transformer pipeline instead.
     """
 
     def __init__(self) -> None:
@@ -45,13 +46,6 @@ class SentimentAnalyzer:
             except Exception as exc:
                 log.warning("finbert_load_failed_falling_back_to_lexicon", error=str(exc))
                 self._mode = "lexicon"
-
-        if self._mode == "lexicon":
-            try:
-                from nltk.sentiment.vader import SentimentIntensityAnalyzer
-                self._vader = SentimentIntensityAnalyzer()
-            except Exception:
-                self._vader = None
 
     def score(self, headlines: list[str]) -> float:
         """
@@ -77,26 +71,13 @@ class SentimentAnalyzer:
             except Exception as exc:
                 log.warning("finbert_inference_failed", error=str(exc))
 
-        # Lexicon + VADER fallback
-        scores = []
-        for text in headlines:
-            s = self._score_single_text(text)
-            scores.append(s)
-
+        scores = [self._score_single_text(text) for text in headlines]
         return round(sum(scores) / len(scores), 3) if scores else 0.0
 
     def _score_single_text(self, text: str) -> float:
         text_lower = text.lower()
-        base_score = 0.0
-
-        if self._vader is not None:
-            try:
-                base_score = self._vader.polarity_scores(text)["compound"]
-            except Exception:
-                base_score = 0.0
-
-        # Apply crypto domain keyword modifiers
         keyword_delta = 0.0
+
         for kw, delta in _BULLISH_KEYWORDS.items():
             if re.search(rf"\b{re.escape(kw)}\b", text_lower):
                 keyword_delta += delta
@@ -105,5 +86,4 @@ class SentimentAnalyzer:
             if re.search(rf"\b{re.escape(kw)}\b", text_lower):
                 keyword_delta += delta
 
-        combined = base_score * 0.6 + keyword_delta * 0.4
-        return max(-1.0, min(1.0, combined))
+        return max(-1.0, min(1.0, keyword_delta))
