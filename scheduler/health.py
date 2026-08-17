@@ -2191,11 +2191,15 @@ async def _api_collector_states(runner, request: web.Request) -> web.Response:
                 "key_set": bool(_settings.api_tennis_key),
                 "poll_interval_secs": _settings.api_tennis_poll_interval_seconds,
             })
+        if hasattr(runner, "coingecko"):
+            states["coingecko"].update({
+                "consecutive_failures": runner.coingecko._consecutive_failures,
+                "watchlist_size": len(await runner.crypto_store.get_symbols()),
+            })
         if hasattr(runner, "binance_ws"):
             states["binance_ws"].update({
                 "connected": runner.binance_ws._running and runner.binance_ws._consecutive_failures == 0,
                 "messages_received": runner.binance_ws._total_messages_received,
-                "watchlist_size": len(await runner.crypto_store.get_symbols()),
             })
         if hasattr(runner, "twelvedata_ws"):
             states["twelvedata_ws"].update({"key_set": bool(_settings.twelvedata_api_key)})
@@ -2365,14 +2369,24 @@ const SOURCES = [
     warning: null,
   },
   {
+    id: 'coingecko',
+    name: 'CoinGecko',
+    icon: '🪙',
+    desc: 'Crypto price polling for the watchlist — default source (public API, no key needed)',
+    quota_label: 'Free tier',
+    quota_total: null,
+    can_toggle: true,
+    warning: null,
+  },
+  {
     id: 'binance_ws',
     name: 'Binance WebSocket',
-    icon: '🪙',
-    desc: 'Real-time crypto price streaming for the watchlist (public API, no key needed)',
+    icon: '🚫',
+    desc: "Real-time crypto streaming — OFF by default: Binance returns HTTP 451 (geoblocked) from Render's IPs and will just reconnect forever burning CPU. Only enable if you deploy outside a blocked region.",
     quota_label: 'Continuous stream',
     quota_total: null,
     can_toggle: true,
-    warning: "Runs one persistent WebSocket connection per symbol group, not a polled quota. On Render's free tier keep the watchlist small (10-15 coins) — manage it from the Crypto tab on the dashboard, not here.",
+    warning: "Geoblocked (HTTP 451) on Render — enabling this will loop reconnect attempts without ever connecting. CoinGecko above is the working default.",
   },
   {
     id: 'twelvedata_ws',
