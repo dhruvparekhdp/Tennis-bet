@@ -8,7 +8,7 @@ Data collection strategy:
 Jobs:
   - data_poll:      every 30s  → ESPN fetch + optional Sofascore + analysis + snapshots
   - schedule_poll:  every 5min → TheSportsDB schedule
-  - db_cleanup:     daily      → delete old odds snapshots
+  - db_cleanup:     daily      → delete old odds/crypto/commodity snapshots
   - heartbeat:      every 10m  → log status
 
 Data storage:
@@ -110,7 +110,7 @@ class AppRunner:
         self.api_tennis = ApiTennisCollector(self.store)
         # Scalping alerts — track last Telegram ping per match to avoid spam
         self._scalp_alert_times: dict[str, datetime] = {}
-        # Crypto & Commodities
+        # Crypto & Commodities — watchlist itself is DB-backed, loaded in start()
         self.crypto_store = CryptoStateStore()
         self.commodity_store = CommodityStateStore()
         self.binance_ws = BinanceWSCollector(self.crypto_store)
@@ -391,6 +391,7 @@ class AppRunner:
         async with AsyncSessionFactory() as session:
             repo = Repository(session)
             await repo.delete_old_odds_snapshots(days=7)
+            await repo.delete_old_crypto_data(days=7)
         log.info("db_cleanup_done")
 
     async def _heartbeat_job(self) -> None:
@@ -525,6 +526,36 @@ class AppRunner:
         except Exception:
             log.exception("crypto_snapshot_job_failed")
 
+    # ── Crypto watchlist (DB-backed) ───────────────────────────────
+
+    async def _load_crypto_watchlist(self) -> None:
+        """Load the watchlist from the DB, seeding a small default the first
+        time the table is empty (e.g. a brand-new deploy)."""
+        try:
+            async with AsyncSessionFactory() as session:
+                repo = Repository(session)
+                symbols = await repo.seed_crypto_watchlist_if_empty(
+                    settings.crypto_watchlist_seed.split(",")
+                )
+            await self.crypto_store.seed(symbols)
+            log.info("crypto_watchlist_loaded", count=len(symbols))
+        except Exception:
+            log.exception("crypto_watchlist_load_failed")
+
+    async def add_crypto_symbol(self, symbol: str) -> None:
+        sym = symbol.strip().lower()
+        async with AsyncSessionFactory() as session:
+            repo = Repository(session)
+            await repo.add_crypto_watchlist_symbol(sym)
+        await self.crypto_store.add_symbol(sym)
+
+    async def remove_crypto_symbol(self, symbol: str) -> None:
+        sym = symbol.strip().lower()
+        async with AsyncSessionFactory() as session:
+            repo = Repository(session)
+            await repo.remove_crypto_watchlist_symbol(sym)
+        await self.crypto_store.remove_symbol(sym)
+
     def setup_jobs(self) -> None:
         self.scheduler.add_job(
             self._data_poll_job,
@@ -655,6 +686,11 @@ class AppRunner:
 
     async def start(self) -> None:
         await self.notifier.verify()
+
+        # Crypto watchlist lives in the DB — load/seed it before the WS collector
+        # picks up symbols, so the very first connection already has the right set.
+        await self._load_crypto_watchlist()
+
         self.setup_jobs()
         self.scheduler.start()
 
@@ -670,12 +706,12 @@ class AppRunner:
             log.info("twelvedata_ws_task_spawned")
 
         bets_api_status = "BetsAPI: active" if settings.bets_api_token else "BetsAPI: no token"
-        crypto_count = len(settings.crypto_symbols)
+        crypto_count = await self.crypto_store.count()
         await self.notifier.send_text(
             "🎾⚽🪙 Tennis + Football + Crypto monitor started.\n"
             f"Tennis: ESPN + Flashscore + {bets_api_status} (every {settings.sofascore_poll_interval}s)\n"
             f"Football: ESPN all leagues (every 60s)\n"
-            f"Crypto: Binance WS Top {crypto_count} watchlist (Real-Time Streams)\n"
+            f"Crypto: Binance WS {crypto_count}-symbol watchlist (Real-Time Streams, manage from Crypto tab)\n"
             f"Commodities: Twelve Data Gold/Silver/Oil ({'active' if settings.twelvedata_api_key else 'no key'})\n"
             f"News Sentiment: CryptoPanic ({'active' if settings.cryptopanic_auth_token else 'no token'})\n"
             f"Min confidence: {settings.min_confidence} (Sports) / {settings.crypto_min_confidence} (Crypto)"
@@ -732,7 +768,6 @@ class AppRunner:
                 "odds_api_football": bool(settings.odds_api_key),
             },
             "crypto": {
-                "watchlist_symbols": len(settings.crypto_symbols),
                 "binance_ws_connected": self.binance_ws._running and self.binance_ws._consecutive_failures == 0,
                 "binance_messages_received": self.binance_ws._total_messages_received,
                 "signals_today": len(self.crypto_engine.get_recent_signals(24)),
