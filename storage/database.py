@@ -144,6 +144,11 @@ async def _migrate_columns(conn) -> None:
             outcome VARCHAR DEFAULT 'pending', pnl_pct FLOAT DEFAULT 0.0,
             timestamp TIMESTAMP
         )""",
+        # crypto_watchlist table — symbols to stream, DB-backed instead of an env var
+        """CREATE TABLE IF NOT EXISTS crypto_watchlist (
+            symbol VARCHAR PRIMARY KEY,
+            added_at TIMESTAMP
+        )""",
     ]
     for sql in migrations:
         try:
