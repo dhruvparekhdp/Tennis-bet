@@ -114,6 +114,36 @@ async def _migrate_columns(conn) -> None:
         )""",
         "CREATE INDEX IF NOT EXISTS ix_sp_match ON slam_points (match_id)",
         "CREATE INDEX IF NOT EXISTS ix_sp_slam_year ON slam_points (slam, year)",
+        # crypto_snapshots table
+        """CREATE TABLE IF NOT EXISTS crypto_snapshots (
+            id SERIAL PRIMARY KEY,
+            symbol VARCHAR, price FLOAT, volume_24h FLOAT DEFAULT 0.0,
+            rsi_14 FLOAT DEFAULT 50.0, macd_line FLOAT DEFAULT 0.0, macd_signal FLOAT DEFAULT 0.0,
+            bollinger_upper FLOAT DEFAULT 0.0, bollinger_lower FLOAT DEFAULT 0.0,
+            atr_14 FLOAT DEFAULT 0.0, sentiment_score FLOAT DEFAULT 0.0,
+            price_30m_later FLOAT DEFAULT 0.0, price_1h_later FLOAT DEFAULT 0.0,
+            price_4h_later FLOAT DEFAULT 0.0, price_1d_later FLOAT DEFAULT 0.0,
+            timestamp TIMESTAMP
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_cs_symbol_ts ON crypto_snapshots (symbol, timestamp)",
+        # commodity_snapshots table
+        """CREATE TABLE IF NOT EXISTS commodity_snapshots (
+            id SERIAL PRIMARY KEY,
+            symbol VARCHAR, price FLOAT, rsi_14 FLOAT DEFAULT 50.0, atr_14 FLOAT DEFAULT 0.0,
+            timestamp TIMESTAMP
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_comms_symbol_ts ON commodity_snapshots (symbol, timestamp)",
+        # crypto_signal_log table
+        """CREATE TABLE IF NOT EXISTS crypto_signal_log (
+            id SERIAL PRIMARY KEY,
+            symbol VARCHAR, signal_type VARCHAR, direction VARCHAR,
+            trigger_description TEXT, confidence FLOAT, current_price FLOAT,
+            target_price FLOAT DEFAULT 0.0, stop_loss FLOAT DEFAULT 0.0,
+            edge_pct FLOAT, stake_pct FLOAT, timeframe VARCHAR,
+            sentiment_score FLOAT DEFAULT 0.0, indicators_summary VARCHAR DEFAULT '',
+            outcome VARCHAR DEFAULT 'pending', pnl_pct FLOAT DEFAULT 0.0,
+            timestamp TIMESTAMP
+        )""",
     ]
     for sql in migrations:
         try:

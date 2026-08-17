@@ -8,6 +8,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from storage.models import (
+    CommoditySnapshot, CryptoSignalLog, CryptoSnapshot,
     Match, MatchCompletion, MatchResult, MatchSnapshot,
     OddsSnapshot, PlayerStats, SignalLog,
 )
@@ -404,4 +405,96 @@ class Repository:
             "avg_first_serve_pct": round(total_first_svpt / total_svpt * 100) if total_svpt > 0 else 0,
             "bp_save_pct": round(total_bp_saved / total_bp_faced * 100) if total_bp_faced > 0 else 0,
         }
+
+    # ── Crypto & Commodities ──────────────────────────────────────────────
+
+    async def save_crypto_snapshot(
+        self,
+        symbol: str,
+        price: float,
+        volume_24h: float,
+        rsi_14: float,
+        macd_line: float,
+        macd_signal: float,
+        bollinger_upper: float,
+        bollinger_lower: float,
+        atr_14: float,
+        sentiment_score: float,
+    ) -> None:
+        self.session.add(CryptoSnapshot(
+            symbol=symbol,
+            price=price,
+            volume_24h=volume_24h,
+            rsi_14=rsi_14,
+            macd_line=macd_line,
+            macd_signal=macd_signal,
+            bollinger_upper=bollinger_upper,
+            bollinger_lower=bollinger_lower,
+            atr_14=atr_14,
+            sentiment_score=sentiment_score,
+            timestamp=datetime.utcnow(),
+        ))
+        await self.session.commit()
+
+    async def save_commodity_snapshot(
+        self,
+        symbol: str,
+        price: float,
+        rsi_14: float,
+        atr_14: float,
+    ) -> None:
+        self.session.add(CommoditySnapshot(
+            symbol=symbol,
+            price=price,
+            rsi_14=rsi_14,
+            atr_14=atr_14,
+            timestamp=datetime.utcnow(),
+        ))
+        await self.session.commit()
+
+    async def log_crypto_signal(
+        self,
+        symbol: str,
+        signal_type: str,
+        direction: str,
+        trigger_description: str,
+        confidence: float,
+        current_price: float,
+        target_price: float | None,
+        stop_loss: float | None,
+        edge_pct: float,
+        stake_pct: float,
+        timeframe: str,
+        sentiment_score: float = 0.0,
+        indicators_summary: str = "",
+    ) -> None:
+        self.session.add(CryptoSignalLog(
+            symbol=symbol,
+            signal_type=signal_type,
+            direction=direction,
+            trigger_description=trigger_description,
+            confidence=confidence,
+            current_price=current_price,
+            target_price=target_price or 0.0,
+            stop_loss=stop_loss or 0.0,
+            edge_pct=edge_pct,
+            stake_pct=stake_pct,
+            timeframe=timeframe,
+            sentiment_score=sentiment_score,
+            indicators_summary=indicators_summary,
+            outcome="pending",
+            pnl_pct=0.0,
+            timestamp=datetime.utcnow(),
+        ))
+        await self.session.commit()
+
+    async def get_recent_crypto_signals(self, hours: int = 24) -> list[CryptoSignalLog]:
+        since = datetime.utcnow() - timedelta(hours=hours)
+        result = await self.session.execute(
+            select(CryptoSignalLog)
+            .where(CryptoSignalLog.timestamp >= since)
+            .order_by(CryptoSignalLog.timestamp.desc())
+            .limit(50)
+        )
+        return list(result.scalars())
 

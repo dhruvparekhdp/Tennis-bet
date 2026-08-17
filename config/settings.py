@@ -92,5 +92,48 @@ class Settings(BaseSettings):
     scalp_alert_telegram: bool = True     # ping Telegram when a new "lock" scalp appears
     scalp_alert_cooldown_minutes: int = 30
 
+    # ── Crypto & Commodities ──────────────────────────────────────────────────
+    # Top 50 default coins watchlist (comma-separated, editable via .env CRYPTO_WATCHLIST)
+    crypto_watchlist: str = (
+        "btcusdt,ethusdt,bnbusdt,solusdt,xrpusdt,dogeusdt,adausdt,avaxusdt,shibusdt,dotusdt,"
+        "linkusdt,trxusdt,nearusdt,suiusdt,aptusdt,uniusdt,ltcusdt,pepeusdt,fetusdt,renderusdt,"
+        "icpusdt,bchusdt,kasusdt,polusdt,etcusdt,xlmusdt,taousdt,injusdt,stxusdt,filusdt,"
+        "imxusdt,arbusdt,vetusdt,seiusdt,ftmusdt,runeusdt,flokiusdt,bonkusdt,wifusdt,grtusdt,"
+        "aaveusdt,algousdt,sandusdt,manausdt,flowusdt,thetausdt,egldusdt,qntusdt,axsusdt,galausdt"
+    )
+    # Active streaming Kline intervals (default "1m", "5m", "15m", "1h")
+    crypto_kline_interval: str = "1m"
+    # Target prediction timeframes
+    crypto_timeframes: str = "30m,1h,4h,1d"
+
+    # Twelve Data Commodities (Gold, Silver, WTI Crude Oil)
+    twelvedata_api_key: str | None = None
+    twelvedata_symbols: str = "XAU/USD,XAG/USD,WTI/USD"
+
+    # CryptoPanic News & Sentiment
+    cryptopanic_auth_token: str | None = None
+    cryptopanic_poll_interval_seconds: int = 300  # 5 minutes
+
+    # Crypto Analysis & Thresholds
+    crypto_min_confidence: float = 0.60
+    crypto_signal_cooldown_minutes: int = 15
+    crypto_snapshot_interval_seconds: int = 120   # 2 minutes snapshot cycle for training
+    crypto_alert_telegram: bool = True
+    crypto_max_stake_pct: float = 0.02           # 2% max per trade (Kelly capped)
+
+    # NLP Sentiment & Execution toggles
+    use_finbert: bool = False                    # False = fast VADER/lexicon (low RAM), True = FinBERT (needs ~440MB RAM)
+    crypto_auto_execute: bool = False            # Auto-execution hook (prepared for later Binance API execution)
+
+    @property
+    def crypto_symbols(self) -> list[str]:
+        """Return clean list of lowercase symbols from the watchlist."""
+        return [s.strip().lower() for s in self.crypto_watchlist.split(",") if s.strip()]
+
+    @property
+    def prediction_timeframes(self) -> list[str]:
+        """Return list of active prediction timeframes."""
+        return [t.strip().lower() for t in self.crypto_timeframes.split(",") if t.strip()]
+
 
 settings = Settings()  # type: ignore[call-arg]

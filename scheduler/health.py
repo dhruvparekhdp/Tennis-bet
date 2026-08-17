@@ -286,6 +286,99 @@ async def _api_scalping(runner, request: web.Request) -> web.Response:
     return web.Response(text=json.dumps(result), content_type="application/json")
 
 
+async def _api_crypto_coins(runner, request: web.Request) -> web.Response:
+    """Return live crypto watchlist market states with indicators."""
+    states = await runner.crypto_store.get_all()
+    coins = []
+    for s in states:
+        coins.append({
+            "symbol": s.symbol.upper(),
+            "base_asset": s.base_asset,
+            "price": s.current_price,
+            "change_24h_pct": round(s.price_change_24h_pct, 2),
+            "volume_24h": s.volume_24h,
+            "volume_ratio": round(s.volume_ratio, 2),
+            "high_24h": s.high_24h,
+            "low_24h": s.low_24h,
+            "rsi_14": s.rsi_14,
+            "macd_line": round(s.macd_line, 4),
+            "bollinger_bandwidth": round(s.bollinger_bandwidth * 100, 2),
+            "sentiment_score": s.sentiment_score,
+            "timestamp": s.timestamp.isoformat(),
+        })
+    return web.Response(text=json.dumps(coins), content_type="application/json")
+
+
+async def _api_crypto_signals(runner, request: web.Request) -> web.Response:
+    """Return recent crypto trade signals."""
+    from storage.database import AsyncSessionFactory
+    from storage.repository import Repository
+    async with AsyncSessionFactory() as session:
+        repo = Repository(session)
+        rows = await repo.get_recent_crypto_signals(hours=24)
+    signals = [
+        {
+            "id": r.id,
+            "symbol": r.symbol.upper(),
+            "signal_type": r.signal_type,
+            "direction": r.direction,
+            "trigger": r.trigger_description,
+            "confidence": round(r.confidence * 100),
+            "current_price": r.current_price,
+            "target_price": r.target_price,
+            "stop_loss": r.stop_loss,
+            "edge_pct": r.edge_pct,
+            "stake_pct": round(r.stake_pct * 100, 2),
+            "timeframe": r.timeframe,
+            "sentiment_score": r.sentiment_score,
+            "indicators": r.indicators_summary,
+            "outcome": r.outcome,
+            "timestamp": r.timestamp.isoformat(),
+        }
+        for r in rows
+    ]
+    return web.Response(text=json.dumps(signals), content_type="application/json")
+
+
+async def _api_crypto_forecasts(runner, request: web.Request) -> web.Response:
+    """Return multi-horizon forecasts (30m, 1h, 4h, 1d) for all watchlist symbols."""
+    states = await runner.crypto_store.get_all()
+    forecasts = {}
+    for s in states:
+        if s.current_price > 0:
+            fc = runner.multi_horizon.predict_all_horizons(s)
+            forecasts[s.symbol.upper()] = {
+                h: {
+                    "direction": f.direction,
+                    "prob_up": f.probability_up,
+                    "pred_change_pct": f.predicted_change_pct,
+                    "confidence": f.confidence,
+                    "target_price": f.target_price,
+                    "support_price": f.support_price,
+                    "drivers": f.key_drivers,
+                }
+                for h, f in fc.items()
+            }
+    return web.Response(text=json.dumps(forecasts), content_type="application/json")
+
+
+async def _api_commodities(runner, request: web.Request) -> web.Response:
+    """Return real-time spot commodities (Gold, Silver, Oil)."""
+    states = await runner.commodity_store.get_all()
+    comms = [
+        {
+            "symbol": s.symbol,
+            "name": s.name,
+            "price": s.current_price,
+            "change_24h_pct": round(s.price_change_24h_pct, 2),
+            "rsi_14": s.rsi_14,
+            "timestamp": s.timestamp.isoformat(),
+        }
+        for s in states
+    ]
+    return web.Response(text=json.dumps(comms), content_type="application/json")
+
+
 async def _api_h2h(runner, request: web.Request) -> web.Response:
     p1 = request.query.get("p1", "")
     p2 = request.query.get("p2", "")
@@ -2322,6 +2415,11 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/settings", lambda req: _settings_page(req))
     app.router.add_get("/api/settings", lambda req: _api_collector_states(runner, req))
     app.router.add_post("/api/settings/toggle", lambda req: _api_collector_toggle(runner, req))
+    # Crypto & Commodities Routes
+    app.router.add_get("/api/crypto/coins", lambda req: _api_crypto_coins(runner, req))
+    app.router.add_get("/api/crypto/signals", lambda req: _api_crypto_signals(runner, req))
+    app.router.add_get("/api/crypto/forecasts", lambda req: _api_crypto_forecasts(runner, req))
+    app.router.add_get("/api/commodities", lambda req: _api_commodities(runner, req))
     return app
 
 
