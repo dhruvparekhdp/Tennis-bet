@@ -8,18 +8,19 @@ import structlog
 import websockets
 
 from analysis.crypto_state_store import CryptoStateStore
-from config.settings import settings
 
 log = structlog.get_logger()
 
 
 class BinanceWSCollector:
     """
-    Real-time Binance WebSocket collector streaming Klines & 24h stats
-    for all symbols in the configurable Top 50 watchlist.
+    Real-time Binance WebSocket collector streaming Klines & 24h stats for
+    every symbol in the DB-backed watchlist (managed from the dashboard's
+    Crypto tab, not an env var).
     """
 
     BASE_WS_URL = "wss://stream.binance.com:9443/stream"
+    _LARGE_WATCHLIST_WARN = 25  # Render free tier has limited CPU/RAM — flag heavy watchlists
 
     def __init__(self, store: CryptoStateStore) -> None:
         self.store = store
@@ -27,11 +28,13 @@ class BinanceWSCollector:
         self._consecutive_failures = 0
         self._total_messages_received = 0
         self._last_message_time: datetime | None = None
+        self._subscribed_version = -1
+        self._kline_interval = "1m"
 
     async def run_forever(self) -> None:
         """Continuous listener loop with automatic exponential backoff reconnection."""
         self._running = True
-        log.info("binance_ws_collector_started", symbols_count=len(settings.crypto_symbols))
+        log.info("binance_ws_collector_started")
 
         while self._running:
             try:
@@ -51,11 +54,22 @@ class BinanceWSCollector:
                 await asyncio.sleep(wait_secs)
 
     async def _connect_and_stream(self) -> None:
-        symbols = settings.crypto_symbols
+        from config.settings import settings  # local import: kline interval only
+
+        symbols = await self.store.get_symbols()
+        self._subscribed_version = self.store.symbols_version
         if not symbols:
             log.warning("binance_ws_no_symbols_configured")
             await asyncio.sleep(10)
             return
+
+        if len(symbols) > self._LARGE_WATCHLIST_WARN:
+            log.warning(
+                "binance_ws_large_watchlist",
+                count=len(symbols),
+                hint="Render's free tier has limited CPU/RAM — consider trimming "
+                     "the watchlist from the dashboard's Crypto tab",
+            )
 
         # Build combined stream URLs: <symbol>@kline_<interval> and <symbol>@miniTicker
         interval = settings.crypto_kline_interval
@@ -68,7 +82,7 @@ class BinanceWSCollector:
         stream_param = "/".join(streams)
         url = f"{self.BASE_WS_URL}?streams={stream_param}"
 
-        log.info("binance_ws_connecting", streams_count=len(streams))
+        log.info("binance_ws_connecting", symbols_count=len(symbols), streams_count=len(streams))
 
         async with websockets.connect(
             url,
@@ -80,18 +94,38 @@ class BinanceWSCollector:
             self._consecutive_failures = 0
             log.info("binance_ws_connected_successfully")
 
-            async for message in ws:
-                if not self._running:
-                    break
+            watcher = asyncio.create_task(self._watch_for_resubscribe(ws))
+            try:
+                async for message in ws:
+                    if not self._running:
+                        break
 
-                self._total_messages_received += 1
-                self._last_message_time = datetime.now(timezone.utc)
+                    self._total_messages_received += 1
+                    self._last_message_time = datetime.now(timezone.utc)
 
-                try:
-                    payload = json.loads(message)
-                    await self._handle_stream_payload(payload)
-                except Exception as exc:
-                    log.error("binance_ws_message_handling_failed", error=str(exc))
+                    try:
+                        payload = json.loads(message)
+                        await self._handle_stream_payload(payload)
+                    except Exception as exc:
+                        log.error("binance_ws_message_handling_failed", error=str(exc))
+            finally:
+                watcher.cancel()
+
+    async def _watch_for_resubscribe(self, ws) -> None:
+        """
+        Force a reconnect when the watchlist changes (add/remove from the
+        Crypto tab) so the new symbol set takes effect within ~15s instead of
+        waiting for the next natural disconnect.
+        """
+        try:
+            while True:
+                await asyncio.sleep(15)
+                if self.store.symbols_version != self._subscribed_version:
+                    log.info("binance_ws_watchlist_changed_reconnecting")
+                    await ws.close()
+                    return
+        except asyncio.CancelledError:
+            pass
 
     async def _handle_stream_payload(self, payload: dict) -> None:
         stream_name = payload.get("stream", "")

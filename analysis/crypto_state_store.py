@@ -86,15 +86,29 @@ def _compute_atr(candles: list[OHLCVCandle], period: int = 14) -> float:
 
 
 class CryptoStateStore:
-    """Thread-safe in-memory cache for live crypto states across the top 50 watchlist."""
+    """
+    Thread-safe in-memory cache for live crypto states.
+
+    The watchlist itself is DB-backed (crypto_watchlist table), not env-var
+    based — call seed() once at startup with symbols loaded from the database.
+    symbols_version bumps on every add/remove so BinanceWSCollector can detect
+    a watchlist change and resubscribe without a restart.
+    """
 
     def __init__(self) -> None:
         self._states: dict[str, CryptoState] = {}
         self._lock = asyncio.Lock()
-        # Initialize default watchlist
-        for sym in settings.crypto_symbols:
-            base = sym.replace("usdt", "").replace("busd", "").upper()
-            self._states[sym] = CryptoState(symbol=sym, base_asset=base)
+        self.symbols_version = 0
+
+    async def seed(self, symbols: list[str]) -> None:
+        """Populate the store from a symbol list (called once at startup)."""
+        async with self._lock:
+            for sym in symbols:
+                sym = sym.strip().lower()
+                if sym and sym not in self._states:
+                    base = sym.replace("usdt", "").replace("busd", "").upper()
+                    self._states[sym] = CryptoState(symbol=sym, base_asset=base)
+            self.symbols_version += 1
 
     async def update_kline(
         self,
@@ -200,19 +214,25 @@ class CryptoStateStore:
         async with self._lock:
             return list(self._states.values())
 
+    async def get_symbols(self) -> list[str]:
+        async with self._lock:
+            return list(self._states.keys())
+
     async def add_symbol(self, symbol: str) -> None:
         sym = symbol.strip().lower()
         async with self._lock:
             if sym not in self._states:
                 base = sym.replace("usdt", "").replace("busd", "").upper()
                 self._states[sym] = CryptoState(symbol=sym, base_asset=base)
+                self.symbols_version += 1
                 log.info("crypto_watchlist_symbol_added", symbol=sym)
 
     async def remove_symbol(self, symbol: str) -> None:
         sym = symbol.strip().lower()
         async with self._lock:
-            self._states.pop(sym, None)
-            log.info("crypto_watchlist_symbol_removed", symbol=sym)
+            if self._states.pop(sym, None) is not None:
+                self.symbols_version += 1
+                log.info("crypto_watchlist_symbol_removed", symbol=sym)
 
     async def count(self) -> int:
         async with self._lock:

@@ -4,11 +4,11 @@ import json
 from datetime import datetime, timedelta
 
 import numpy as np
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from storage.models import (
-    CommoditySnapshot, CryptoSignalLog, CryptoSnapshot,
+    CommoditySnapshot, CryptoSignalLog, CryptoSnapshot, CryptoWatchlistEntry,
     Match, MatchCompletion, MatchResult, MatchSnapshot,
     OddsSnapshot, PlayerStats, SignalLog,
 )
@@ -18,7 +18,7 @@ class Repository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    # ── Match ──────────────────────────────────────────────────────────────
+    # ── Match ──────────────────────────────────────────────────
 
     async def upsert_match(self, match_id: str, player1: str, player2: str,
                            tournament: str, surface: str) -> None:
@@ -39,7 +39,7 @@ class Repository:
             match.last_updated = datetime.utcnow()
             await self.session.commit()
 
-    # ── OddsSnapshot ───────────────────────────────────────────────────────
+    # ── OddsSnapshot ───────────────────────────────────────────
 
     async def save_odds_snapshot(self, match_id: str, odds_p1: float, odds_p2: float) -> None:
         self.session.add(OddsSnapshot(
@@ -58,7 +58,7 @@ class Repository:
         )
         return list(result.scalars())
 
-    # ── SignalLog ──────────────────────────────────────────────────────────
+    # ── SignalLog ────────────────────────────────────────────
 
     async def log_signal(
         self, match_id: str, signal_type: str, player_to_back: int,
@@ -125,7 +125,7 @@ class Repository:
         )
         return list(result.scalars())
 
-    # ── MatchSnapshot ──────────────────────────────────────────────────────
+    # ── MatchSnapshot ──────────────────────────────────────────
 
     async def save_match_snapshot(
         self,
@@ -184,7 +184,7 @@ class Repository:
         )
         await self.session.commit()
 
-    # ── MatchCompletion ────────────────────────────────────────────────────
+    # ── MatchCompletion ─────────────────────────────────────────
 
     async def save_match_completion(
         self,
@@ -221,7 +221,7 @@ class Repository:
         ))
         await self.session.commit()
 
-    # ── PlayerStats ────────────────────────────────────────────────────────
+    # ── PlayerStats ──────────────────────────────────────────
 
     async def get_player_stats(self, player_name: str, surface: str) -> PlayerStats | None:
         result = await self.session.execute(
@@ -231,7 +231,7 @@ class Repository:
         )
         return result.scalar_one_or_none()
 
-    # ── MatchResult (ML training data) ────────────────────────────────────
+    # ── MatchResult (ML training data) ──────────────────────────
 
     async def save_match_result(
         self,
@@ -273,7 +273,7 @@ class Repository:
         y = np.array([r.winner for r in rows], dtype=int)
         return X, y
 
-    # ── Maintenance ────────────────────────────────────────────────────────
+    # ── Maintenance ────────────────────────────────────────────
 
     async def delete_old_odds_snapshots(self, days: int = 7) -> None:
         cutoff = datetime.utcnow() - timedelta(days=days)
@@ -282,6 +282,19 @@ class Repository:
         )
         for row in result.scalars():
             await self.session.delete(row)
+        await self.session.commit()
+
+    async def delete_old_crypto_data(self, days: int = 7) -> None:
+        """Bound the growth of crypto/commodity snapshots + old signal log rows.
+
+        These are written every crypto_snapshot_interval_seconds (default 2 min)
+        for every watchlist symbol — left unbounded they'd eventually fill a
+        free-tier Postgres instance, same as odds_snapshots would without this.
+        """
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        await self.session.execute(delete(CryptoSnapshot).where(CryptoSnapshot.timestamp < cutoff))
+        await self.session.execute(delete(CommoditySnapshot).where(CommoditySnapshot.timestamp < cutoff))
+        await self.session.execute(delete(CryptoSignalLog).where(CryptoSignalLog.timestamp < cutoff))
         await self.session.commit()
 
     async def get_h2h(
@@ -406,7 +419,7 @@ class Repository:
             "bp_save_pct": round(total_bp_saved / total_bp_faced * 100) if total_bp_faced > 0 else 0,
         }
 
-    # ── Crypto & Commodities ──────────────────────────────────────────────
+    # ── Crypto & Commodities ────────────────────────────────────
 
     async def save_crypto_snapshot(
         self,
@@ -498,3 +511,37 @@ class Repository:
         )
         return list(result.scalars())
 
+    # ── Crypto watchlist (DB-backed, editable at runtime without a redeploy) ─
+
+    async def get_crypto_watchlist(self) -> list[str]:
+        result = await self.session.execute(select(CryptoWatchlistEntry.symbol))
+        return [row[0] for row in result.all()]
+
+    async def add_crypto_watchlist_symbol(self, symbol: str) -> None:
+        sym = symbol.strip().lower()
+        existing = await self.session.get(CryptoWatchlistEntry, sym)
+        if existing is None:
+            self.session.add(CryptoWatchlistEntry(symbol=sym, added_at=datetime.utcnow()))
+            await self.session.commit()
+
+    async def remove_crypto_watchlist_symbol(self, symbol: str) -> None:
+        sym = symbol.strip().lower()
+        existing = await self.session.get(CryptoWatchlistEntry, sym)
+        if existing is not None:
+            await self.session.delete(existing)
+            await self.session.commit()
+
+    async def seed_crypto_watchlist_if_empty(self, default_symbols: list[str]) -> list[str]:
+        """First-run only: populate the table from the small seed list.
+
+        Returns the active watchlist either way, so the caller can always use
+        the return value regardless of whether seeding happened.
+        """
+        existing = await self.get_crypto_watchlist()
+        if existing:
+            return existing
+        symbols = [s.strip().lower() for s in default_symbols if s.strip()]
+        for sym in symbols:
+            self.session.add(CryptoWatchlistEntry(symbol=sym, added_at=datetime.utcnow()))
+        await self.session.commit()
+        return symbols
