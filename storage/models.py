@@ -258,3 +258,68 @@ class MatchResult(Base):
     winner: Mapped[int] = mapped_column(Integer)
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+
+class CryptoSnapshot(Base):
+    """
+    Periodic snapshot of crypto state (price, technical indicators, sentiment)
+    used for multi-horizon model training and feature store.
+    """
+
+    __tablename__ = "crypto_snapshots"
+    __table_args__ = (Index("ix_cs_symbol_ts", "symbol", "timestamp"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String, index=True)
+    price: Mapped[float] = mapped_column(Float)
+    volume_24h: Mapped[float] = mapped_column(Float, default=0.0)
+    rsi_14: Mapped[float] = mapped_column(Float, default=50.0)
+    macd_line: Mapped[float] = mapped_column(Float, default=0.0)
+    macd_signal: Mapped[float] = mapped_column(Float, default=0.0)
+    bollinger_upper: Mapped[float] = mapped_column(Float, default=0.0)
+    bollinger_lower: Mapped[float] = mapped_column(Float, default=0.0)
+    atr_14: Mapped[float] = mapped_column(Float, default=0.0)
+    sentiment_score: Mapped[float] = mapped_column(Float, default=0.0)
+    price_30m_later: Mapped[float] = mapped_column(Float, default=0.0)
+    price_1h_later: Mapped[float] = mapped_column(Float, default=0.0)
+    price_4h_later: Mapped[float] = mapped_column(Float, default=0.0)
+    price_1d_later: Mapped[float] = mapped_column(Float, default=0.0)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class CommoditySnapshot(Base):
+    """Periodic snapshot of commodity spot prices (Gold, Silver, Oil)."""
+
+    __tablename__ = "commodity_snapshots"
+    __table_args__ = (Index("ix_comms_symbol_ts", "symbol", "timestamp"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String, index=True)
+    price: Mapped[float] = mapped_column(Float)
+    rsi_14: Mapped[float] = mapped_column(Float, default=50.0)
+    atr_14: Mapped[float] = mapped_column(Float, default=0.0)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class CryptoSignalLog(Base):
+    """Log of all fired cryptocurrency trade signals with performance tracking."""
+
+    __tablename__ = "crypto_signal_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String, index=True)
+    signal_type: Mapped[str] = mapped_column(String)
+    direction: Mapped[str] = mapped_column(String)                  # "long" | "short"
+    trigger_description: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[float] = mapped_column(Float)
+    current_price: Mapped[float] = mapped_column(Float)
+    target_price: Mapped[float] = mapped_column(Float, default=0.0)
+    stop_loss: Mapped[float] = mapped_column(Float, default=0.0)
+    edge_pct: Mapped[float] = mapped_column(Float)
+    stake_pct: Mapped[float] = mapped_column(Float)
+    timeframe: Mapped[str] = mapped_column(String)                  # "30m", "1h", "4h", "1d"
+    sentiment_score: Mapped[float] = mapped_column(Float, default=0.0)
+    indicators_summary: Mapped[str] = mapped_column(String, default="")
+    outcome: Mapped[str] = mapped_column(String, default="pending") # pending/won/lost/expired
+    pnl_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)
+

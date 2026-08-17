@@ -18,34 +18,43 @@ Data storage:
 """
 import json
 import os
+import asyncio
 from datetime import datetime, timezone
 
 import httpx
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from analysis.crypto_engine import CryptoEngine
+from analysis.crypto_state_store import CommodityStateStore, CryptoStateStore
 from analysis.engine import AnalysisEngine
 from analysis.football_engine import FootballEngine
 from analysis.football_state import FootballStateStore
 from analysis.match_state import MatchState
 from analysis.ml_predictor import MLPredictor
+from analysis.multi_horizon_predictor import MultiHorizonPredictor
 from analysis.scalping import scan_all
+from analysis.sentiment import SentimentAnalyzer
 from analysis.state_store import MatchStateStore
 from analysis.win_probability import compute_win_probability
+from collectors.api_tennis import ApiTennisCollector
 from collectors.bets_api import BetsAPICollector
+from collectors.binance_ws import BinanceWSCollector
+from collectors.cryptopanic import CryptoPanicCollector
 from collectors.espn import ESPNCollector
 from collectors.flashscore import FlashscoreCollector
 from collectors.football_espn import FootballESPNCollector
 from collectors.football_odds_api import FootballOddsApiCollector
-from collectors.sportradar import SportradarCollector
-from collectors.sportsdata import SportsDataCollector
-from collectors.api_tennis import ApiTennisCollector
 from collectors.historical_importer import run_import
 from collectors.odds_api import OddsApiCollector
 from collectors.slam_pbp_importer import run_slam_import
 from collectors.sofascore import SofascoreCollector
+from collectors.sportradar import SportradarCollector
+from collectors.sportsdata import SportsDataCollector
 from collectors.thesportsdb import TheSportsDBCollector
+from collectors.twelvedata_ws import TwelveDataWSCollector
 from config.settings import settings
+from notifications.crypto_formatter import format_crypto_signal
 from notifications.football_formatter import format_football_signal
 from notifications.telegram_notifier import TelegramNotifier
 from storage.database import AsyncSessionFactory
@@ -101,6 +110,16 @@ class AppRunner:
         self.api_tennis = ApiTennisCollector(self.store)
         # Scalping alerts — track last Telegram ping per match to avoid spam
         self._scalp_alert_times: dict[str, datetime] = {}
+        # Crypto & Commodities
+        self.crypto_store = CryptoStateStore()
+        self.commodity_store = CommodityStateStore()
+        self.binance_ws = BinanceWSCollector(self.crypto_store)
+        self.twelvedata_ws = TwelveDataWSCollector(self.commodity_store)
+        self.cryptopanic = CryptoPanicCollector()
+        self.sentiment = SentimentAnalyzer()
+        self.crypto_engine = CryptoEngine()
+        self.multi_horizon = MultiHorizonPredictor()
+        self._ws_tasks: list[asyncio.Task] = []
         # Collector enable/disable toggles (runtime, not persisted across restarts)
         self.collector_enabled: dict[str, bool] = {
             "sportradar": True,
@@ -110,6 +129,8 @@ class AppRunner:
             "api_sports": True,
             "espn": True,
             "bets_api": True,
+            "binance_ws": True,
+            "twelvedata_ws": True,
         }
 
     async def _data_poll_job(self) -> None:
@@ -394,6 +415,116 @@ class AppRunner:
         except Exception as exc:
             log.warning("self_ping_failed", error=str(exc))
 
+    async def _crypto_analysis_job(self) -> None:
+        """Run crypto signal detection across all symbols in the watchlist."""
+        try:
+            states = await self.crypto_store.get_all()
+            for state in states:
+                if state.current_price <= 0:
+                    continue
+
+                signals = self.crypto_engine.process(state)
+                for sig in signals:
+                    msg = format_crypto_signal(sig)
+                    if settings.crypto_alert_telegram:
+                        await self.notifier.send_text(msg)
+
+                    # Log to DB
+                    try:
+                        async with AsyncSessionFactory() as session:
+                            repo = Repository(session)
+                            await repo.log_crypto_signal(
+                                symbol=sig.symbol,
+                                signal_type=sig.signal_type,
+                                direction=sig.direction,
+                                trigger_description=sig.trigger_description,
+                                confidence=sig.confidence,
+                                current_price=sig.current_price,
+                                target_price=sig.target_price,
+                                stop_loss=sig.stop_loss,
+                                edge_pct=sig.edge_pct,
+                                stake_pct=sig.stake_pct,
+                                timeframe=sig.timeframe,
+                                sentiment_score=sig.sentiment_score,
+                                indicators_summary=sig.indicators_summary,
+                            )
+                    except Exception:
+                        log.exception("crypto_signal_db_log_failed", symbol=sig.symbol)
+
+                    log.info(
+                        "crypto_signal_fired",
+                        symbol=sig.symbol,
+                        type=sig.signal_type,
+                        direction=sig.direction,
+                        price=sig.current_price,
+                        confidence=sig.confidence,
+                    )
+        except Exception:
+            log.exception("crypto_analysis_job_failed")
+
+    async def _crypto_news_job(self) -> None:
+        """Poll CryptoPanic for news and compute global & coin-specific sentiment."""
+        if not settings.cryptopanic_auth_token:
+            return
+
+        try:
+            news_items = await self.cryptopanic.fetch()
+            if not news_items:
+                return
+
+            headlines = [n.title for n in news_items]
+            global_sentiment = self.sentiment.score(headlines)
+
+            # Update overall sentiment
+            await self.crypto_store.update_sentiment("ALL", global_sentiment, len(news_items))
+
+            # Update coin-specific sentiment
+            coin_headlines: dict[str, list[str]] = {}
+            for item in news_items:
+                for cur in item.currencies:
+                    coin_headlines.setdefault(cur.upper(), []).append(item.title)
+
+            for cur, titles in coin_headlines.items():
+                cur_score = self.sentiment.score(titles)
+                await self.crypto_store.update_sentiment(cur, cur_score, len(titles))
+
+            log.info("crypto_news_sentiment_updated", global_score=global_sentiment, items_analyzed=len(news_items))
+        except Exception:
+            log.exception("crypto_news_job_failed")
+
+    async def _crypto_snapshot_job(self) -> None:
+        """Save periodic crypto & commodity snapshots for ML training and backtesting."""
+        try:
+            async with AsyncSessionFactory() as session:
+                repo = Repository(session)
+                # Crypto snapshots
+                for state in await self.crypto_store.get_all():
+                    if state.current_price > 0:
+                        await repo.save_crypto_snapshot(
+                            symbol=state.symbol,
+                            price=state.current_price,
+                            volume_24h=state.volume_24h,
+                            rsi_14=state.rsi_14,
+                            macd_line=state.macd_line,
+                            macd_signal=state.macd_signal,
+                            bollinger_upper=state.bollinger_upper,
+                            bollinger_lower=state.bollinger_lower,
+                            atr_14=state.atr_14,
+                            sentiment_score=state.sentiment_score,
+                        )
+
+                # Commodity snapshots
+                for cstate in await self.commodity_store.get_all():
+                    if cstate.current_price > 0:
+                        await repo.save_commodity_snapshot(
+                            symbol=cstate.symbol,
+                            price=cstate.current_price,
+                            rsi_14=cstate.rsi_14,
+                            atr_14=cstate.atr_14,
+                        )
+        except Exception:
+            log.exception("crypto_snapshot_job_failed")
+
     def setup_jobs(self) -> None:
         self.scheduler.add_job(
             self._data_poll_job,
@@ -488,6 +619,30 @@ class AppRunner:
             max_instances=1,
             next_run_time=datetime.now(timezone.utc),
         )
+        # Crypto & Commodities Interval Jobs
+        self.scheduler.add_job(
+            self._crypto_analysis_job,
+            "interval",
+            seconds=60,
+            id="crypto_analysis",
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        self.scheduler.add_job(
+            self._crypto_news_job,
+            "interval",
+            seconds=settings.cryptopanic_poll_interval_seconds,
+            id="crypto_news",
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        self.scheduler.add_job(
+            self._crypto_snapshot_job,
+            "interval",
+            seconds=settings.crypto_snapshot_interval_seconds,
+            id="crypto_snapshot",
+            max_instances=1,
+        )
         # Historical import — runs immediately on startup, then weekly
         self.scheduler.add_job(
             self._historical_import_job,
@@ -502,14 +657,30 @@ class AppRunner:
         await self.notifier.verify()
         self.setup_jobs()
         self.scheduler.start()
+
+        # Launch continuous WebSocket tasks concurrently (non-blocking)
+        if self.collector_enabled.get("binance_ws", True):
+            task = asyncio.create_task(self.binance_ws.run_forever(), name="binance_ws")
+            self._ws_tasks.append(task)
+            log.info("binance_ws_task_spawned")
+
+        if self.collector_enabled.get("twelvedata_ws", True) and settings.twelvedata_api_key:
+            task = asyncio.create_task(self.twelvedata_ws.run_forever(), name="twelvedata_ws")
+            self._ws_tasks.append(task)
+            log.info("twelvedata_ws_task_spawned")
+
         bets_api_status = "BetsAPI: active" if settings.bets_api_token else "BetsAPI: no token"
+        crypto_count = len(settings.crypto_symbols)
         await self.notifier.send_text(
-            "🎾⚽ Tennis + Football monitor started.\n"
+            "🎾⚽🪙 Tennis + Football + Crypto monitor started.\n"
             f"Tennis: ESPN + Flashscore + {bets_api_status} (every {settings.sofascore_poll_interval}s)\n"
             f"Football: ESPN all leagues (every 60s)\n"
-            f"Min confidence: {settings.min_confidence}"
+            f"Crypto: Binance WS Top {crypto_count} watchlist (Real-Time Streams)\n"
+            f"Commodities: Twelve Data Gold/Silver/Oil ({'active' if settings.twelvedata_api_key else 'no key'})\n"
+            f"News Sentiment: CryptoPanic ({'active' if settings.cryptopanic_auth_token else 'no token'})\n"
+            f"Min confidence: {settings.min_confidence} (Sports) / {settings.crypto_min_confidence} (Crypto)"
         )
-        log.info("scheduler_started")
+        log.info("scheduler_started", crypto_symbols_count=crypto_count)
 
     def get_status(self) -> dict:
         return {
@@ -560,10 +731,23 @@ class AppRunner:
                 "signals_today": len(self.football_engine.get_recent_signals(24)),
                 "odds_api_football": bool(settings.odds_api_key),
             },
+            "crypto": {
+                "watchlist_symbols": len(settings.crypto_symbols),
+                "binance_ws_connected": self.binance_ws._running and self.binance_ws._consecutive_failures == 0,
+                "binance_messages_received": self.binance_ws._total_messages_received,
+                "signals_today": len(self.crypto_engine.get_recent_signals(24)),
+                "sentiment_mode": self.sentiment._mode,
+                "cryptopanic_token": bool(settings.cryptopanic_auth_token),
+                "twelvedata_key": bool(settings.twelvedata_api_key),
+            },
         }
 
     async def stop(self) -> None:
         self.scheduler.shutdown(wait=False)
+        self.binance_ws.stop()
+        self.twelvedata_ws.stop()
+        for task in self._ws_tasks:
+            task.cancel()
         await self.sofascore.close()
-        await self.notifier.send_text("Tennis-bet monitor stopped.")
+        await self.notifier.send_text("Tennis + Football + Crypto monitor stopped.")
         log.info("scheduler_stopped")

@@ -1,0 +1,258 @@
+from __future__ import annotations
+
+import asyncio
+import math
+from datetime import datetime, timezone
+
+import structlog
+
+from analysis.crypto_state import CommodityState, CryptoState, OHLCVCandle
+from config.settings import settings
+
+log = structlog.get_logger()
+
+
+def _compute_rsi(closes: list[float], period: int = 14) -> float:
+    if len(closes) < period + 1:
+        return 50.0
+
+    gains = []
+    losses = []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        if diff >= 0:
+            gains.append(diff)
+            losses.append(0.0)
+        else:
+            gains.append(0.0)
+            losses.append(abs(diff))
+
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+
+    rs = avg_gain / avg_loss
+    return round(100.0 - (100.0 / (1.0 + rs)), 2)
+
+
+def _compute_ema(values: list[float], period: int) -> float:
+    if not values:
+        return 0.0
+    if len(values) < period:
+        return sum(values) / len(values)
+
+    multiplier = 2.0 / (period + 1.0)
+    ema = sum(values[:period]) / period
+    for val in values[period:]:
+        ema = (val - ema) * multiplier + ema
+    return ema
+
+
+def _compute_bollinger(closes: list[float], period: int = 20, std_dev: float = 2.0) -> tuple[float, float, float, float]:
+    if len(closes) < period:
+        mid = closes[-1] if closes else 0.0
+        return mid, mid, mid, 0.0
+
+    subset = closes[-period:]
+    mid = sum(subset) / period
+    variance = sum((x - mid) ** 2 for x in subset) / period
+    std = math.sqrt(variance)
+    upper = mid + (std * std_dev)
+    lower = mid - (std * std_dev)
+    bandwidth = (upper - lower) / mid if mid > 0 else 0.0
+    return round(upper, 4), round(mid, 4), round(lower, 4), round(bandwidth, 4)
+
+
+def _compute_atr(candles: list[OHLCVCandle], period: int = 14) -> float:
+    if len(candles) < 2:
+        return 0.0
+
+    tr_list = []
+    for i in range(1, len(candles)):
+        c = candles[i]
+        prev_c = candles[i - 1]
+        tr = max(
+            c.high - c.low,
+            abs(c.high - prev_c.close),
+            abs(c.low - prev_c.close),
+        )
+        tr_list.append(tr)
+
+    if len(tr_list) < period:
+        return sum(tr_list) / len(tr_list)
+    return sum(tr_list[-period:]) / period
+
+
+class CryptoStateStore:
+    """Thread-safe in-memory cache for live crypto states across the top 50 watchlist."""
+
+    def __init__(self) -> None:
+        self._states: dict[str, CryptoState] = {}
+        self._lock = asyncio.Lock()
+        # Initialize default watchlist
+        for sym in settings.crypto_symbols:
+            base = sym.replace("usdt", "").replace("busd", "").upper()
+            self._states[sym] = CryptoState(symbol=sym, base_asset=base)
+
+    async def update_kline(
+        self,
+        symbol: str,
+        open_: float,
+        high: float,
+        low: float,
+        close: float,
+        volume: float,
+        timestamp: datetime,
+        is_closed: bool,
+    ) -> None:
+        """Process incoming Binance WebSocket Kline tick."""
+        sym = symbol.lower()
+        async with self._lock:
+            state = self._states.get(sym)
+            if not state:
+                base = sym.replace("usdt", "").replace("busd", "").upper()
+                state = CryptoState(symbol=sym, base_asset=base)
+                self._states[sym] = state
+
+            state.current_price = close
+            state.timestamp = timestamp
+
+            candle = OHLCVCandle(
+                open=open_,
+                high=high,
+                low=low,
+                close=close,
+                volume=volume,
+                timestamp=timestamp,
+                is_closed=is_closed,
+            )
+
+            # Update real-time candle
+            if state.candles_1m and not state.candles_1m[-1].is_closed:
+                state.candles_1m[-1] = candle
+            else:
+                state.candles_1m.append(candle)
+
+            if len(state.candles_1m) > 120:
+                state.candles_1m = state.candles_1m[-120:]
+
+            if is_closed:
+                self._recalculate_indicators(state)
+
+    async def update_24h_stats(
+        self,
+        symbol: str,
+        price_24h_ago: float,
+        volume_24h: float,
+        high_24h: float,
+        low_24h: float,
+    ) -> None:
+        sym = symbol.lower()
+        async with self._lock:
+            state = self._states.get(sym)
+            if state:
+                state.price_24h_ago = price_24h_ago
+                state.volume_24h = volume_24h
+                state.high_24h = high_24h
+                state.low_24h = low_24h
+
+    def _recalculate_indicators(self, state: CryptoState) -> None:
+        closes = [c.close for c in state.candles_1m]
+        if len(closes) < 14:
+            return
+
+        state.rsi_14_prev = state.rsi_14
+        state.rsi_14 = _compute_rsi(closes, 14)
+
+        ema_12 = _compute_ema(closes, 12)
+        ema_26 = _compute_ema(closes, 26)
+        state.macd_line = ema_12 - ema_26
+
+        state.ema_9 = _compute_ema(closes, 9)
+        state.ema_20 = _compute_ema(closes, 20)
+        state.ema_50 = _compute_ema(closes, 50)
+        state.ema_200 = _compute_ema(closes, 200)
+
+        upper, mid, lower, bw = _compute_bollinger(closes, 20, 2.0)
+        state.bollinger_upper = upper
+        state.bollinger_mid = mid
+        state.bollinger_lower = lower
+        state.bollinger_bandwidth = bw
+
+        state.atr_14 = _compute_atr(state.candles_1m, 14)
+
+    async def update_sentiment(self, base_asset: str, score: float, news_count: int) -> None:
+        base = base_asset.upper()
+        async with self._lock:
+            for state in self._states.values():
+                if state.base_asset == base or base in ("ALL", "CRYPTO"):
+                    state.sentiment_score = score
+                    state.sentiment_news_count = news_count
+                    state.last_sentiment_update = datetime.now(timezone.utc)
+
+    async def get(self, symbol: str) -> CryptoState | None:
+        async with self._lock:
+            return self._states.get(symbol.lower())
+
+    async def get_all(self) -> list[CryptoState]:
+        async with self._lock:
+            return list(self._states.values())
+
+    async def add_symbol(self, symbol: str) -> None:
+        sym = symbol.strip().lower()
+        async with self._lock:
+            if sym not in self._states:
+                base = sym.replace("usdt", "").replace("busd", "").upper()
+                self._states[sym] = CryptoState(symbol=sym, base_asset=base)
+                log.info("crypto_watchlist_symbol_added", symbol=sym)
+
+    async def remove_symbol(self, symbol: str) -> None:
+        sym = symbol.strip().lower()
+        async with self._lock:
+            self._states.pop(sym, None)
+            log.info("crypto_watchlist_symbol_removed", symbol=sym)
+
+    async def count(self) -> int:
+        async with self._lock:
+            return len(self._states)
+
+
+class CommodityStateStore:
+    """Thread-safe in-memory cache for live commodity states (Gold, Silver, Oil)."""
+
+    def __init__(self) -> None:
+        self._states: dict[str, CommodityState] = {}
+        self._lock = asyncio.Lock()
+        for sym in settings.twelvedata_symbols.split(","):
+            s = sym.strip()
+            if s:
+                name = "Gold" if "XAU" in s or "GOLD" in s else ("Silver" if "XAG" in s or "SILVER" in s else "Crude Oil")
+                self._states[s] = CommodityState(symbol=s, name=name)
+
+    async def update_price(self, symbol: str, price: float, timestamp: datetime) -> None:
+        async with self._lock:
+            state = self._states.get(symbol)
+            if not state:
+                name = "Gold" if "XAU" in symbol else ("Silver" if "XAG" in symbol else "Crude Oil")
+                state = CommodityState(symbol=symbol, name=name)
+                self._states[symbol] = state
+
+            state.current_price = price
+            state.timestamp = timestamp
+            state.price_history.append((price, timestamp))
+            if len(state.price_history) > 500:
+                state.price_history = state.price_history[-500:]
+
+            prices = [p[0] for p in state.price_history]
+            if len(prices) >= 15:
+                state.rsi_14 = _compute_rsi(prices, 14)
+
+    async def get(self, symbol: str) -> CommodityState | None:
+        async with self._lock:
+            return self._states.get(symbol)
+
+    async def get_all(self) -> list[CommodityState]:
+        async with self._lock:
+            return list(self._states.values())

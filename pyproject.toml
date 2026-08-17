@@ -20,6 +20,8 @@ dependencies = [
     "python-telegram-bot>=21.0",
     "scikit-learn>=1.4",
     "pandas>=2.0",
+    "websockets>=13.0",
+    "nltk>=3.9",
 ]
 
 [project.optional-dependencies]
