@@ -31,3 +31,7 @@ services:
         sync: false          # set to your Odds API key
       - key: SPORTRADAR_API_KEY
         sync: false          # set to your Sportradar key
+      - key: TWELVEDATA_API_KEY
+        sync: false          # optional — commodities (Gold/Silver/Oil), leave blank to skip
+      - key: CRYPTOPANIC_AUTH_TOKEN
+        sync: false          # optional — crypto news/sentiment signal, leave blank to skip

@@ -93,15 +93,17 @@ class Settings(BaseSettings):
     scalp_alert_cooldown_minutes: int = 30
 
     # ── Crypto & Commodities ──────────────────────────────────────────────────
-    # Top 50 default coins watchlist (comma-separated, editable via .env CRYPTO_WATCHLIST)
-    crypto_watchlist: str = (
-        "btcusdt,ethusdt,bnbusdt,solusdt,xrpusdt,dogeusdt,adausdt,avaxusdt,shibusdt,dotusdt,"
-        "linkusdt,trxusdt,nearusdt,suiusdt,aptusdt,uniusdt,ltcusdt,pepeusdt,fetusdt,renderusdt,"
-        "icpusdt,bchusdt,kasusdt,polusdt,etcusdt,xlmusdt,taousdt,injusdt,stxusdt,filusdt,"
-        "imxusdt,arbusdt,vetusdt,seiusdt,ftmusdt,runeusdt,flokiusdt,bonkusdt,wifusdt,grtusdt,"
-        "aaveusdt,algousdt,sandusdt,manausdt,flowusdt,thetausdt,egldusdt,qntusdt,axsusdt,galausdt"
+    # The watchlist itself lives in the crypto_watchlist DB table, not here — it's
+    # editable at runtime from /settings (Crypto tab) with no redeploy needed.
+    # crypto_watchlist_seed is only used once, the first time that table is empty
+    # (e.g. a fresh deploy), to give the app something to stream on startup.
+    # Kept small deliberately: each symbol is a continuous Binance WS stream plus
+    # a DB snapshot row every crypto_snapshot_interval_seconds, and this app runs
+    # on Render's free tier (512MB RAM, shared CPU) alongside tennis/football polling.
+    crypto_watchlist_seed: str = (
+        "btcusdt,ethusdt,bnbusdt,solusdt,xrpusdt,dogeusdt,adausdt,linkusdt,ltcusdt,dotusdt"
     )
-    # Active streaming Kline intervals (default "1m", "5m", "15m", "1h")
+    # Active streaming Kline interval
     crypto_kline_interval: str = "1m"
     # Target prediction timeframes
     crypto_timeframes: str = "30m,1h,4h,1d"
@@ -122,13 +124,8 @@ class Settings(BaseSettings):
     crypto_max_stake_pct: float = 0.02           # 2% max per trade (Kelly capped)
 
     # NLP Sentiment & Execution toggles
-    use_finbert: bool = False                    # False = fast VADER/lexicon (low RAM), True = FinBERT (needs ~440MB RAM)
+    use_finbert: bool = False                    # False = fast keyword lexicon (low RAM), True = FinBERT (needs ~440MB RAM)
     crypto_auto_execute: bool = False            # Auto-execution hook (prepared for later Binance API execution)
-
-    @property
-    def crypto_symbols(self) -> list[str]:
-        """Return clean list of lowercase symbols from the watchlist."""
-        return [s.strip().lower() for s in self.crypto_watchlist.split(",") if s.strip()]
 
     @property
     def prediction_timeframes(self) -> list[str]:
