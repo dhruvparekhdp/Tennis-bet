@@ -172,6 +172,48 @@ class CryptoStateStore:
                 state.high_24h = high_24h
                 state.low_24h = low_24h
 
+    async def update_from_rest(
+        self,
+        symbol: str,
+        price: float,
+        high_24h: float,
+        low_24h: float,
+        volume_24h: float,
+        change_24h_pct: float,
+        timestamp: datetime,
+    ) -> None:
+        """
+        Ingest a REST poll snapshot (CoinGecko) — appends one synthetic candle
+        per poll so RSI/MACD/Bollinger accumulate over time, same math as the
+        WebSocket path but at poll-interval resolution instead of per-tick.
+        """
+        sym = symbol.lower()
+        async with self._lock:
+            state = self._states.get(sym)
+            if not state:
+                base = sym.replace("usdt", "").replace("busd", "").upper()
+                state = CryptoState(symbol=sym, base_asset=base)
+                self._states[sym] = state
+
+            state.current_price = price
+            state.high_24h = high_24h
+            state.low_24h = low_24h
+            state.volume_24h = volume_24h
+            state.price_24h_ago = (
+                price / (1.0 + change_24h_pct / 100.0) if change_24h_pct > -100.0 else price
+            )
+            state.timestamp = timestamp
+
+            candle = OHLCVCandle(
+                open=price, high=price, low=price, close=price,
+                volume=volume_24h, timestamp=timestamp, is_closed=True,
+            )
+            state.candles_1m.append(candle)
+            if len(state.candles_1m) > 120:
+                state.candles_1m = state.candles_1m[-120:]
+
+            self._recalculate_indicators(state)
+
     def _recalculate_indicators(self, state: CryptoState) -> None:
         closes = [c.close for c in state.candles_1m]
         if len(closes) < 14:
