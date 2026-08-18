@@ -114,6 +114,14 @@ class Settings(BaseSettings):
     # Target prediction timeframes
     crypto_timeframes: str = "30m,1h,4h,1d"
 
+    # Binance WebSocket — off by default because the main host returns HTTP 451
+    # (geo-blocked) from Render's US IPs. Hit /api/debug/binance on the live
+    # server first: it probes every candidate host and tells you whether any
+    # work. If one does, set this true — Binance klines carry true OHLC, which
+    # makes ATR (and therefore signal target/stop distances) far more realistic
+    # than the flat open==high==low==close snapshots REST polling produces.
+    binance_ws_enabled: bool = False
+
     # CoinDCX — https://coindcx.com/api (preferred crypto price source).
     # Public ticker endpoint, no API key, no meaningful rate limit — one call
     # returns every market on the exchange. Preferred over CoinGecko for any

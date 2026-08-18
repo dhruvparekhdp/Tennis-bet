@@ -404,6 +404,63 @@ async def _api_crypto_watchlist_remove(runner, request: web.Request) -> web.Resp
                              content_type="application/json", status=500)
 
 
+async def _api_binance_probe(runner, request: web.Request) -> web.Response:
+    """
+    GET /api/debug/binance — actually try to open a Binance WebSocket from THIS
+    server and report what each candidate host returns.
+
+    Binance's main host geo-blocks most US cloud IPs with HTTP 451, which no
+    amount of client-side retrying can fix. Rather than guess which hosts work
+    from Render, this probes them live and tells you.
+    """
+    import asyncio as _asyncio
+
+    import websockets
+
+    from collectors.binance_ws import BINANCE_WS_HOSTS, is_geoblocked
+
+    results = []
+    for host in BINANCE_WS_HOSTS:
+        url = f"{host}?streams=btcusdt@kline_1m"
+        entry = {"host": host}
+        try:
+            async with websockets.connect(url, open_timeout=8, close_timeout=3) as ws:
+                msg = await _asyncio.wait_for(ws.recv(), timeout=8)
+                entry.update({
+                    "ok": True,
+                    "verdict": "WORKS — real OHLC klines available from this server",
+                    "sample_bytes": len(msg),
+                })
+        except Exception as exc:
+            entry.update({
+                "ok": False,
+                "geoblocked": is_geoblocked(exc),
+                "error": str(exc)[:200],
+                "verdict": (
+                    "GEO-BLOCKED (HTTP 451) — this server's IP is not allowed; retrying cannot help"
+                    if is_geoblocked(exc)
+                    else "unreachable/other error"
+                ),
+            })
+        results.append(entry)
+
+    any_ok = any(r.get("ok") for r in results)
+    return web.Response(
+        text=json.dumps({
+            "any_host_reachable": any_ok,
+            "recommendation": (
+                "Set BINANCE_WS_ENABLED=true — a working host was found, and Binance klines "
+                "carry true OHLC which makes ATR (and signal targets) far more realistic."
+                if any_ok else
+                "Leave Binance off. Every host is blocked from this server's IP. "
+                "Use CoinDCX/CoinGecko, or redeploy in a non-blocked region."
+            ),
+            "hosts": results,
+        }, indent=2),
+        content_type="application/json",
+    )
+
+
 async def _api_commodities(runner, request: web.Request) -> web.Response:
     """Return real-time spot commodities (Gold, Silver, Oil)."""
     states = await runner.commodity_store.get_all()
@@ -2791,6 +2848,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_post("/api/crypto/watchlist/add", lambda req: _api_crypto_watchlist_add(runner, req))
     app.router.add_post("/api/crypto/watchlist/remove", lambda req: _api_crypto_watchlist_remove(runner, req))
     app.router.add_get("/api/commodities", lambda req: _api_commodities(runner, req))
+    app.router.add_get("/api/debug/binance", lambda req: _api_binance_probe(runner, req))
     return app
 
 
