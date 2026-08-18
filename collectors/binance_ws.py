@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime, timezone
 
 import structlog
@@ -158,8 +159,18 @@ class BinanceWSCollector:
         host = self.BASE_WS_URL
         url = f"{host}?streams={stream_param}"
 
+        # Optional last-resort escape hatch: route through a proxy that exits in a
+        # region Binance doesn't block. Only pass the kwarg when it's actually set —
+        # websockets' `proxy` defaults to True (use system proxy config), and passing
+        # None would explicitly DISABLE proxying rather than fall back to the default.
+        kwargs: dict = {}
+        proxy_url = os.getenv("BINANCE_PROXY_URL") or os.getenv("PROXY_URL")
+        if proxy_url:
+            kwargs["proxy"] = proxy_url
+
         log.info("binance_ws_connecting", host=host,
-                 symbols_count=len(symbols), streams_count=len(streams))
+                 symbols_count=len(symbols), streams_count=len(streams),
+                 via_proxy=bool(proxy_url))
 
         async with websockets.connect(
             url,
@@ -167,6 +178,7 @@ class BinanceWSCollector:
             ping_timeout=10,
             close_timeout=10,
             max_size=10_000_000,
+            **kwargs,
         ) as ws:
             self._consecutive_failures = 0
             self._geoblocked_rounds = 0
