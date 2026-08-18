@@ -181,6 +181,34 @@ class TestCalibrationAgainstRealTrades(unittest.TestCase):
         self.assertAlmostEqual(pnl, -14.03, delta=0.05)
         self.assertAlmostEqual(pnl / self.MARGIN * 100, -2.63, delta=0.05)
 
+    def test_bch_close_fee_share_matches_ledger(self):
+        """
+        Real BCH close from the account: gross Rs63.42, fees Rs5.77, net Rs57.65.
+
+        This pins the correction to an earlier over-broad claim that "fees are
+        bigger than the profits". They are not, on trades sized like this one.
+        The fee share of gross depends only on how far the target is, so the
+        ledger fee implies a notional, and that notional implies the move.
+        """
+        gross, observed_fee = 63.42, 5.77
+        implied_notional = observed_fee / self.f.round_trip_pct()
+        self.assertAlmostEqual(implied_notional, 4890.0, delta=60.0)
+
+        move_pct = gross / implied_notional
+        self.assertGreater(move_pct, 0.012)          # a real 1.3% move
+        self.assertLess(observed_fee / gross, 0.10)  # fees under a tenth of gross
+
+    def test_fee_share_is_independent_of_leverage_and_size(self):
+        """Leverage scales gross and fee alike; only target distance matters."""
+        move = 0.0130
+        shares = []
+        for margin, lev in ((1000, 5), (1000, 10), (3000, 20)):
+            notional = margin * lev
+            shares.append(self.f.exit_fee(notional) * 2 / (notional * move))
+        for s in shares[1:]:
+            self.assertAlmostEqual(s, shares[0], places=9)
+        self.assertAlmostEqual(shares[0], self.f.round_trip_pct() / move, places=9)
+
 
 class TestConfigSanity(unittest.TestCase):
     def test_flags_targets_that_cannot_clear_fees(self):
