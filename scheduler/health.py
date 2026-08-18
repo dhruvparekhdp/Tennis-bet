@@ -766,6 +766,7 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .cr-sig-dir.long{background:#14532d;color:#4ade80}
 .cr-sig-dir.short{background:#450a0a;color:#f87171}
 .cr-sig-sym{font-size:13px;font-weight:800;color:#f1f5f9}
+.cr-sig-name{font-size:10px;font-weight:700;color:#7dd3fc;background:#0c2140;padding:2px 7px;border-radius:4px}
 .cr-sig-tf{font-size:10px;color:#64748b;margin-left:auto}
 .cr-sig-desc{font-size:12px;color:#94a3b8;margin-bottom:6px}
 .cr-sig-row{display:flex;gap:14px;font-size:11px;color:#64748b;flex-wrap:wrap}
@@ -774,6 +775,24 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .cr-comm-card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:12px 16px;min-width:140px}
 .cr-comm-name{font-size:11px;color:#64748b;margin-bottom:4px}
 .cr-comm-price{font-size:18px;font-weight:800;color:#f1f5f9}
+/* Signal tabs + pagination + glossary */
+.cr-sig-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.cr-sig-tab{background:#1e293b;border:1px solid #334155;color:#94a3b8;font-size:11px;font-weight:700;padding:5px 12px;border-radius:9999px;cursor:pointer}
+.cr-sig-tab:hover{border-color:#0ea5e9}
+.cr-sig-tab.active{background:#0ea5e9;border-color:#0ea5e9;color:#0f172a}
+.cr-pagination{display:flex;align-items:center;justify-content:center;gap:14px;margin-top:12px}
+.cr-page-btn{background:#1e293b;border:1px solid #334155;color:#e2e8f0;font-size:12px;font-weight:700;padding:6px 14px;border-radius:8px;cursor:pointer}
+.cr-page-btn:hover:not(:disabled){border-color:#0ea5e9}
+.cr-page-btn:disabled{opacity:.4;cursor:default}
+.cr-page-label{font-size:11px;color:#64748b}
+.cr-glossary{margin-top:16px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 14px}
+.cr-glossary summary{cursor:pointer;font-size:12px;font-weight:700;color:#7dd3fc;list-style:none}
+.cr-glossary summary::-webkit-details-marker{display:none}
+.cr-glossary summary::before{content:'▸ ';color:#475569}
+.cr-glossary[open] summary::before{content:'▾ '}
+.cr-glossary dl{margin-top:10px}
+.cr-glossary dt{font-size:12px;font-weight:700;color:#e2e8f0;margin-top:8px}
+.cr-glossary dd{font-size:11px;color:#94a3b8;margin-top:2px;line-height:1.5}
 
 /* ── Scalping ── */
 .scalp-intro{font-size:11px;color:#94a3b8;line-height:1.6;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px 12px;margin-bottom:14px}
@@ -931,7 +950,7 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 <div id="tab-crypto" class="tab-content">
   <section>
     <h2>🪙 Live Crypto Watchlist</h2>
-    <div class="cr-note">Symbols stream in real time via Binance WebSocket. Add or remove symbols here — changes apply within ~15s, no redeploy needed. Keep the list small on Render's free tier (each symbol is a continuous stream).</div>
+    <div class="cr-note">Prices update every 30-60s from CoinDCX and CoinGecko. Add or remove symbols here — changes apply immediately, no redeploy needed.</div>
     <div class="cr-watchlist-manager">
       <input type="text" id="cr-add-input" class="cr-input" placeholder="Add symbol, e.g. dogeusdt" onkeydown="if(event.key==='Enter')addCryptoSymbol()">
       <button class="cr-add-btn" onclick="addCryptoSymbol()">+ Add</button>
@@ -940,7 +959,32 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   </section>
   <section>
     <h2>Crypto Signals (last 24h)</h2>
+    <div class="cr-sig-tabs" id="cr-sig-tabs"></div>
     <div id="cr-signals"><div class="empty">No crypto signals fired yet</div></div>
+    <div class="cr-pagination" id="cr-sig-pagination"></div>
+    <details class="cr-glossary">
+      <summary>What do these terms mean?</summary>
+      <dl>
+        <dt>Momentum Reversal</dt>
+        <dd>Price and momentum are disagreeing — e.g. price hits a new high but the move is losing steam. Often an early sign the current trend is running out.</dd>
+        <dt>Volume Surge</dt>
+        <dd>A lot more buying/selling activity than usual for this coin. Surges like this often come right before a bigger price move.</dd>
+        <dt>Breakout Setup</dt>
+        <dd>Price had been stuck in an unusually tight range and just broke out of it. Tight ranges tend to resolve with a sharper move than usual.</dd>
+        <dt>News Catalyst</dt>
+        <dd>Recent news coverage for this coin is unusually one-sided (strongly positive or negative).</dd>
+        <dt>Confidence</dt>
+        <dd>How strongly the model believes this signal will play out — not a guarantee. Higher is stronger, but every signal still carries risk.</dd>
+        <dt>Edge</dt>
+        <dd>The estimated price move (%) between the entry price and the target price.</dd>
+        <dt>Entry / Target / Stop</dt>
+        <dd>Suggested price to enter the trade, take profit at, and cut losses at if the trade goes the wrong way.</dd>
+        <dt>Suggested stake</dt>
+        <dd>A conservative position size (a small % of your bank) so no single trade risks too much — not a recommendation to trade this amount.</dd>
+        <dt>RSI (Relative Strength Index)</dt>
+        <dd>A 0–100 gauge of how "overbought" or "oversold" a coin is. Above 70 usually means overbought, below 30 usually means oversold.</dd>
+      </dl>
+    </details>
   </section>
   <section id="cr-commodities-section" style="display:none">
     <h2>Commodities</h2>
@@ -1646,12 +1690,75 @@ function renderCryptoCoins(coins){
     </div>`;
   }).join('')+'</div>';
 }
+const CR_SIG_NAME={rsi_divergence:'Momentum Reversal',volume_spike:'Volume Surge',bollinger_squeeze:'Breakout Setup',sentiment_shift:'News Catalyst'};
+const CR_SIG_PAGE_SIZE=8;
+let _crSignalsAll=[];
+let _crSignalFilter='ALL';
+let _crSignalPage=0;
+
 function renderCryptoSignals(signals){
+  _crSignalsAll=signals||[];
+  if(_crSignalFilter!=='ALL' && !_crSignalsAll.some(s=>s.symbol===_crSignalFilter)){
+    _crSignalFilter='ALL';
+  }
+  renderCryptoSignalTabs();
+  renderCryptoSignalsPage();
+}
+
+function renderCryptoSignalTabs(){
+  const el=document.getElementById('cr-sig-tabs');
+  if(!el) return;
+  const symbols=[...new Set(_crSignalsAll.map(s=>s.symbol))].sort();
+  if(!symbols.length){el.innerHTML='';return;}
+  const tabs=['ALL',...symbols];
+  el.innerHTML=tabs.map(t=>
+    `<button class="cr-sig-tab ${t===_crSignalFilter?'active':''}" onclick="setCryptoSignalFilter('${esc(t)}')">${t==='ALL'?'All':esc(t)}</button>`
+  ).join('');
+}
+
+function setCryptoSignalFilter(sym){
+  _crSignalFilter=sym;
+  _crSignalPage=0;
+  renderCryptoSignalTabs();
+  renderCryptoSignalsPage();
+}
+
+function changeCryptoSignalPage(delta){
+  _crSignalPage+=delta;
+  renderCryptoSignalsPage();
+}
+
+function renderCryptoSignalsPage(){
   const el=document.getElementById('cr-signals');
-  if(!signals.length){el.innerHTML='<div class="empty">No crypto signals in the last 24 hours</div>';return;}
-  el.innerHTML=signals.map(s=>`<div class="cr-sig-card">
+  const pageEl=document.getElementById('cr-sig-pagination');
+  const filtered=_crSignalFilter==='ALL'?_crSignalsAll:_crSignalsAll.filter(s=>s.symbol===_crSignalFilter);
+
+  if(!filtered.length){
+    el.innerHTML='<div class="empty">No crypto signals in the last 24 hours</div>';
+    if(pageEl) pageEl.innerHTML='';
+    return;
+  }
+
+  const totalPages=Math.max(1,Math.ceil(filtered.length/CR_SIG_PAGE_SIZE));
+  _crSignalPage=Math.min(Math.max(0,_crSignalPage),totalPages-1);
+  const start=_crSignalPage*CR_SIG_PAGE_SIZE;
+  el.innerHTML=filtered.slice(start,start+CR_SIG_PAGE_SIZE).map(renderCryptoSignalCard).join('');
+
+  if(pageEl){
+    pageEl.innerHTML = totalPages<=1 ? '' : `
+      <button class="cr-page-btn" ${_crSignalPage===0?'disabled':''} onclick="changeCryptoSignalPage(-1)">‹ Prev</button>
+      <span class="cr-page-label">Page ${_crSignalPage+1} of ${totalPages}</span>
+      <button class="cr-page-btn" ${_crSignalPage>=totalPages-1?'disabled':''} onclick="changeCryptoSignalPage(1)">Next ›</button>`;
+  }
+}
+
+function renderCryptoSignalCard(s){
+  const name=CR_SIG_NAME[s.signal_type]||s.signal_type.replace(/_/g,' ');
+  return `<div class="cr-sig-card">
     <div class="cr-sig-top"><span class="cr-sig-dir ${s.direction}">${s.direction.toUpperCase()}</span>
-      <span class="cr-sig-sym">${esc(s.symbol)}</span><span class="cr-sig-tf">${esc(s.timeframe)} · ${s.confidence}% confidence</span></div>
+      <span class="cr-sig-sym">${esc(s.symbol)}</span>
+      <span class="cr-sig-name">${esc(name)}</span>
+      <span class="cr-sig-tf">${esc(s.timeframe)} · ${s.confidence}% confidence</span></div>
     <div class="cr-sig-desc">${esc(s.trigger)}</div>
     <div class="cr-sig-row">
       <span>Entry <b>$${fmtPrice(s.current_price)}</b></span>
@@ -1659,7 +1766,7 @@ function renderCryptoSignals(signals){
       ${s.stop_loss?`<span>Stop <b>$${fmtPrice(s.stop_loss)}</b></span>`:''}
       <span>Edge <b>${s.edge_pct>=0?'+':''}${s.edge_pct}%</b></span>
     </div>
-  </div>`).join('');
+  </div>`;
 }
 function renderCommodities(rows){
   const sec=document.getElementById('cr-commodities-section');
@@ -2561,8 +2668,8 @@ html[data-theme="emerald"]{--bg:#0a1410;--panel:#102219;--panel2:#0c1b13;--line:
 html[data-theme] body{background:var(--bg)!important;color:var(--text)!important}
 html[data-theme] header,html[data-theme] .topbar,html[data-theme] .tab-bar{background:var(--panel)!important;border-color:var(--line)!important}
 html[data-theme] header h1,html[data-theme] .topbar h1,html[data-theme] h2,html[data-theme] .tab-btn.active{color:var(--text-strong)!important}
-html[data-theme] .card,html[data-theme] .status-card,html[data-theme] .match-card,html[data-theme] .signal-card,html[data-theme] .fb-card,html[data-theme] .fb-sig-card,html[data-theme] .scalp-card,html[data-theme] .mc2,html[data-theme] .wc-group,html[data-theme] .cr-coin,html[data-theme] .cr-sig-card,html[data-theme] .cr-comm-card{background:var(--panel)!important;border-color:var(--line)!important}
-html[data-theme] .mc2-top,html[data-theme] .mc2-dt,html[data-theme] .mc2-details,html[data-theme] .mc2-ob,html[data-theme] .mc-scoreboard,html[data-theme] .mc-header,html[data-theme] .sc-header,html[data-theme] .sc-footer,html[data-theme] .sc-probs,html[data-theme] .scalp-head,html[data-theme] .scalp-foot,html[data-theme] .fb-header,html[data-theme] .mc-prob,html[data-theme] .mc-odds-box,html[data-theme] .scroll,html[data-theme] .toc a,html[data-theme] .wc-group-hd,html[data-theme] .cr-note,html[data-theme] .cr-input{background:var(--panel2)!important;border-color:var(--line2)!important}
+html[data-theme] .card,html[data-theme] .status-card,html[data-theme] .match-card,html[data-theme] .signal-card,html[data-theme] .fb-card,html[data-theme] .fb-sig-card,html[data-theme] .scalp-card,html[data-theme] .mc2,html[data-theme] .wc-group,html[data-theme] .cr-coin,html[data-theme] .cr-sig-card,html[data-theme] .cr-comm-card,html[data-theme] .cr-sig-tab{background:var(--panel)!important;border-color:var(--line)!important}
+html[data-theme] .mc2-top,html[data-theme] .mc2-dt,html[data-theme] .mc2-details,html[data-theme] .mc2-ob,html[data-theme] .mc-scoreboard,html[data-theme] .mc-header,html[data-theme] .sc-header,html[data-theme] .sc-footer,html[data-theme] .sc-probs,html[data-theme] .scalp-head,html[data-theme] .scalp-foot,html[data-theme] .fb-header,html[data-theme] .mc-prob,html[data-theme] .mc-odds-box,html[data-theme] .scroll,html[data-theme] .toc a,html[data-theme] .wc-group-hd,html[data-theme] .cr-note,html[data-theme] .cr-input,html[data-theme] .cr-glossary,html[data-theme] .cr-page-btn{background:var(--panel2)!important;border-color:var(--line2)!important}
 html[data-theme] .card-value,html[data-theme] .mc2-plname,html[data-theme] .mc2-setnow b,html[data-theme] .mvm .val,html[data-theme] .sb-cur,html[data-theme] .sb-sets-total,html[data-theme] .mc-name,html[data-theme] .mc-sets-won,html[data-theme] .mc-game-score,html[data-theme] .sc-bet-player,html[data-theme] .scalp-player,html[data-theme] .fb-team-name,html[data-theme] .fb-score,html[data-theme] .status-val,html[data-theme] .prob-pct,html[data-theme] .mc2-problbl b,html[data-theme] .card-name,html[data-theme] .meta-value,html[data-theme] .sc-conf,html[data-theme] .toc a,html[data-theme] .tbl-head h2,html[data-theme] .cr-coin-sym,html[data-theme] .cr-coin-price,html[data-theme] .cr-comm-price,html[data-theme] .cr-sig-sym{color:var(--text-strong)!important}
 html[data-theme] .card-title,html[data-theme] .card-sub,html[data-theme] .refresh,html[data-theme] section h2,html[data-theme] .mc2-lbl span,html[data-theme] .mvm .lab,html[data-theme] .status-name,html[data-theme] .empty,html[data-theme] footer,html[data-theme] .subtitle,html[data-theme] .card-meta,html[data-theme] .meta-label,html[data-theme] .mc2-obimp,html[data-theme] .mc2-obname,html[data-theme] .mc2-setnow,html[data-theme] .mc2-problbl,html[data-theme] .note,html[data-theme] #status,html[data-theme] .mvm .h{color:var(--muted)!important}
 html[data-theme] .mc2-sets{color:var(--score)!important}

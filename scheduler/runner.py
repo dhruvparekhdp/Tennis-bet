@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 import httpx
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from telegram.constants import ParseMode
 
 from analysis.crypto_engine import CryptoEngine
 from analysis.crypto_state_store import CommodityStateStore, CryptoStateStore
@@ -456,7 +457,7 @@ class AppRunner:
                 for sig in signals:
                     msg = format_crypto_signal(sig)
                     if settings.crypto_alert_telegram:
-                        await self.notifier.send_text(msg)
+                        await self.notifier.send_text(msg, parse_mode=ParseMode.HTML)
 
                     # Log to DB
                     try:
