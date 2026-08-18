@@ -9,8 +9,10 @@ worthless.
 Conventions
 -----------
 * Fees are charged on NOTIONAL (margin x leverage), not on margin. This is the
-  detail that makes leverage dangerous: at 10x, a 0.075% taker fee costs 0.75%
-  of your margin per side, 1.5% for the round trip.
+  detail that makes leverage dangerous: at 10x, the 0.059% effective taker fee
+  (0.05% + 18% GST) costs 0.59% of your margin per side, 1.18% round trip.
+* Funding is charged every 8 hours a position stays open, so holding is not
+  free even when price does not move.
 * Liquidation is modelled exactly rather than with the usual "1/leverage"
   approximation, because notional shrinks as a long moves against you.
 * Where a single candle contains both the stop and the target we assume the
@@ -379,13 +381,13 @@ class ReviewConfig:
     shock_adverse_stop_fraction: float = 0.75
 
     @classmethod
-    def shock_only(cls) -> "ReviewConfig":
+    def shock_only(cls) -> ReviewConfig:
         """Safest tested preset: react only to violent bars, never to signal drift."""
         return cls(enabled=True, exit_on_direction_flip=False,
                    exit_confidence_floor=None, min_hold_minutes_before_review=30)
 
     @classmethod
-    def aggressive(cls) -> "ReviewConfig":
+    def aggressive(cls) -> ReviewConfig:
         """Reacts to signal drift too. Measured to churn fees — A/B before trusting."""
         return cls(enabled=True, exit_on_direction_flip=True,
                    exit_confidence_floor=0.50, normal_interval_minutes=15,
@@ -401,7 +403,7 @@ def is_market_shock(candle_range: float, atr: float,
     return bool(range_shock or volume_shock)
 
 
-def adverse_fraction_of_stop(pos: "Position", price: float) -> float:
+def adverse_fraction_of_stop(pos: Position, price: float) -> float:
     """
     How far price has travelled toward the stop, as a fraction.
 
