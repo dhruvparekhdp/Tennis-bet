@@ -31,7 +31,11 @@ class TestCryptoSignals(unittest.TestCase):
 
         msg = format_crypto_signal(sig)
         self.assertIn("ETHUSDT", msg)
-        self.assertIn("CRYPTO TRADE SIGNAL", msg)
+        # Message was simplified to plain English: a friendly signal name replaces
+        # the old "CRYPTO TRADE SIGNAL" banner and the raw indicator dump.
+        self.assertIn("Volume Surge", msg)
+        self.assertIn("Entry", msg)
+        self.assertIn("Confidence", msg)
 
     def test_sentiment_shift_analyzer(self):
         analyzer = SentimentShiftAnalyzer()
