@@ -40,12 +40,14 @@ class TelegramNotifier:
                       error=str(e), error_type=type(e).__name__)
             return False
 
-    async def send_text(self, text: str) -> bool:
-        """Send a plain-text message (for health alerts, startup notices, etc.)."""
+    async def send_text(self, text: str, parse_mode: str | None = None) -> bool:
+        """Send a message. Pass parse_mode=ParseMode.HTML for messages built with <b>/<i> tags —
+        without it Telegram shows the tags literally instead of rendering them."""
         try:
             await self._bot.send_message(
                 chat_id=settings.telegram_chat_id,
                 text=text,
+                parse_mode=parse_mode,
             )
             return True
         except InvalidToken as e:

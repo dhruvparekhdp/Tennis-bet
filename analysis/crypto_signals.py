@@ -26,20 +26,14 @@ class RSIDivergenceAnalyzer:
             stop_loss = round(price - (atr * 1.2), 4)
             edge_pct = round(min(5.5, (target_price - price) / price * 100.0), 2)
             confidence = round(min(0.85, 0.65 + (35.0 - min(state.rsi_14, 35.0)) * 0.01), 2)
-            trigger_desc = (
-                f"Bullish RSI divergence detected on {state.symbol.upper()}: "
-                f"Price made lower low while RSI-14 ({state.rsi_14:.1f}) held higher support"
-            )
+            trigger_desc = "Price dipped to a new low, but selling pressure is fading — often an early reversal signal."
         else:
             direction = "short"
             target_price = round(price - (atr * 2.5), 4)
             stop_loss = round(price + (atr * 1.2), 4)
             edge_pct = round(min(5.5, (price - target_price) / price * 100.0), 2)
             confidence = round(min(0.85, 0.65 + (max(state.rsi_14, 65.0) - 65.0) * 0.01), 2)
-            trigger_desc = (
-                f"Bearish RSI divergence detected on {state.symbol.upper()}: "
-                f"Price made higher high while RSI-14 ({state.rsi_14:.1f}) lost momentum"
-            )
+            trigger_desc = "Price hit a new high, but buying pressure is fading — often an early reversal signal."
 
         stake_pct = compute_crypto_stake(edge_pct, confidence)
 
@@ -93,8 +87,8 @@ class VolumeSpikeAnalyzer:
         confidence = 0.68
 
         trigger_desc = (
-            f"Volume breakout surge on {state.symbol.upper()}: "
-            f"Volume is {state.volume_ratio:.1f}x above baseline with {direction.upper()} expansion"
+            f"Trading volume just spiked to {state.volume_ratio:.1f}x normal — "
+            f"a surge like this often kicks off a bigger move."
         )
         stake_pct = compute_crypto_stake(edge_pct, confidence)
 
@@ -151,8 +145,8 @@ class BollingerSqueezeAnalyzer:
             signal_type="bollinger_squeeze",
             direction=direction,
             trigger_description=(
-                f"Bollinger Squeeze expansion on {state.symbol.upper()}: "
-                f"Bandwidth compressed to {state.bollinger_bandwidth*100:.2f}% followed by {direction.upper()} breakout"
+                "Price had been coiled in a tight range and just broke out — "
+                "squeezes like this often lead to a bigger move."
             ),
             confidence=confidence,
             current_price=price,
@@ -183,8 +177,8 @@ class SentimentShiftAnalyzer:
             stop_loss = round(price - (atr * 1.5), 4)
             confidence = round(min(0.82, 0.62 + state.sentiment_score * 0.20), 2)
             trigger_desc = (
-                f"Strong positive sentiment catalyst on {state.symbol.upper()} "
-                f"(Score: {state.sentiment_score:+.2f} across {state.sentiment_news_count} news items)"
+                f"News coverage right now is strongly positive "
+                f"({state.sentiment_news_count} recent articles)."
             )
         elif state.sentiment_score <= -0.35 and state.rsi_14 > 40:
             direction = "short"
@@ -192,8 +186,8 @@ class SentimentShiftAnalyzer:
             stop_loss = round(price + (atr * 1.5), 4)
             confidence = round(min(0.82, 0.62 + abs(state.sentiment_score) * 0.20), 2)
             trigger_desc = (
-                f"Strong negative sentiment catalyst on {state.symbol.upper()} "
-                f"(Score: {state.sentiment_score:+.2f} across {state.sentiment_news_count} news items)"
+                f"News coverage right now is strongly negative "
+                f"({state.sentiment_news_count} recent articles)."
             )
         else:
             return None
