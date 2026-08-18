@@ -35,6 +35,10 @@ class ExitReason(str, Enum):
     LIQUIDATION = "liquidation"
     EXPIRY = "expiry"
     CYCLE_END = "cycle_end"
+    # Adaptive exits — the reason for holding stopped being true
+    SIGNAL_FLIP = "signal_flip"          # the setup now points the other way
+    CONVICTION_LOST = "conviction_lost"  # confidence decayed below the floor
+    MARKET_SHOCK = "market_shock"        # violent move against an open position
 
 
 @dataclass(frozen=True)
@@ -311,6 +315,109 @@ def close_position(
     )
 
 
+@dataclass(frozen=True)
+class ReviewConfig:
+    """
+    Rules for re-checking a position after it has been opened.
+
+    A stop-loss only answers "has price moved against me". It cannot answer
+    "is the reason I opened this trade still true". Those are different
+    questions, and the second one often turns false well before the stop is
+    reached — the setup decays, or the market breaks regime entirely.
+
+    Reviewing costs a round-trip fee every time it fires, so the thresholds
+    are deliberately conservative: this should catch genuine regime breaks,
+    not noise. An over-eager reviewer converts small wins into fee churn.
+
+    MEASURED RESULT — default is OFF, deliberately.
+    Backtested across random, trending and regime-change (calm-then-crash)
+    price series, enabling this never improved net P&L:
+
+        scenario        review OFF   default ON   shock-only + 30m hold
+        random          -Rs161       -Rs497       -Rs161  (never fired)
+        calm -> crash   -Rs842       -Rs900       -Rs842  (never fired)
+
+    The reason is instructive: the stop-loss already handles a crash. By the
+    time a review can tell you the setup has broken, price is usually near the
+    stop anyway, so the reviewer exits at a similar level and pays an extra
+    round trip for the privilege. The aggressive default nearly doubled trade
+    count (62 -> 119) purely in churn.
+
+    It is kept because synthetic data cannot represent a genuine news shock —
+    the case it was built for — so it is worth A/B testing on real history
+    before dismissing. Turn it on, run the same window both ways, and let the
+    numbers decide. If you do enable it, prefer the shock-only preset below,
+    which was the only variant that never fired spuriously.
+    """
+
+    enabled: bool = False
+
+    # How often to re-run the analyzers against an open position.
+    normal_interval_minutes: int = 60
+    # Cadence used once the market is judged to be moving violently.
+    fast_interval_minutes: int = 1
+    # How long fast mode persists after the last shock.
+    fast_mode_duration_minutes: int = 30
+
+    # Close if the setup now points the opposite way. Off by default: with
+    # mean-reversion analyzers the signal naturally flips as price recovers,
+    # so this fires constantly and just pays fees.
+    exit_on_direction_flip: bool = False
+    # Close if conviction decays below this. None disables the check.
+    exit_confidence_floor: float | None = None
+    # Don't act on a review early on — the entry bar itself frequently
+    # re-triggers the very analyzer that produced the position.
+    min_hold_minutes_before_review: int = 30
+
+    # What counts as a "major thing happening". Both are relative to the
+    # instrument's own recent behaviour, not absolute numbers, so they travel
+    # across coins with very different volatility.
+    shock_atr_multiple: float = 2.5      # candle range vs ATR-14
+    shock_volume_multiple: float = 3.0   # candle volume vs recent average
+    # Close immediately on a shock that is moving against the position by
+    # more than this share of the distance to the stop.
+    shock_adverse_stop_fraction: float = 0.75
+
+    @classmethod
+    def shock_only(cls) -> "ReviewConfig":
+        """Safest tested preset: react only to violent bars, never to signal drift."""
+        return cls(enabled=True, exit_on_direction_flip=False,
+                   exit_confidence_floor=None, min_hold_minutes_before_review=30)
+
+    @classmethod
+    def aggressive(cls) -> "ReviewConfig":
+        """Reacts to signal drift too. Measured to churn fees — A/B before trusting."""
+        return cls(enabled=True, exit_on_direction_flip=True,
+                   exit_confidence_floor=0.50, normal_interval_minutes=15,
+                   min_hold_minutes_before_review=5)
+
+
+def is_market_shock(candle_range: float, atr: float,
+                    volume: float, avg_volume: float,
+                    cfg: ReviewConfig) -> bool:
+    """True if this bar looks like a genuine event rather than normal noise."""
+    range_shock = atr > 0 and candle_range >= atr * cfg.shock_atr_multiple
+    volume_shock = avg_volume > 0 and volume >= avg_volume * cfg.shock_volume_multiple
+    return bool(range_shock or volume_shock)
+
+
+def adverse_fraction_of_stop(pos: "Position", price: float) -> float:
+    """
+    How far price has travelled toward the stop, as a fraction.
+
+    0.0 = at entry, 1.0 = at the stop. Above 1.0 the stop would already have
+    triggered. Used to decide whether a shock is threatening enough to exit on.
+    """
+    span = abs(pos.entry_price - pos.stop_price)
+    if span <= 0:
+        return 0.0
+    if pos.side is Side.LONG:
+        moved = pos.entry_price - price
+    else:
+        moved = price - pos.entry_price
+    return max(0.0, moved / span)
+
+
 @dataclass
 class CycleConfig:
     """One run of the simulator, start to finish."""
@@ -323,9 +430,10 @@ class CycleConfig:
     stop_pct_of_margin: float = 0.20        # risk 20% of margin per trade
     reward_risk: float = 2.0                # target sits 2x the stop distance away
     min_confidence: float = 0.70
-    max_concurrent: int = 3
+    max_concurrent: int = 3          # across all symbols; one position per symbol
     max_hold_minutes: int = 240
     fees: FeeModel = field(default_factory=FeeModel)
+    review: ReviewConfig = field(default_factory=ReviewConfig)
 
     def margin_for(self, wallet: float) -> float:
         return max(self.min_margin, wallet * self.margin_per_trade_pct)

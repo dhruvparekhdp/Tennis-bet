@@ -244,3 +244,88 @@ class TestBacktestEngine(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestPositionReview(unittest.TestCase):
+    """
+    The adaptive exit: re-checking whether the reason for a trade is still true.
+
+    These pin the mechanics (shock detection, distance-to-stop, rate limiting)
+    and the deliberate choice to default the feature OFF, which is backed by
+    measurement rather than taste.
+    """
+
+    def setUp(self):
+        from analysis.paper_trading import ReviewConfig
+        self.rc = ReviewConfig()
+        self.f = FeeModel()
+
+    def test_defaults_to_off_because_it_measured_worse(self):
+        from analysis.paper_trading import ReviewConfig
+        self.assertFalse(ReviewConfig().enabled)
+
+    def test_shock_detects_range_and_volume_spikes(self):
+        from analysis.paper_trading import ReviewConfig, is_market_shock
+        rc = ReviewConfig()
+        self.assertTrue(is_market_shock(3.0, 1.0, 100, 100, rc))   # 3x ATR range
+        self.assertTrue(is_market_shock(1.0, 1.0, 400, 100, rc))   # 4x volume
+        self.assertFalse(is_market_shock(1.0, 1.0, 100, 100, rc))  # calm
+        self.assertFalse(is_market_shock(2.0, 1.0, 100, 100, rc))  # below threshold
+
+    def test_shock_ignores_missing_baselines(self):
+        """No ATR or no volume history must not read as a shock."""
+        from analysis.paper_trading import ReviewConfig, is_market_shock
+        rc = ReviewConfig()
+        self.assertFalse(is_market_shock(5.0, 0.0, 0, 0, rc))
+
+    def test_adverse_fraction_measures_distance_to_stop(self):
+        from analysis.paper_trading import adverse_fraction_of_stop
+        p = open_position("X", Side.LONG, 100.0, 200.0, 10, self.f, 0.20, 2.0, T0)
+        self.assertAlmostEqual(adverse_fraction_of_stop(p, 100.0), 0.0, places=6)
+        self.assertAlmostEqual(adverse_fraction_of_stop(p, 99.0), 0.5, places=6)
+        self.assertAlmostEqual(adverse_fraction_of_stop(p, 98.0), 1.0, places=6)
+        # a favourable move is not adverse
+        self.assertAlmostEqual(adverse_fraction_of_stop(p, 102.0), 0.0, places=6)
+
+    def test_adverse_fraction_mirrors_for_shorts(self):
+        from analysis.paper_trading import adverse_fraction_of_stop
+        p = open_position("X", Side.SHORT, 100.0, 200.0, 10, self.f, 0.20, 2.0, T0)
+        self.assertAlmostEqual(adverse_fraction_of_stop(p, 101.0), 0.5, places=6)
+        self.assertAlmostEqual(adverse_fraction_of_stop(p, 99.0), 0.0, places=6)
+
+    def test_presets_are_configured_as_documented(self):
+        from analysis.paper_trading import ReviewConfig
+        safe = ReviewConfig.shock_only()
+        self.assertTrue(safe.enabled)
+        self.assertFalse(safe.exit_on_direction_flip)
+        self.assertIsNone(safe.exit_confidence_floor)
+        loud = ReviewConfig.aggressive()
+        self.assertTrue(loud.exit_on_direction_flip)
+        self.assertIsNotNone(loud.exit_confidence_floor)
+
+    def test_review_can_close_positions_when_enabled(self):
+        """Aggressive preset should actually fire, proving the path is wired."""
+        from analysis.paper_trading import ReviewConfig
+        cfg = CycleConfig(starting_wallet=1000, leverage=10, min_confidence=0.60,
+                          review=ReviewConfig.aggressive())
+        r = BacktestEngine(cfg).run("BTCUSDT", synthetic(3000, seed=7))
+        self.assertGreater(r.early_exits, 0)
+
+    def test_disabled_review_never_fires(self):
+        from analysis.paper_trading import ReviewConfig
+        cfg = CycleConfig(starting_wallet=1000, leverage=10, min_confidence=0.60,
+                          review=ReviewConfig(enabled=False))
+        r = BacktestEngine(cfg).run("BTCUSDT", synthetic(3000, seed=7))
+        self.assertEqual(r.early_exits, 0)
+
+
+class TestConcurrency(unittest.TestCase):
+    def test_never_stacks_two_positions_in_one_symbol(self):
+        """A single symbol must never hold two positions at once."""
+        cfg = CycleConfig(starting_wallet=1000, leverage=10,
+                          min_confidence=0.60, max_concurrent=3)
+        r = BacktestEngine(cfg).run("BTCUSDT", synthetic(3000, seed=9))
+        # every trade must close before the next one opens
+        ordered = sorted(r.trades, key=lambda t: t.position.opened_at)
+        for a, b in zip(ordered, ordered[1:]):
+            self.assertLessEqual(a.closed_at, b.position.opened_at)
