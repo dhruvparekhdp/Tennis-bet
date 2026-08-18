@@ -108,12 +108,19 @@ class Settings(BaseSettings):
     # Target prediction timeframes
     crypto_timeframes: str = "30m,1h,4h,1d"
 
-    # CoinGecko — https://www.coingecko.com/en/api (default crypto price source).
-    # Binance's WebSocket API returns HTTP 451 (geoblocked) from Render's IPs, so
-    # it can't be used reliably there — CoinGecko REST polling replaces it. A free
-    # "Demo" key (no credit card) raises the rate limit to 100 calls/min /
-    # 10k/month, but isn't required: one poll covers the whole watchlist in a
-    # single batched call, well under the unauthenticated limit even at 60s.
+    # CoinDCX — https://coindcx.com/api (preferred crypto price source).
+    # Public ticker endpoint, no API key, no meaningful rate limit — one call
+    # returns every market on the exchange. Preferred over CoinGecko for any
+    # symbol it lists, since it's the exact price you'd see trading there.
+    coindcx_poll_interval_seconds: int = 30
+
+    # CoinGecko — https://www.coingecko.com/en/api (fallback for anything
+    # CoinDCX doesn't list). Binance's WebSocket API returns HTTP 451
+    # (geoblocked) from Render's IPs, so it can't be used reliably there — this
+    # REST polling replaces it. A free "Demo" key (no credit card) raises the
+    # rate limit to 100 calls/min / 10k/month, but isn't required: one poll
+    # covers the whole watchlist in a single batched call, well under the
+    # unauthenticated limit even at 60s.
     coingecko_api_key: str | None = None
     coingecko_poll_interval_seconds: int = 60
 

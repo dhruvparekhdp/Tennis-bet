@@ -40,6 +40,7 @@ from analysis.win_probability import compute_win_probability
 from collectors.api_tennis import ApiTennisCollector
 from collectors.bets_api import BetsAPICollector
 from collectors.binance_ws import BinanceWSCollector
+from collectors.coindcx import CoinDCXCollector
 from collectors.coingecko import CoinGeckoCollector
 from collectors.cryptopanic import CryptoPanicCollector
 from collectors.espn import ESPNCollector
@@ -114,10 +115,13 @@ class AppRunner:
         # Crypto & Commodities — watchlist itself is DB-backed, loaded in start()
         self.crypto_store = CryptoStateStore()
         self.commodity_store = CommodityStateStore()
-        # CoinGecko REST polling is the default crypto price source — Binance's
-        # WebSocket API returns HTTP 451 (geoblocked) from Render's IPs, so it
-        # can't be relied on there. binance_ws is kept available as an opt-in
-        # toggle (e.g. for a non-US deploy region) but starts disabled.
+        # CoinDCX is the preferred crypto price source (free, no key, exact
+        # exchange prices). CoinGecko fills in anything CoinDCX doesn't list.
+        # Binance's WebSocket API returns HTTP 451 (geoblocked) from Render's
+        # IPs, so it can't be relied on there — binance_ws is kept available
+        # as an opt-in toggle (e.g. for a non-US deploy region) but starts
+        # disabled.
+        self.coindcx = CoinDCXCollector(self.crypto_store)
         self.coingecko = CoinGeckoCollector(self.crypto_store)
         self.binance_ws = BinanceWSCollector(self.crypto_store)
         self.twelvedata_ws = TwelveDataWSCollector(self.commodity_store)
@@ -135,6 +139,7 @@ class AppRunner:
             "api_sports": True,
             "espn": True,
             "bets_api": True,
+            "coindcx": True,
             "coingecko": True,
             "binance_ws": False,  # geoblocked (HTTP 451) on Render — opt-in only
             "twelvedata_ws": True,
@@ -393,6 +398,14 @@ class AppRunner:
             await self.api_tennis.fetch()
         except Exception:
             log.exception("api_tennis_job_failed")
+
+    async def _coindcx_job(self) -> None:
+        if not self.collector_enabled.get("coindcx", True):
+            return
+        try:
+            await self.coindcx.fetch()
+        except Exception:
+            log.exception("coindcx_job_failed")
 
     async def _coingecko_job(self) -> None:
         if not self.collector_enabled.get("coingecko", True):
@@ -667,6 +680,14 @@ class AppRunner:
         )
         # Crypto & Commodities Interval Jobs
         self.scheduler.add_job(
+            self._coindcx_job,
+            "interval",
+            seconds=settings.coindcx_poll_interval_seconds,
+            id="coindcx_poll",
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        self.scheduler.add_job(
             self._coingecko_job,
             "interval",
             seconds=settings.coingecko_poll_interval_seconds,
@@ -734,7 +755,7 @@ class AppRunner:
             "🎾⚽🪙 Tennis + Football + Crypto monitor started.\n"
             f"Tennis: ESPN + Flashscore + {bets_api_status} (every {settings.sofascore_poll_interval}s)\n"
             f"Football: ESPN all leagues (every 60s)\n"
-            f"Crypto: CoinGecko {crypto_count}-symbol watchlist (poll every {settings.coingecko_poll_interval_seconds}s, manage from Crypto tab)\n"
+            f"Crypto: CoinDCX + CoinGecko {crypto_count}-symbol watchlist (poll every {settings.coindcx_poll_interval_seconds}s/{settings.coingecko_poll_interval_seconds}s, manage from Crypto tab)\n"
             f"Commodities: Twelve Data Gold/Silver/Oil ({'active' if settings.twelvedata_api_key else 'no key'})\n"
             f"News Sentiment: CryptoPanic ({'active' if settings.cryptopanic_auth_token else 'no token'})\n"
             f"Min confidence: {settings.min_confidence} (Sports) / {settings.crypto_min_confidence} (Crypto)"
@@ -791,6 +812,8 @@ class AppRunner:
                 "odds_api_football": bool(settings.odds_api_key),
             },
             "crypto": {
+                "coindcx_consecutive_failures": self.coindcx._consecutive_failures,
+                "coindcx_matched_symbols": len(self.coindcx.last_matched_symbols),
                 "coingecko_consecutive_failures": self.coingecko._consecutive_failures,
                 "binance_ws_connected": self.binance_ws._running and self.binance_ws._consecutive_failures == 0,
                 "binance_messages_received": self.binance_ws._total_messages_received,

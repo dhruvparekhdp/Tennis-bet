@@ -2191,6 +2191,12 @@ async def _api_collector_states(runner, request: web.Request) -> web.Response:
                 "key_set": bool(_settings.api_tennis_key),
                 "poll_interval_secs": _settings.api_tennis_poll_interval_seconds,
             })
+        if hasattr(runner, "coindcx"):
+            states["coindcx"].update({
+                "consecutive_failures": runner.coindcx._consecutive_failures,
+                "matched_symbols": len(runner.coindcx.last_matched_symbols),
+                "watchlist_size": len(await runner.crypto_store.get_symbols()),
+            })
         if hasattr(runner, "coingecko"):
             states["coingecko"].update({
                 "consecutive_failures": runner.coingecko._consecutive_failures,
@@ -2369,10 +2375,20 @@ const SOURCES = [
     warning: null,
   },
   {
+    id: 'coindcx',
+    name: 'CoinDCX',
+    icon: '🪙',
+    desc: 'Crypto price polling — preferred source, exact exchange prices (public API, no key needed)',
+    quota_label: 'Free, unlimited',
+    quota_total: null,
+    can_toggle: true,
+    warning: null,
+  },
+  {
     id: 'coingecko',
     name: 'CoinGecko',
-    icon: '🪙',
-    desc: 'Crypto price polling for the watchlist — default source (public API, no key needed)',
+    icon: '🦎',
+    desc: "Crypto price polling — fallback for any symbol CoinDCX doesn't list (public API, no key needed)",
     quota_label: 'Free tier',
     quota_total: null,
     can_toggle: true,
