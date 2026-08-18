@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     # Tournament filter — "tier1" = Slams + Masters 1000/WTA 1000 only, "all" = everything
     tournament_tier: str = "tier1"
 
+    # Master switch for all tennis + football collection. When False, none of the
+    # sports polling/analysis jobs are scheduled at all — no API quota is spent and
+    # no CPU is used on them. The /sports pages still render (from whatever is in
+    # the DB), they just stop receiving new data. Crypto is unaffected.
+    sports_enabled: bool = False
+
     # Push-client ingest — shared secret between your laptop's push_client.py and Render.
     # Set INGEST_API_KEY in Render env vars; pass the same value via --key to push_client.py.
     ingest_api_key: str = ""

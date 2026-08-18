@@ -23,6 +23,8 @@ services:
         value: "30"
       - key: THESPORTSDB_API_KEY
         value: "3"
+      - key: SPORTS_ENABLED
+        value: "false"       # tennis+football polling paused; set "true" to resume
       - key: DATABASE_URL
         sync: false          # set to your Neon Postgres URL in Render dashboard
       - key: INGEST_API_KEY
