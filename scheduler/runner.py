@@ -586,36 +586,7 @@ class AppRunner:
         await self.crypto_store.remove_symbol(sym)
 
     def setup_jobs(self) -> None:
-        self.scheduler.add_job(
-            self._data_poll_job,
-            "interval",
-            seconds=settings.sofascore_poll_interval,
-            id="data_poll",
-            max_instances=1,
-            next_run_time=datetime.now(timezone.utc),  # run immediately on startup
-        )
-        self.scheduler.add_job(
-            self._schedule_job,
-            "interval",
-            seconds=settings.schedule_poll_interval,
-            id="schedule_poll",
-            max_instances=1,
-        )
-        self.scheduler.add_job(
-            self._odds_job,
-            "interval",
-            seconds=settings.odds_poll_interval_seconds,
-            id="odds_poll",
-            max_instances=1,
-            next_run_time=datetime.now(timezone.utc),
-        )
-        self.scheduler.add_job(
-            self._ml_retrain_job,
-            "interval",
-            hours=6,
-            id="ml_retrain",
-            max_instances=1,
-        )
+        # ── Always-on infrastructure jobs ────────────────────────────────────
         self.scheduler.add_job(
             self._cleanup_job,
             "cron",
@@ -629,33 +600,6 @@ class AppRunner:
             minutes=10,
             id="heartbeat",
         )
-        if settings.sportradar_api_key:
-            self.scheduler.add_job(
-                self._sportradar_job,
-                "interval",
-                seconds=settings.sportradar_poll_interval_seconds,
-                id="sportradar",
-                max_instances=1,
-                next_run_time=datetime.now(timezone.utc),
-            )
-        if settings.sportsdata_api_key:
-            self.scheduler.add_job(
-                self._sportsdata_job,
-                "interval",
-                seconds=settings.sportsdata_poll_interval_seconds,
-                id="sportsdata",
-                max_instances=1,
-                next_run_time=datetime.now(timezone.utc),
-            )
-        if settings.api_tennis_key:
-            self.scheduler.add_job(
-                self._api_tennis_job,
-                "interval",
-                seconds=settings.api_tennis_poll_interval_seconds,
-                id="api_tennis",
-                max_instances=1,
-                next_run_time=datetime.now(timezone.utc),
-            )
         self.scheduler.add_job(
             self._self_ping_job,
             "interval",
@@ -663,22 +607,15 @@ class AppRunner:
             id="self_ping",
             max_instances=1,
         )
-        self.scheduler.add_job(
-            self._scalp_job,
-            "interval",
-            seconds=60,
-            id="scalp_alerts",
-            max_instances=1,
-            next_run_time=datetime.now(timezone.utc),
-        )
-        self.scheduler.add_job(
-            self._football_poll_job,
-            "interval",
-            seconds=60,
-            id="football_poll",
-            max_instances=1,
-            next_run_time=datetime.now(timezone.utc),
-        )
+
+        # ── Sports (tennis + football) — all gated behind one master switch ──
+        # With SPORTS_ENABLED=false none of these are scheduled, so they spend
+        # no API quota and no CPU. Crypto below is unaffected either way.
+        if settings.sports_enabled:
+            self._setup_sports_jobs()
+        else:
+            log.info("sports_jobs_disabled", hint="set SPORTS_ENABLED=true to re-enable")
+
         # Crypto & Commodities Interval Jobs
         self.scheduler.add_job(
             self._coindcx_job,
@@ -719,6 +656,82 @@ class AppRunner:
             id="crypto_snapshot",
             max_instances=1,
         )
+
+    def _setup_sports_jobs(self) -> None:
+        """All tennis + football jobs. Only called when settings.sports_enabled."""
+        self.scheduler.add_job(
+            self._data_poll_job,
+            "interval",
+            seconds=settings.sofascore_poll_interval,
+            id="data_poll",
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc),  # run immediately on startup
+        )
+        self.scheduler.add_job(
+            self._schedule_job,
+            "interval",
+            seconds=settings.schedule_poll_interval,
+            id="schedule_poll",
+            max_instances=1,
+        )
+        self.scheduler.add_job(
+            self._odds_job,
+            "interval",
+            seconds=settings.odds_poll_interval_seconds,
+            id="odds_poll",
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        self.scheduler.add_job(
+            self._ml_retrain_job,
+            "interval",
+            hours=6,
+            id="ml_retrain",
+            max_instances=1,
+        )
+        if settings.sportradar_api_key:
+            self.scheduler.add_job(
+                self._sportradar_job,
+                "interval",
+                seconds=settings.sportradar_poll_interval_seconds,
+                id="sportradar",
+                max_instances=1,
+                next_run_time=datetime.now(timezone.utc),
+            )
+        if settings.sportsdata_api_key:
+            self.scheduler.add_job(
+                self._sportsdata_job,
+                "interval",
+                seconds=settings.sportsdata_poll_interval_seconds,
+                id="sportsdata",
+                max_instances=1,
+                next_run_time=datetime.now(timezone.utc),
+            )
+        if settings.api_tennis_key:
+            self.scheduler.add_job(
+                self._api_tennis_job,
+                "interval",
+                seconds=settings.api_tennis_poll_interval_seconds,
+                id="api_tennis",
+                max_instances=1,
+                next_run_time=datetime.now(timezone.utc),
+            )
+        self.scheduler.add_job(
+            self._scalp_job,
+            "interval",
+            seconds=60,
+            id="scalp_alerts",
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        self.scheduler.add_job(
+            self._football_poll_job,
+            "interval",
+            seconds=60,
+            id="football_poll",
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc),
+        )
         # Historical import — runs immediately on startup, then weekly
         self.scheduler.add_job(
             self._historical_import_job,
@@ -728,6 +741,7 @@ class AppRunner:
             max_instances=1,
             next_run_time=datetime.now(timezone.utc),
         )
+        log.info("sports_jobs_scheduled")
 
     async def start(self) -> None:
         await self.notifier.verify()
@@ -750,18 +764,26 @@ class AppRunner:
             self._ws_tasks.append(task)
             log.info("twelvedata_ws_task_spawned")
 
-        bets_api_status = "BetsAPI: active" if settings.bets_api_token else "BetsAPI: no token"
         crypto_count = await self.crypto_store.count()
+        if settings.sports_enabled:
+            bets_api_status = "BetsAPI: active" if settings.bets_api_token else "BetsAPI: no token"
+            sports_line = (
+                f"Tennis: ESPN + Flashscore + {bets_api_status} (every {settings.sofascore_poll_interval}s)\n"
+                f"Football: ESPN all leagues (every 60s)\n"
+            )
+        else:
+            sports_line = "Sports (tennis + football): paused — no polling, no quota used\n"
         await self.notifier.send_text(
-            "🎾⚽🪙 Tennis + Football + Crypto monitor started.\n"
-            f"Tennis: ESPN + Flashscore + {bets_api_status} (every {settings.sofascore_poll_interval}s)\n"
-            f"Football: ESPN all leagues (every 60s)\n"
-            f"Crypto: CoinDCX + CoinGecko {crypto_count}-symbol watchlist (poll every {settings.coindcx_poll_interval_seconds}s/{settings.coingecko_poll_interval_seconds}s, manage from Crypto tab)\n"
+            "🪙 Crypto monitor started.\n"
+            f"Crypto: CoinDCX + CoinGecko {crypto_count}-symbol watchlist "
+            f"(poll every {settings.coindcx_poll_interval_seconds}s/{settings.coingecko_poll_interval_seconds}s)\n"
             f"Commodities: Twelve Data Gold/Silver/Oil ({'active' if settings.twelvedata_api_key else 'no key'})\n"
             f"News Sentiment: CryptoPanic ({'active' if settings.cryptopanic_auth_token else 'no token'})\n"
-            f"Min confidence: {settings.min_confidence} (Sports) / {settings.crypto_min_confidence} (Crypto)"
+            f"{sports_line}"
+            f"Min confidence: {settings.crypto_min_confidence} (Crypto)"
         )
-        log.info("scheduler_started", crypto_symbols_count=crypto_count)
+        log.info("scheduler_started", crypto_symbols_count=crypto_count,
+                 sports_enabled=settings.sports_enabled)
 
     def get_status(self) -> dict:
         return {

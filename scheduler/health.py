@@ -44,12 +44,22 @@ def _reconstruct_sets(
 
 # ── JSON API ──────────────────────────────────────────────────────────────────
 
+def _settings_sports_enabled() -> bool:
+    from config.settings import settings
+    return bool(settings.sports_enabled)
+
+
 async def _api_status(runner, request: web.Request) -> web.Response:
     status = runner.get_status()
     count = await runner.store.count()
     uptime = int((datetime.utcnow() - _start_time).total_seconds())
     return web.Response(
-        text=json.dumps({"uptime_seconds": uptime, "matches_tracked": count, **status}),
+        text=json.dumps({
+            "uptime_seconds": uptime,
+            "matches_tracked": count,
+            "sports_enabled": _settings_sports_enabled(),
+            **status,
+        }),
         content_type="application/json",
     )
 
@@ -574,8 +584,12 @@ header{background:#1e293b;border-bottom:1px solid #334155;padding:14px 20px;disp
 header h1{font-size:18px;font-weight:700;color:#f1f5f9;display:flex;align-items:center;gap:8px}
 .badge{background:#0ea5e9;color:#fff;font-size:11px;padding:2px 8px;border-radius:9999px;font-weight:600}
 .refresh{font-size:12px;color:#64748b}
-.nav-btn{margin-left:12px;background:#0ea5e9;color:#fff;font-size:13px;font-weight:600;padding:6px 14px;border-radius:8px;text-decoration:none;white-space:nowrap}
-.nav-btn:hover{background:#0284c7}
+.nav-btn{margin-left:12px;background:#1e293b;color:#94a3b8;font-size:13px;font-weight:600;padding:6px 14px;border-radius:8px;text-decoration:none;white-space:nowrap;border:1px solid #334155}
+.nav-btn:hover{background:#334155;color:#e2e8f0}
+.nav-btn.active{background:#0ea5e9;color:#fff;border-color:#0ea5e9}
+.nav-btn.active:hover{background:#0284c7;color:#fff}
+.sports-paused{margin:16px 20px 0;background:#2d1f00;border:1px solid #e3b341;border-radius:8px;padding:10px 14px;font-size:12px;color:#e3b341;line-height:1.6}
+.sports-paused code{background:rgba(0,0,0,.3);padding:1px 5px;border-radius:3px;font-size:11px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;padding:16px 20px 0}
 .card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px}
 .card-title{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;margin-bottom:6px}
@@ -888,28 +902,38 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 </head>
 <body>
 <header>
-  <h1>&#127934; Tennis Bet Monitor <span class="badge" id="live-count">0 live</span></h1>
+  <h1 id="page-title">🪙 Crypto Monitor</h1>
   <span class="refresh" id="refresh-label">Loading&hellip;</span>
+  <a class="nav-btn" id="nav-crypto" href="/">🪙 Crypto</a>
+  <a class="nav-btn" id="nav-sports" href="/sports">🎾 Sports</a>
   <a class="nav-btn" href="/settings">⚙️ Settings</a>
   <a class="nav-btn" href="/data">🗄️ History</a>
 </header>
 
-<div class="grid">
-  <div class="card"><div class="card-title">Tennis Live</div><div class="card-value" id="stat-matches">&mdash;</div><div class="card-sub">matches now</div></div>
-  <div class="card"><div class="card-title">Football Live</div><div class="card-value" id="stat-fb-matches">&mdash;</div><div class="card-sub">matches now</div></div>
-  <div class="card"><div class="card-title">Signals (24h)</div><div class="card-value" id="stat-signals">&mdash;</div><div class="card-sub">tennis + football</div></div>
+<div class="grid" id="grid-crypto">
   <div class="card"><div class="card-title">Crypto Watchlist</div><div class="card-value" id="stat-crypto-coins">&mdash;</div><div class="card-sub">symbols tracked</div></div>
+  <div class="card"><div class="card-title">Crypto Signals</div><div class="card-value" id="stat-crypto-signals">&mdash;</div><div class="card-sub">last 24h</div></div>
   <div class="card"><div class="card-title">Uptime</div><div class="card-value" id="stat-uptime">&mdash;</div><div class="card-sub">since restart</div></div>
 </div>
 
-<div class="tab-bar">
+<div class="grid" id="grid-sports" style="display:none">
+  <div class="card"><div class="card-title">Tennis Live</div><div class="card-value" id="stat-matches">&mdash;</div><div class="card-sub">matches now</div></div>
+  <div class="card"><div class="card-title">Football Live</div><div class="card-value" id="stat-fb-matches">&mdash;</div><div class="card-sub">matches now</div></div>
+  <div class="card"><div class="card-title">Signals (24h)</div><div class="card-value" id="stat-signals">&mdash;</div><div class="card-sub">tennis + football</div></div>
+  <div class="card"><div class="card-title">Uptime</div><div class="card-value" id="stat-uptime-sports">&mdash;</div><div class="card-sub">since restart</div></div>
+</div>
+
+<div class="tab-bar" id="tabbar-sports" style="display:none">
   <button class="tab-btn active" data-tab="tennis" onclick="switchTab('tennis')">🎾 Tennis</button>
   <button class="tab-btn" data-tab="scalping" onclick="switchTab('scalping')">🎯 Scalping <span id="scalp-count-badge" class="tab-badge" style="display:none">0</span></button>
   <button class="tab-btn" data-tab="football" onclick="switchTab('football')">⚽ Football</button>
-  <button class="tab-btn" data-tab="crypto" onclick="switchTab('crypto')">🪙 Crypto</button>
 </div>
 
-<div id="tab-tennis" class="tab-content active">
+<div class="sports-paused" id="sports-paused-banner" style="display:none">
+  Sports data collection is currently <b>paused</b> — these pages show the last data that was stored, but nothing new is being fetched. Re-enable by setting <code>SPORTS_ENABLED=true</code> in your Render environment variables.
+</div>
+
+<div id="tab-tennis" class="tab-content">
   <section>
     <h2>Live Tennis Matches</h2>
     <div id="matches"><div class="empty">No live matches tracked</div></div>
@@ -947,7 +971,7 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   </section>
 </div>
 
-<div id="tab-crypto" class="tab-content">
+<div id="tab-crypto" class="tab-content active">
   <section>
     <h2>🪙 Live Crypto Watchlist</h2>
     <div class="cr-note">Prices update every 30-60s from CoinDCX and CoinGecko. Add or remove symbols here — changes apply immediately, no redeploy needed.</div>
@@ -1426,6 +1450,21 @@ function switchTab(tab){
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.toggle('active',c.id==='tab-'+tab));
 }
 
+// ── VIEW ROUTING ──────────────────────────────────────────────────────────────
+// One template serves two routes: "/" (crypto, the main page) and "/sports".
+// IS_SPORTS is decided once on load from the URL and never changes after.
+const IS_SPORTS = location.pathname.replace(/\/+$/,'') === '/sports';
+
+function initView(){
+  document.getElementById('grid-crypto').style.display   = IS_SPORTS ? 'none' : '';
+  document.getElementById('grid-sports').style.display   = IS_SPORTS ? '' : 'none';
+  document.getElementById('tabbar-sports').style.display = IS_SPORTS ? '' : 'none';
+  document.getElementById('page-title').textContent = IS_SPORTS ? '🎾 Sports Monitor' : '🪙 Crypto Monitor';
+  document.getElementById('nav-crypto').classList.toggle('active', !IS_SPORTS);
+  document.getElementById('nav-sports').classList.toggle('active', IS_SPORTS);
+  switchTab(IS_SPORTS ? 'tennis' : 'crypto');
+}
+
 // ── FOOTBALL MATCHES ──────────────────────────────────────────────────────────
 const FB_SIG_NAME={
   late_lead:'⏱ Late Lead',
@@ -1795,34 +1834,45 @@ async function removeCryptoSymbol(sym){
 function jget(url,fallback){return fetch(url).then(r=>r.ok?r.json():fallback).catch(()=>fallback);}
 async function refresh(){
   try{
-    const [status,matches,signals,fbMatches,fbSignals,scalps,wcGroups,crCoins,crSignals,crCommodities]=await Promise.all([
-      jget('/api/status',{}),
-      jget('/api/matches',[]),
-      jget('/api/signals',[]),
-      jget('/api/football/matches',[]),
-      jget('/api/football/signals',[]),
-      jget('/api/scalping',[]),
-      jget('/api/football/wc-groups',{}),
-      jget('/api/crypto/coins',[]),
-      jget('/api/crypto/signals',[]),
-      jget('/api/commodities',[]),
-    ]);
-    document.getElementById('stat-matches').textContent=matches.length;
-    document.getElementById('stat-fb-matches').textContent=fbMatches.length;
-    document.getElementById('stat-signals').textContent=signals.length+fbSignals.length+crSignals.length;
-    document.getElementById('stat-crypto-coins').textContent=crCoins.length;
-    document.getElementById('stat-uptime').textContent=fmtUptime(status.uptime_seconds);
-    document.getElementById('live-count').textContent=matches.length+' tennis';
-    renderStatus(status);
-    renderMatches(matches);
-    renderSignals(signals);
-    renderFootballMatches(fbMatches);
-    renderWcGroups(wcGroups);
-    renderFootballSignals(fbSignals);
-    renderCryptoCoins(crCoins);
-    renderCryptoSignals(crSignals);
-    renderCommodities(crCommodities);
-    renderScalping(scalps||[]);
+    // Only fetch what the current view actually renders — the crypto page
+    // doesn't need the sports endpoints and vice versa.
+    const status = await jget('/api/status',{});
+    document.getElementById(IS_SPORTS?'stat-uptime-sports':'stat-uptime').textContent=fmtUptime(status.uptime_seconds);
+
+    if(IS_SPORTS){
+      const [matches,signals,fbMatches,fbSignals,scalps,wcGroups]=await Promise.all([
+        jget('/api/matches',[]),
+        jget('/api/signals',[]),
+        jget('/api/football/matches',[]),
+        jget('/api/football/signals',[]),
+        jget('/api/scalping',[]),
+        jget('/api/football/wc-groups',{}),
+      ]);
+      document.getElementById('stat-matches').textContent=matches.length;
+      document.getElementById('stat-fb-matches').textContent=fbMatches.length;
+      document.getElementById('stat-signals').textContent=signals.length+fbSignals.length;
+      const banner=document.getElementById('sports-paused-banner');
+      if(banner) banner.style.display = status.sports_enabled===false ? '' : 'none';
+      renderStatus(status);
+      renderMatches(matches);
+      renderSignals(signals);
+      renderFootballMatches(fbMatches);
+      renderWcGroups(wcGroups);
+      renderFootballSignals(fbSignals);
+      renderScalping(scalps||[]);
+    } else {
+      const [crCoins,crSignals,crCommodities]=await Promise.all([
+        jget('/api/crypto/coins',[]),
+        jget('/api/crypto/signals',[]),
+        jget('/api/commodities',[]),
+      ]);
+      document.getElementById('stat-crypto-coins').textContent=crCoins.length;
+      document.getElementById('stat-crypto-signals').textContent=crSignals.length;
+      renderCryptoCoins(crCoins);
+      renderCryptoSignals(crSignals);
+      renderCommodities(crCommodities);
+    }
+
     document.getElementById('last-updated').textContent='Updated: '+new Date().toLocaleTimeString('en-IN',_IST)+' IST';
     document.getElementById('refresh-label').textContent='Next in 30s';
   }catch(e){
@@ -1830,6 +1880,7 @@ async function refresh(){
     document.getElementById('refresh-label').textContent='Error — retrying…';
   }
 }
+initView();
 refresh();
 setInterval(refresh,30000);
 </script>
@@ -2715,6 +2766,7 @@ _SETTINGS_HTML = _SETTINGS_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 async def make_app(runner) -> web.Application:
     app = web.Application()
     app.router.add_get("/", lambda req: _dashboard(req))
+    app.router.add_get("/sports", lambda req: _dashboard(req))
     app.router.add_get("/data", lambda req: _data_page(req))
     app.router.add_get("/api/tables", lambda req: _api_tables(runner, req))
     app.router.add_get("/health", lambda req: _health(runner, req))
