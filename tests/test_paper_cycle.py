@@ -418,3 +418,36 @@ class TestEndToEndCycle(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(s["net_pnl"], round(sum(t.net_pnl for t in trades), 2), places=1)
         self.assertAlmostEqual(
             s["gross_pnl"] - s["trading_fees"] - s["funding_paid"], s["net_pnl"], places=1)
+
+
+class TestDashboardSurface(unittest.TestCase):
+    """The tab and its endpoint exist and are wired to each other."""
+
+    def setUp(self):
+        import scheduler.health as health
+        self.html = health._HTML
+        self.health = health
+
+    def test_the_tab_and_its_loader_are_present(self):
+        self.assertIn('id="tab-paper"', self.html)
+        self.assertIn("async function loadPaper()", self.html)
+        self.assertIn("switchTab('paper')", self.html)
+
+    def test_switching_to_the_tab_loads_it(self):
+        self.assertIn("if(tab==='paper') loadPaper();", self.html)
+
+    def test_the_endpoint_is_registered(self):
+        import inspect
+        src = inspect.getsource(self.health.setup_routes) \
+            if hasattr(self.health, "setup_routes") else ""
+        source = src or inspect.getsource(self.health)
+        self.assertIn('"/api/paper"', source)
+
+    def test_costs_are_shown_next_to_gross_not_netted_away(self):
+        """The whole point of the scorecard — a net-only view hides fee drag."""
+        self.assertIn("Gross P&amp;L", self.html)
+        self.assertIn("Trading fees", self.html)
+        self.assertIn("costs_as_pct_of_gross", self.html)
+
+    def test_the_page_says_plainly_that_nothing_is_real(self):
+        self.assertIn("never places a real order", self.html)

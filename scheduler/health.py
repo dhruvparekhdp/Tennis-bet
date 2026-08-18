@@ -1101,6 +1101,26 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   <div class="card"><div class="card-title">Uptime</div><div class="card-value" id="stat-uptime-sports">&mdash;</div><div class="card-sub">since restart</div></div>
 </div>
 
+
+<div id="tab-paper" class="tab-content">
+  <section>
+    <h2>📒 Paper Trading Cycle</h2>
+    <div class="cr-note">
+      Simulated only — this never places a real order. A cycle ends when the wallet
+      reaches its target or runs out, then a fresh one starts. Every cost is charged:
+      brokerage, GST, funding and slippage.
+    </div>
+    <div id="paper-banner"></div>
+    <div class="cards" id="paper-cards"></div>
+    <h3 style="margin-top:22px">Open positions</h3>
+    <div id="paper-positions"><div class="empty">Loading…</div></div>
+    <h3 style="margin-top:22px">Scorecard</h3>
+    <div id="paper-scorecard"><div class="empty">Loading…</div></div>
+    <h3 style="margin-top:22px">Trade history</h3>
+    <div id="paper-trades"><div class="empty">Loading…</div></div>
+  </section>
+</div>
+
 <div class="tab-bar" id="tabbar-sports" style="display:none">
   <button class="tab-btn active" data-tab="tennis" onclick="switchTab('tennis')">🎾 Tennis</button>
   <button class="tab-btn" data-tab="scalping" onclick="switchTab('scalping')">🎯 Scalping <span id="scalp-count-badge" class="tab-badge" style="display:none">0</span></button>
@@ -1147,6 +1167,11 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
     <h2>Football Signals (last 24h)</h2>
     <div id="fb-signals"><div class="empty">No football signals fired yet</div></div>
   </section>
+</div>
+
+<div class="tab-bar" id="tabbar-crypto">
+  <button class="tab-btn active" data-tab="crypto" onclick="switchTab('crypto')">🪙 Market</button>
+  <button class="tab-btn" data-tab="paper" onclick="switchTab('paper')">📒 Paper Trading</button>
 </div>
 
 <div id="tab-crypto" class="tab-content active">
@@ -1623,9 +1648,117 @@ function esc(s){
 }
 
 // ── TAB SWITCHING ─────────────────────────────────────────────────────────────
+
+// ── PAPER TRADING ─────────────────────────────────────────────────────────────
+const PAPER_REASON = {
+  target:'hit target', stop:'stopped out', liquidation:'LIQUIDATED',
+  expiry:'time expired', cycle_end:'cycle closed', signal_flip:'setup reversed',
+  conviction_lost:'conviction faded', market_shock:'market shock'
+};
+function money(v){
+  const sign = v < 0 ? '-' : '';
+  return sign + '₹' + Math.abs(v).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function signed(v){ return (v>=0?'+':'') + money(v).replace('-',''); }
+function pnlClass(v){ return v>0?'pos':(v<0?'neg':''); }
+
+async function loadPaper(){
+  let d;
+  try { d = await (await fetch('/api/paper')).json(); }
+  catch(e){ document.getElementById('paper-banner').innerHTML =
+    '<div class="cr-sig-warn">Could not reach /api/paper.</div>'; return; }
+
+  const banner = document.getElementById('paper-banner');
+  if(!d.enabled){
+    banner.innerHTML = '<div class="cr-sig-warn">Paper trading is switched off. '
+      + 'Set <code>PAPER_TRADING_ENABLED=true</code> to start a cycle.</div>';
+  } else if(!d.running){
+    banner.innerHTML = '<div class="cr-note">No cycle running — one starts on the next tick.</div>';
+  } else { banner.innerHTML = ''; }
+
+  if(!d.running){
+    document.getElementById('paper-cards').innerHTML = '';
+    document.getElementById('paper-positions').innerHTML = '<div class="empty">No open positions</div>';
+    document.getElementById('paper-scorecard').innerHTML = '<div class="empty">No cycle yet</div>';
+    document.getElementById('paper-trades').innerHTML = '<div class="empty">No trades yet</div>';
+    return;
+  }
+
+  const c = d.cycle, s = d.summary;
+  const progress = (d.equity - c.starting_wallet) / (c.target_wallet - c.starting_wallet) * 100;
+  document.getElementById('paper-cards').innerHTML = `
+    <div class="card"><div class="card-title">Equity</div>
+      <div class="card-value ${pnlClass(d.equity-c.starting_wallet)}">${money(d.equity)}</div>
+      <div class="card-sub">from ${money(c.starting_wallet)} · ${progress.toFixed(1)}% to target</div></div>
+    <div class="card"><div class="card-title">Free wallet</div>
+      <div class="card-value">${money(c.wallet)}</div>
+      <div class="card-sub">unrealised ${signed(d.unrealised)}</div></div>
+    <div class="card"><div class="card-title">Trades</div>
+      <div class="card-value">${s.trades}</div>
+      <div class="card-sub">${s.win_rate_pct}% won · streak ${s.longest_losing_streak}</div></div>
+    <div class="card"><div class="card-title">Net P&amp;L</div>
+      <div class="card-value ${pnlClass(s.net_pnl)}">${signed(s.net_pnl)}</div>
+      <div class="card-sub">costs ${money(s.trading_fees + s.funding_paid)}${
+        s.costs_as_pct_of_gross!=null ? ' · '+s.costs_as_pct_of_gross+'% of gross' : ''}</div></div>`;
+
+  document.getElementById('paper-positions').innerHTML = d.positions.length ? `
+    <div class="scroll"><table class="tbl"><thead><tr>
+      <th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th>
+      <th>Stop</th><th>Target</th><th>Liq</th><th>Margin</th><th>Unrealised</th>
+    </tr></thead><tbody>` + d.positions.map(p=>`<tr>
+      <td><b>${esc(p.symbol)}</b><div class="sub">${esc(p.signal_type)} · ${p.confidence}%</div></td>
+      <td class="${p.side==='long'?'pos':'neg'}">${p.side.toUpperCase()}</td>
+      <td>${p.qty}</td><td>${fmtPrice(p.entry)}</td><td>${fmtPrice(p.mark)}</td>
+      <td>${fmtPrice(p.stop)}${p.trailing?' ↑':''}</td>
+      <td>${fmtPrice(p.target)}</td><td>${fmtPrice(p.liq)}</td>
+      <td>${money(p.margin)}</td>
+      <td class="${pnlClass(p.unrealised)}">${signed(p.unrealised)}<div class="sub">${p.roe_pct}%</div></td>
+    </tr>`).join('') + '</tbody></table></div>'
+    : '<div class="empty">No open positions</div>';
+
+  // Costs are shown beside gross on purpose: a run of small "wins" that are net
+  // losses is exactly what this page exists to make visible.
+  document.getElementById('paper-scorecard').innerHTML = `
+    <div class="scroll"><table class="tbl"><tbody>
+      <tr><td>Gross P&amp;L</td><td class="${pnlClass(s.gross_pnl)}">${signed(s.gross_pnl)}</td></tr>
+      <tr><td>Trading fees</td><td class="neg">-${money(s.trading_fees)}</td></tr>
+      <tr><td>Funding</td><td class="neg">-${money(s.funding_paid)}</td></tr>
+      <tr><td><b>Net P&amp;L</b></td><td class="${pnlClass(s.net_pnl)}"><b>${signed(s.net_pnl)}</b></td></tr>
+      <tr><td>Average win / loss</td><td>${signed(s.avg_win)} / ${signed(s.avg_loss)}</td></tr>
+      <tr><td>Realised reward:risk</td><td>${s.realised_reward_risk ?? '—'}</td></tr>
+      <tr><td>Expectancy per trade</td><td class="${pnlClass(s.expectancy_per_trade)}">${signed(s.expectancy_per_trade)}</td></tr>
+      <tr><td>Break-even move</td><td>${s.break_even_move_pct}%</td></tr>
+      <tr><td>Exits</td><td>${Object.entries(s.exits_by_reason||{}).map(
+        ([k,v])=>`${PAPER_REASON[k]||k} ×${v}`).join(', ') || '—'}</td></tr>
+    </tbody></table></div>
+    <div class="cr-note" style="margin-top:8px">Running at ${c.leverage}×,
+      risking ${(c.stop_pct_of_margin*100).toFixed(0)}% of margin per trade,
+      target ${(c.stop_pct_of_margin*c.reward_risk*100).toFixed(0)}%,
+      minimum confidence ${(c.min_confidence*100).toFixed(0)}%${
+      c.trailing_enabled?', trailing on':''}${c.scaled_sizing?', size scaled by confidence':''}.</div>`;
+
+  document.getElementById('paper-trades').innerHTML = d.trades.length ? `
+    <div class="scroll"><table class="tbl"><thead><tr>
+      <th>Closed</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th>
+      <th>Why</th><th>Gross</th><th>Fees</th><th>Net</th><th>Wallet</th>
+    </tr></thead><tbody>` + d.trades.map(t=>`<tr>
+      <td class="sub">${new Date(t.closed_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
+      <td><b>${esc(t.symbol)}</b></td>
+      <td class="${t.side==='long'?'pos':'neg'}">${t.side.toUpperCase()}</td>
+      <td>${fmtPrice(t.entry)}</td><td>${fmtPrice(t.exit)}</td>
+      <td>${esc(PAPER_REASON[t.reason]||t.reason)}</td>
+      <td class="${pnlClass(t.gross)}">${signed(t.gross)}</td>
+      <td class="neg">-${money(t.fees + t.funding)}</td>
+      <td class="${pnlClass(t.net)}"><b>${signed(t.net)}</b><div class="sub">${t.roe_pct}%</div></td>
+      <td>${money(t.wallet_after)}</td>
+    </tr>`).join('') + '</tbody></table></div>'
+    : '<div class="empty">No trades closed yet</div>';
+}
+
 function switchTab(tab){
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.toggle('active',c.id==='tab-'+tab));
+  if(tab==='paper') loadPaper();
 }
 
 // ── VIEW ROUTING ──────────────────────────────────────────────────────────────
@@ -2068,6 +2201,13 @@ async function refresh(){
       renderCryptoCoins(crCoins);
       renderCryptoSignals(crSignals);
       renderCommodities(crCommodities);
+    }
+
+    // Only when the tab is actually visible — polling a hidden panel is
+    // wasted work on a free instance with one shared CPU tenth.
+    if(!IS_SPORTS && document.getElementById('tab-paper')
+       && document.getElementById('tab-paper').classList.contains('active')){
+      await loadPaper();
     }
 
     document.getElementById('last-updated').textContent='Updated: '+new Date().toLocaleTimeString('en-IN',_IST)+' IST';
