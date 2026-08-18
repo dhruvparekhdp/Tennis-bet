@@ -12,15 +12,46 @@ from analysis.crypto_state_store import CryptoStateStore
 log = structlog.get_logger()
 
 
+# Binance serves market data from several hosts. The main one geo-blocks a lot
+# of cloud IPs (returns HTTP 451 during the upgrade handshake), but the public
+# market-data mirrors often are not blocked, so we try them in order.
+BINANCE_WS_HOSTS = [
+    "wss://data-stream.binance.vision/stream",   # public market-data mirror, usually not geo-blocked
+    "wss://stream.binance.com:9443/stream",      # main host — blocked from US cloud IPs
+    "wss://stream.binance.com:443/stream",       # same host, 443 (some networks only allow 443)
+]
+
+
+def is_geoblocked(exc: Exception) -> bool:
+    """True if this looks like Binance's HTTP 451 geo-block rather than a transient drop.
+
+    451 is returned during the HTTP upgrade, before the WebSocket ever opens, and it
+    depends only on the server's IP location — retrying the same host can never fix it,
+    so we fail over to the next host instead of looping.
+    """
+    text = str(exc)
+    return "451" in text or "Unavailable For Legal Reasons" in text
+
+
 class BinanceWSCollector:
     """
-    Real-time Binance WebSocket collector streaming Klines & 24h stats for
-    every symbol in the DB-backed watchlist (managed from the dashboard's
-    Crypto tab, not an env var).
+    Real-time Binance WebSocket collector streaming Klines for every symbol in
+    the DB-backed watchlist.
+
+    Binance klines carry true OHLC (real high/low per candle), which the REST
+    pollers cannot provide — CoinDCX/CoinGecko snapshots collapse to
+    open==high==low==close, which makes ATR (and therefore every signal's
+    target/stop distance) far too small. So when Binance is reachable it
+    materially improves signal quality, not just latency.
+
+    Reachability is the catch: the main host returns HTTP 451 from most US
+    cloud IPs including Render's. We try the public market-data mirrors first
+    and treat 451 as "this host is unusable here" rather than retrying it
+    forever (which is what burned CPU in the earlier deploy).
     """
 
-    BASE_WS_URL = "wss://stream.binance.com:9443/stream"
     _LARGE_WATCHLIST_WARN = 25  # Render free tier has limited CPU/RAM — flag heavy watchlists
+    _MAX_ROUNDS_ALL_BLOCKED = 2  # give up after every host 451s this many times
 
     def __init__(self, store: CryptoStateStore) -> None:
         self.store = store
@@ -30,24 +61,68 @@ class BinanceWSCollector:
         self._last_message_time: datetime | None = None
         self._subscribed_version = -1
         self._kline_interval = "1m"
+        self._hosts = list(BINANCE_WS_HOSTS)
+        self._host_idx = 0
+        self._blocked_hosts: set[str] = set()
+        self._geoblocked_rounds = 0
+        self.active_host: str | None = None
+        self.last_error: str | None = None
+
+    @property
+    def BASE_WS_URL(self) -> str:  # noqa: N802 — kept for backwards compatibility
+        return self._hosts[self._host_idx % len(self._hosts)]
+
+    def _advance_host(self) -> None:
+        self._host_idx = (self._host_idx + 1) % len(self._hosts)
 
     async def run_forever(self) -> None:
-        """Continuous listener loop with automatic exponential backoff reconnection."""
+        """Continuous listener loop with host failover and exponential backoff."""
         self._running = True
-        log.info("binance_ws_collector_started")
+        log.info("binance_ws_collector_started", hosts=self._hosts)
 
         while self._running:
+            # Every candidate host geo-blocked us repeatedly — stop rather than
+            # spin forever. CoinDCX/CoinGecko REST polling keeps prices flowing.
+            if len(self._blocked_hosts) >= len(self._hosts):
+                self._geoblocked_rounds += 1
+                if self._geoblocked_rounds >= self._MAX_ROUNDS_ALL_BLOCKED:
+                    self.last_error = (
+                        "All Binance hosts returned HTTP 451 (geo-blocked from this "
+                        "server's IP). Stopping — CoinDCX/CoinGecko continue to supply prices."
+                    )
+                    log.warning("binance_ws_all_hosts_geoblocked_giving_up",
+                                hosts=sorted(self._blocked_hosts))
+                    self._running = False
+                    return
+                self._blocked_hosts.clear()  # one more full sweep before giving up
+
             try:
                 await self._connect_and_stream()
             except asyncio.CancelledError:
                 log.info("binance_ws_cancelled")
                 break
             except Exception as exc:
+                self.last_error = str(exc)
+                host = self.BASE_WS_URL
+                if is_geoblocked(exc):
+                    # Retrying this host is pointless — it depends on our IP, not the network.
+                    self._blocked_hosts.add(host)
+                    self.active_host = None
+                    self._advance_host()
+                    log.warning("binance_ws_geoblocked", host=host,
+                                next_host=self.BASE_WS_URL, error=str(exc)[:120])
+                    await asyncio.sleep(1)
+                    continue
+
                 self._consecutive_failures += 1
                 wait_secs = min(2 ** self._consecutive_failures, 60)
+                # A host that keeps failing for non-451 reasons is also worth rotating away from.
+                if self._consecutive_failures % 3 == 0:
+                    self._advance_host()
                 log.warning(
                     "binance_ws_disconnected",
-                    error=str(exc),
+                    host=host,
+                    error=str(exc)[:160],
                     retry_in_seconds=wait_secs,
                     consecutive_failures=self._consecutive_failures,
                 )
@@ -80,9 +155,11 @@ class BinanceWSCollector:
             streams.append(f"{s}@miniTicker")
 
         stream_param = "/".join(streams)
-        url = f"{self.BASE_WS_URL}?streams={stream_param}"
+        host = self.BASE_WS_URL
+        url = f"{host}?streams={stream_param}"
 
-        log.info("binance_ws_connecting", symbols_count=len(symbols), streams_count=len(streams))
+        log.info("binance_ws_connecting", host=host,
+                 symbols_count=len(symbols), streams_count=len(streams))
 
         async with websockets.connect(
             url,
@@ -92,7 +169,10 @@ class BinanceWSCollector:
             max_size=10_000_000,
         ) as ws:
             self._consecutive_failures = 0
-            log.info("binance_ws_connected_successfully")
+            self._geoblocked_rounds = 0
+            self.active_host = host
+            self.last_error = None
+            log.info("binance_ws_connected_successfully", host=host)
 
             watcher = asyncio.create_task(self._watch_for_resubscribe(ws))
             try:

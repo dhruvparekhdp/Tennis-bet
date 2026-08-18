@@ -142,7 +142,9 @@ class AppRunner:
             "bets_api": True,
             "coindcx": True,
             "coingecko": True,
-            "binance_ws": False,  # geoblocked (HTTP 451) on Render — opt-in only
+            # Driven by env: main Binance host is geo-blocked (451) from Render's
+            # US IPs. Probe /api/debug/binance first, then flip BINANCE_WS_ENABLED.
+            "binance_ws": settings.binance_ws_enabled,
             "twelvedata_ws": True,
         }
 
