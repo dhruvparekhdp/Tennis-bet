@@ -83,6 +83,7 @@ class BacktestResult:
     signals_rejected_capital: int = 0
     early_exits: int = 0
     signals_rejected_unviable: int = 0
+    trail_moves: int = 0
     contradictions_seen: int = 0
     shocks_detected: int = 0
     ended_reason: str = "data_exhausted"
@@ -221,6 +222,7 @@ class BacktestResult:
                 "rejected_no_capital": self.signals_rejected_capital,
                 "median_target_distance_pct": round(self.median_target_distance_pct, 4),
                 "rejected_target_too_small": self.signals_rejected_unviable,
+                "trail_moves": self.trail_moves,
                 "contradictory_readings": self.contradictions_seen,
                 "early_exits": self.early_exits,
                 "market_shocks": self.shocks_detected,
@@ -354,6 +356,11 @@ class BacktestEngine:
                 hit = resolve_candle(pos, c.high, c.low, c.close, c.ts,
                                      slippage=cfg.slippage, drift_pct=drift)
                 if hit is None:
+                    # Only now, once this bar could not close the position at
+                    # the stop it actually had. Trailing first would let this
+                    # bar's high pull the stop above this bar's low.
+                    if pos.update_trail(c.high, c.low, cfg.trailing, cfg.fees):
+                        res.trail_moves += 1
                     still_open.append(pos)
                     continue
                 reason, price = hit

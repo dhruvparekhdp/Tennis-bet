@@ -278,6 +278,12 @@ class Position:
     # What the signal quoted, before slippage. entry_price is where we filled.
     signal_price: float = 0.0
 
+    # Trailing state. initial_stop_price is kept because the stop itself moves,
+    # and 1R has to stay measured from the risk we originally accepted.
+    initial_stop_price: float = 0.0
+    peak_price: float = 0.0        # best price seen in our favour
+    trail_active: bool = False
+
     # Set once the position has been scaled in or out, because after that the
     # size no longer follows from margin x leverage / entry.
     _coin_qty: float | None = None
@@ -330,6 +336,68 @@ class Position:
         two differ by Rs18, which is exactly the open-to-LTP drift.
         """
         return self.coin_qty * mark * self.usdt_inr
+
+    @property
+    def risk_per_unit(self) -> float:
+        """Initial stop distance in price terms. This is 1R."""
+        base = self.initial_stop_price or self.stop_price
+        return abs(self.entry_price - base)
+
+    def r_multiple(self, price: float) -> float:
+        """How many R the trade is up at `price`. Negative means offside."""
+        risk = self.risk_per_unit
+        if risk <= 0:
+            return 0.0
+        move = (price - self.entry_price) if self.side is Side.LONG else (self.entry_price - price)
+        return move / risk
+
+    def update_trail(self, high: float, low: float, trail: TrailingStop,
+                     fees: FeeModel) -> bool:
+        """
+        Ratchet the stop after this bar has already been checked against the
+        existing one. Returns True if the stop moved.
+
+        Call order matters and is not a detail: updating the trail before
+        resolving the bar would let this bar's high drag the stop above this
+        bar's low, and a trade that actually stopped out would survive.
+        """
+        if not trail.enabled or self.leverage <= 0:
+            return False
+
+        long = self.side is Side.LONG
+        extreme = high if long else low
+        best = max(self.peak_price or extreme, extreme) if long else \
+            min(self.peak_price or extreme, extreme)
+        self.peak_price = best
+
+        risk = self.risk_per_unit
+        if risk <= 0:
+            return False
+        gain = (best - self.entry_price) if long else (self.entry_price - best)
+        if not self.trail_active:
+            if gain < trail.activate_at_r * risk:
+                return False
+            self.trail_active = True
+            if trail.release_target:
+                # Nothing else closes the trade now, so the trail has to.
+                self.target_price = math.inf if long else -math.inf
+
+        # Distances are % of margin; dividing by leverage puts them in price.
+        trail_move = self.entry_price * trail.trail_pct_of_margin / self.leverage
+        step = self.entry_price * trail.step_pct_of_margin / self.leverage
+        candidate = best - trail_move if long else best + trail_move
+
+        if trail.lock_breakeven:
+            # Entry plus the round trip, so the floor is a scratch not a loss.
+            be = self.entry_price * (1 + fees.round_trip_pct()) if long else \
+                self.entry_price * (1 - fees.round_trip_pct())
+            candidate = max(candidate, be) if long else min(candidate, be)
+
+        moved = candidate > self.stop_price + step if long else \
+            candidate < self.stop_price - step
+        if moved:
+            self.stop_price = candidate
+        return moved
 
     @property
     def entry_slippage_pct(self) -> float:
@@ -487,6 +555,7 @@ def open_position(
         usdt_inr=usdt_inr,
         lot_step=lot_step,
         signal_price=signal_price,
+        initial_stop_price=stop,
     )
     # Charged on what actually filled, not on what we asked for. With a coarse
     # lot step those differ by enough to matter on a small wallet.
@@ -515,19 +584,26 @@ def resolve_candle(
 
     Returns None if the position survives the candle.
     """
+    # Stop versus liquidation is decided by which level price REACHES first,
+    # not by a fixed precedence. A long falling toward both passes the higher
+    # level first, so a stop above the liquidation price fires before it — and
+    # once the trail has ratcheted the stop up, that is the normal case.
+    # Booking a liquidation there would invent losses that cannot happen.
     hit: tuple[ExitReason, float] | None = None
     if pos.side is Side.LONG:
-        if low <= pos.liq_price:
-            hit = (ExitReason.LIQUIDATION, pos.liq_price)
-        elif low <= pos.stop_price:
-            hit = (ExitReason.STOP, pos.stop_price)
+        first, reason = ((pos.stop_price, ExitReason.STOP)
+                         if pos.stop_price > pos.liq_price
+                         else (pos.liq_price, ExitReason.LIQUIDATION))
+        if low <= first:
+            hit = (reason, first)
         elif high >= pos.target_price:
             hit = (ExitReason.TARGET, pos.target_price)
     else:
-        if high >= pos.liq_price:
-            hit = (ExitReason.LIQUIDATION, pos.liq_price)
-        elif high >= pos.stop_price:
-            hit = (ExitReason.STOP, pos.stop_price)
+        first, reason = ((pos.stop_price, ExitReason.STOP)
+                         if pos.stop_price < pos.liq_price
+                         else (pos.liq_price, ExitReason.LIQUIDATION))
+        if high >= first:
+            hit = (reason, first)
         elif low <= pos.target_price:
             hit = (ExitReason.TARGET, pos.target_price)
 
@@ -583,6 +659,51 @@ def close_position(
         net_pnl=net,
         wallet_after=wallet_before + pos.margin + net,
     )
+
+
+@dataclass(frozen=True)
+class TrailingStop:
+    """
+    Ratchet the stop forward while a trade is working.
+
+    The fixed 20% stop answers "how much am I willing to lose". It says nothing
+    about giving back a gain that already happened. A trade that runs +18% and
+    then reverses closes for a full -20% loss under a fixed stop, even though
+    it was never wrong.
+
+    Distances are expressed as a percentage OF MARGIN, matching how the stop is
+    set, and converted to a price move by dividing by leverage. At 10x, 20% of
+    margin is a 2.0% price move.
+
+    Two invariants the tests pin, because breaking either turns this from a
+    risk control into a way of losing money slowly:
+      * The stop only ever moves in our favour. Never widened, ever.
+      * The trail is updated from a bar only AFTER that bar has been checked
+        against the existing stop. Otherwise this bar's high could drag the
+        stop up past this bar's low, and a losing trade would quietly survive.
+    """
+
+    enabled: bool = False
+
+    # How far the trade must be in profit before trailing starts, in R — where
+    # 1R is the initial stop distance. Trailing from the first tick strangles
+    # trades in ordinary noise before they have room to work.
+    activate_at_r: float = 1.0
+
+    # How far behind the best price the stop rides, as a % of margin.
+    trail_pct_of_margin: float = 0.20
+
+    # Minimum move before the stop is rewritten. Stops the level twitching on
+    # every bar, which in a live account is a stream of order amendments.
+    step_pct_of_margin: float = 0.05
+
+    # On activation, jump the stop to entry plus the round-trip fee, so the
+    # worst case becomes a scratch rather than a small loss.
+    lock_breakeven: bool = True
+
+    # Let a winner run past the fixed target instead of taking it. Only sane
+    # WITH a trail, since otherwise nothing closes the trade.
+    release_target: bool = False
 
 
 @dataclass(frozen=True)
@@ -779,6 +900,10 @@ class CycleConfig:
     # old perfect-fill behaviour when you want to isolate its effect.
     slippage: SlippageModel = field(default_factory=SlippageModel)
 
+    # Off by default. Turning it on changes the exit distribution, so it should
+    # be a measured decision rather than an assumption.
+    trailing: TrailingStop = field(default_factory=TrailingStop)
+
     # How many closed bars of drift feed the trend term. Three bars is enough
     # to tell a run from a single spike without lagging into irrelevance.
     drift_lookback: int = 3
@@ -826,4 +951,23 @@ class CycleConfig:
             "target_clears_fees": tgt > be,
             "target_to_fee_ratio": round(tgt / be, 2) if be else None,
             "stop_inside_liquidation": self.stop_move_pct() < self.liquidation_move_pct(),
+            "trailing_can_activate": self.trailing_can_activate(),
         }
+
+    def trailing_can_activate(self) -> bool:
+        """
+        Can the trail ever fire under this configuration?
+
+        The target sits at reward_risk R. If the trail only wakes at or beyond
+        that, the position closes at the target first and the trail is dead
+        code — which is exactly what happens on a fixed 20/20 (reward_risk 1.0)
+        with the default activate_at_r of 1.0. Either activate earlier or let
+        the target go.
+        """
+        if not self.trailing.enabled:
+            return False
+        if self.trailing.release_target:
+            # release_target only takes effect ON activation, so it cannot
+            # rescue an activation threshold that is never reached.
+            pass
+        return self.trailing.activate_at_r < self.reward_risk

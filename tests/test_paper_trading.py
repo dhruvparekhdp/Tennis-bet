@@ -6,6 +6,7 @@ resolution of ambiguous candles, and conservation of money.
 """
 from __future__ import annotations
 
+import math
 import random
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -18,6 +19,7 @@ from analysis.paper_trading import (
     FeeModel,
     Side,
     SlippageModel,
+    TrailingStop,
     close_position,
     liquidation_price,
     open_position,
@@ -100,8 +102,23 @@ class TestFuturesMaths(unittest.TestCase):
         reason, _ = resolve_candle(p, high=105.0, low=97.0, close=101.0, ts=T0)
         self.assertIs(reason, ExitReason.STOP)
 
-    def test_liquidation_takes_priority_over_stop(self):
+    def test_stop_above_liquidation_fires_first(self):
+        """
+        Price reaches the higher level first on the way down, so a normal stop
+        (98.0) fires before liquidation (~90.5) even though the bar ran through
+        both. This assertion previously read the other way round, which invented
+        liquidations that cannot physically happen.
+        """
         p = open_position("X", Side.LONG, 100.0, 200.0, 10, self.f, 0.20, 2.0, T0)
+        self.assertGreater(p.stop_price, p.liq_price)
+        reason, price = resolve_candle(p, high=100.0, low=85.0, close=86.0, ts=T0)
+        self.assertIs(reason, ExitReason.STOP)
+        self.assertAlmostEqual(price, p.stop_price, places=9)
+
+    def test_liquidation_fires_first_when_the_stop_is_below_it(self):
+        """A stop wider than the account can survive never gets the chance."""
+        p = open_position("X", Side.LONG, 100.0, 200.0, 10, self.f, 2.0, 2.0, T0)
+        self.assertLess(p.stop_price, p.liq_price)
         reason, price = resolve_candle(p, high=100.0, low=85.0, close=86.0, ts=T0)
         self.assertIs(reason, ExitReason.LIQUIDATION)
         self.assertAlmostEqual(price, p.liq_price, places=9)
@@ -758,3 +775,172 @@ class TestSlippageOnPositions(unittest.TestCase):
         a = close_position(clean, clean_px, ExitReason.STOP, datetime(2026, 8, 18), f, 1000.0)
         b = close_position(slipped, slip_px, ExitReason.STOP, datetime(2026, 8, 18), f, 1000.0)
         self.assertLess(b.net_pnl, a.net_pnl)
+
+
+class TestTrailingStop(unittest.TestCase):
+    """
+    Fixed 20% risk and 20% target, with the stop ratcheting forward once the
+    trade is working — so a move that goes right and then reverses books a
+    profit instead of a full loss.
+    """
+
+    ENTRY = 2000.0
+    LEV = 10.0
+
+    def _pos(self, side=Side.LONG, **kw):
+        return open_position(
+            "ETHUSDT", side, self.ENTRY, 1000.0, self.LEV, FeeModel(),
+            0.20, 1.0, datetime(2026, 8, 18), slippage=NO_SLIPPAGE, **kw
+        )
+
+    def _trail(self, **kw):
+        base = dict(enabled=True, activate_at_r=1.0, trail_pct_of_margin=0.20,
+                    step_pct_of_margin=0.05, lock_breakeven=True)
+        base.update(kw)
+        return TrailingStop(**base)
+
+    # ---- the 20/20 baseline -------------------------------------------
+    def test_twenty_twenty_is_symmetric_around_entry(self):
+        p = self._pos()
+        self.assertAlmostEqual(self.ENTRY - p.stop_price, p.target_price - self.ENTRY, places=9)
+        # 20% of margin at 10x is a 2% price move
+        self.assertAlmostEqual((self.ENTRY - p.stop_price) / self.ENTRY, 0.02, places=9)
+
+    def test_r_multiple_measures_from_the_original_risk(self):
+        p = self._pos()
+        self.assertAlmostEqual(p.r_multiple(self.ENTRY * 1.02), 1.0, places=6)
+        self.assertAlmostEqual(p.r_multiple(self.ENTRY * 0.98), -1.0, places=6)
+
+    # ---- activation ----------------------------------------------------
+    def test_does_nothing_until_the_trade_is_up_one_r(self):
+        p = self._pos()
+        stop = p.stop_price
+        self.assertFalse(p.update_trail(self.ENTRY * 1.015, self.ENTRY, self._trail(), FeeModel()))
+        self.assertFalse(p.trail_active)
+        self.assertEqual(p.stop_price, stop)
+
+    def test_activates_at_one_r_and_locks_break_even(self):
+        f = FeeModel()
+        p = self._pos()
+        self.assertTrue(p.update_trail(self.ENTRY * 1.02, self.ENTRY, self._trail(), f))
+        self.assertTrue(p.trail_active)
+        self.assertGreater(p.stop_price, self.ENTRY)   # a loss is no longer possible
+        self.assertAlmostEqual(p.stop_price, self.ENTRY * (1 + f.round_trip_pct()), places=6)
+
+    def test_disabled_trail_never_touches_the_stop(self):
+        p = self._pos()
+        stop = p.stop_price
+        self.assertFalse(p.update_trail(self.ENTRY * 1.5, self.ENTRY, TrailingStop(), FeeModel()))
+        self.assertEqual(p.stop_price, stop)
+
+    # ---- the invariants ------------------------------------------------
+    def test_the_stop_never_moves_backwards(self):
+        """The invariant. A widening stop is not a risk control."""
+        f, t, p = FeeModel(), self._trail(), self._pos()
+        seen = [p.stop_price]
+        for mult in (1.02, 1.06, 1.04, 1.09, 1.01, 1.12, 1.00, 1.05):
+            p.update_trail(self.ENTRY * mult, self.ENTRY * (mult - 0.01), t, f)
+            seen.append(p.stop_price)
+        for a, b in zip(seen, seen[1:]):
+            self.assertGreaterEqual(b, a)
+
+    def test_short_stop_never_moves_backwards(self):
+        f, t, p = FeeModel(), self._trail(), self._pos(Side.SHORT)
+        seen = [p.stop_price]
+        for mult in (0.98, 0.94, 0.96, 0.91, 0.99, 0.88, 1.00):
+            p.update_trail(self.ENTRY * (mult + 0.01), self.ENTRY * mult, t, f)
+            seen.append(p.stop_price)
+        for a, b in zip(seen, seen[1:]):
+            self.assertLessEqual(b, a)
+
+    def test_stop_rides_the_configured_distance_behind_the_peak(self):
+        f, p = FeeModel(), self._pos()
+        p.update_trail(self.ENTRY * 1.10, self.ENTRY, self._trail(), f)
+        # 20% of margin at 10x is a fixed 2%-of-ENTRY giveback, not 2% of the
+        # peak. Quantity is fixed at entry, so a constant price distance is a
+        # constant number of rupees — which is what "20% of margin" means.
+        self.assertAlmostEqual(p.stop_price, self.ENTRY * 1.10 - self.ENTRY * 0.02, delta=0.5)
+
+    def test_small_wiggles_do_not_rewrite_the_stop(self):
+        f, t, p = FeeModel(), self._trail(), self._pos()
+        p.update_trail(self.ENTRY * 1.10, self.ENTRY, t, f)
+        stop = p.stop_price
+        # a peak 0.1% higher is inside the 0.5% step, so nothing should move
+        self.assertFalse(p.update_trail(self.ENTRY * 1.101, self.ENTRY, t, f))
+        self.assertEqual(p.stop_price, stop)
+
+    # ---- the point of the whole feature --------------------------------
+    def test_a_runner_that_reverses_books_a_profit_instead_of_a_loss(self):
+        f = FeeModel()
+        t = self._trail()
+        fixed, trailed = self._pos(), self._pos()
+
+        # Runs to +6%, then collapses well through the original stop.
+        for high in (self.ENTRY * 1.03, self.ENTRY * 1.06):
+            trailed.update_trail(high, self.ENTRY, t, f)
+
+        crash_low = self.ENTRY * 0.90
+        a = resolve_candle(fixed, self.ENTRY * 1.06, crash_low, crash_low,
+                           datetime(2026, 8, 18), slippage=NO_SLIPPAGE)
+        b = resolve_candle(trailed, self.ENTRY * 1.06, crash_low, crash_low,
+                           datetime(2026, 8, 18), slippage=NO_SLIPPAGE)
+        self.assertIs(a[0], ExitReason.STOP)
+        self.assertIs(b[0], ExitReason.STOP)
+
+        fixed_t = close_position(fixed, a[1], a[0], datetime(2026, 8, 18), f, 1000.0)
+        trail_t = close_position(trailed, b[1], b[0], datetime(2026, 8, 18), f, 1000.0)
+        self.assertLess(fixed_t.net_pnl, 0)       # full 20% loss
+        self.assertGreater(trail_t.net_pnl, 0)    # profit booked on the way down
+        self.assertGreater(trail_t.net_pnl, fixed_t.net_pnl)
+
+    def test_release_target_lets_a_winner_run(self):
+        f, p = FeeModel(), self._pos()
+        self.assertLess(p.target_price, math.inf)
+        p.update_trail(self.ENTRY * 1.02, self.ENTRY, self._trail(release_target=True), f)
+        self.assertEqual(p.target_price, math.inf)
+        # the fixed target can no longer close it; only the trail can
+        self.assertIsNone(resolve_candle(p, self.ENTRY * 1.50, self.ENTRY * 1.40,
+                                         self.ENTRY * 1.45, datetime(2026, 8, 18),
+                                         slippage=NO_SLIPPAGE))
+
+    def test_short_side_mirrors(self):
+        f, p = FeeModel(), self._pos(Side.SHORT)
+        p.update_trail(self.ENTRY, self.ENTRY * 0.90, self._trail(), f)
+        self.assertTrue(p.trail_active)
+        self.assertLess(p.stop_price, self.ENTRY)
+        self.assertAlmostEqual(p.stop_price, self.ENTRY * 0.90 + self.ENTRY * 0.02, delta=0.5)
+
+
+class TestTrailingActivationSanity(unittest.TestCase):
+    """
+    Measured on the 20/20 baseline: trailing produced ZERO stop moves. The
+    target sits at 1R and the trail woke at 1R, so every trade closed at the
+    target before the trail could do anything. Worth a config check rather
+    than a silent no-op.
+    """
+
+    def test_fixed_twenty_twenty_with_one_r_activation_is_dead_code(self):
+        cfg = CycleConfig(leverage=10, stop_pct_of_margin=0.20, reward_risk=1.0,
+                          trailing=TrailingStop(enabled=True, activate_at_r=1.0))
+        self.assertFalse(cfg.trailing_can_activate())
+        self.assertFalse(cfg.sanity_report()["trailing_can_activate"])
+
+    def test_activating_earlier_makes_it_reachable(self):
+        cfg = CycleConfig(leverage=10, stop_pct_of_margin=0.20, reward_risk=1.0,
+                          trailing=TrailingStop(enabled=True, activate_at_r=0.5))
+        self.assertTrue(cfg.trailing_can_activate())
+
+    def test_a_wider_target_also_makes_it_reachable(self):
+        cfg = CycleConfig(leverage=10, stop_pct_of_margin=0.20, reward_risk=2.0,
+                          trailing=TrailingStop(enabled=True, activate_at_r=1.0))
+        self.assertTrue(cfg.trailing_can_activate())
+
+    def test_release_target_does_not_rescue_it(self):
+        """release_target only applies once activated, so it cannot help."""
+        cfg = CycleConfig(leverage=10, stop_pct_of_margin=0.20, reward_risk=1.0,
+                          trailing=TrailingStop(enabled=True, activate_at_r=1.0,
+                                                release_target=True))
+        self.assertFalse(cfg.trailing_can_activate())
+
+    def test_disabled_trailing_reports_false(self):
+        self.assertFalse(CycleConfig().trailing_can_activate())
