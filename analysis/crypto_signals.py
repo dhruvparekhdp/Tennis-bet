@@ -6,7 +6,7 @@ import structlog
 
 from analysis.crypto_signal import CryptoSignal, compute_crypto_stake
 from analysis.crypto_state import CryptoState
-from analysis.scalping import NoTrade, ScalpConfig, scalp_levels
+from analysis.scalp_levels import NoTrade, ScalpConfig, scalp_levels
 
 log = structlog.get_logger()
 

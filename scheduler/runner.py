@@ -19,14 +19,27 @@ Data storage:
 import json
 import os
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.constants import ParseMode
 
+from dataclasses import replace
+
 from analysis.crypto_engine import CryptoEngine
+from analysis.paper_cycle import (
+    CycleState,
+    config_for_cycle,
+    cycle_outcome,
+    now_utc,
+    open_from_signal,
+    resolve_at_price,
+    should_open,
+    summarise,
+)
+from analysis.paper_trading import Position, Side
 from analysis.crypto_state_store import CommodityStateStore, CryptoStateStore
 from analysis.engine import AnalysisEngine
 from analysis.football_engine import FootballEngine
@@ -55,9 +68,14 @@ from collectors.sofascore import SofascoreCollector
 from collectors.sportradar import SportradarCollector
 from collectors.sportsdata import SportsDataCollector
 from collectors.thesportsdb import TheSportsDBCollector
+from collectors.sentiment_feeds import adjust_confidence, fetch_fear_greed
 from collectors.twelvedata_ws import TwelveDataWSCollector
 from config.settings import settings
-from notifications.crypto_formatter import format_crypto_signal
+from notifications.crypto_formatter import (
+    format_crypto_signal,
+    format_cycle_end,
+    format_paper_trade,
+)
 from notifications.football_formatter import format_football_signal
 from notifications.telegram_notifier import TelegramNotifier
 from storage.database import AsyncSessionFactory
@@ -129,6 +147,8 @@ class AppRunner:
         self.cryptopanic = CryptoPanicCollector()
         self.sentiment = SentimentAnalyzer()
         self.crypto_engine = CryptoEngine()
+        # Cached because it only updates daily; refreshed by its own job.
+        self.fear_greed = None
         self.multi_horizon = MultiHorizonPredictor()
         self._ws_tasks: list[asyncio.Task] = []
         # Collector enable/disable toggles (runtime, not persisted across restarts)
@@ -418,6 +438,179 @@ class AppRunner:
         except Exception:
             log.exception("coingecko_job_failed")
 
+
+    # ── Paper trading simulator ───────────────────────────────────────────
+
+    async def _refresh_sentiment_job(self) -> None:
+        """Fetch the Fear & Greed index. Cached, because it only moves daily."""
+        if not settings.sentiment_feeds_enabled:
+            return
+        try:
+            self.fear_greed = await fetch_fear_greed()
+            if self.fear_greed:
+                log.info("fear_greed", value=self.fear_greed.value,
+                         classification=self.fear_greed.classification)
+        except Exception:
+            log.exception("fear_greed_job_failed")
+
+    async def _ensure_cycle(self, repo) -> object | None:
+        """Return the running cycle, starting one if none exists."""
+        cycle = await repo.get_running_cycle()
+        if cycle is not None:
+            return cycle
+        cycle = await repo.start_cycle(
+            starting_wallet=settings.paper_starting_wallet,
+            target_wallet=settings.paper_target_wallet,
+            leverage=settings.paper_leverage,
+            stop_pct_of_margin=settings.paper_stop_pct_of_margin,
+            reward_risk=settings.paper_reward_risk,
+            min_confidence=settings.paper_min_confidence,
+            trailing_enabled=settings.paper_trailing_enabled,
+            scaled_sizing=settings.paper_scaled_sizing,
+        )
+        log.info("paper_cycle_started", cycle_id=cycle.id,
+                 wallet=cycle.starting_wallet, leverage=cycle.leverage)
+        return cycle
+
+    def _restore_position(self, row) -> Position:
+        """Rebuild an in-memory Position from its database row."""
+        pos = Position(
+            symbol=row.symbol,
+            side=Side.LONG if row.side == "long" else Side.SHORT,
+            entry_price=row.entry_price,
+            margin=row.margin,
+            leverage=row.leverage,
+            stop_price=row.stop_price,
+            target_price=row.target_price,
+            liq_price=row.liq_price,
+            opened_at=row.opened_at.replace(tzinfo=timezone.utc),
+            entry_fee=row.entry_fee,
+            signal_type=row.signal_type,
+            timeframe=row.timeframe,
+            confidence=row.confidence,
+            expires_at=(row.expires_at.replace(tzinfo=timezone.utc)
+                        if row.expires_at else None),
+            usdt_inr=row.usdt_inr,
+            signal_price=row.signal_price,
+            initial_stop_price=row.initial_stop_price,
+            peak_price=row.peak_price,
+            trail_active=row.trail_active,
+        )
+        # Size was fixed at fill time, so it is restored rather than re-derived:
+        # recomputing it from the current wallet would silently resize the
+        # position every time the process restarts.
+        pos._coin_qty = row.coin_qty
+        return pos
+
+    async def _paper_trading_job(self) -> None:
+        """
+        One tick of the live paper-trading cycle.
+
+        Resolves open positions against current prices first, then considers
+        new ones — so a position can never be opened and closed on the same
+        tick using the same information.
+        """
+        if not settings.paper_trading_enabled:
+            return
+        try:
+            async with AsyncSessionFactory() as session:
+                repo = Repository(session)
+                cycle = await self._ensure_cycle(repo)
+                if cycle is None:
+                    return
+
+                cfg = config_for_cycle(cycle)
+                cfg = replace(cfg, max_concurrent=settings.paper_max_concurrent,
+                              max_hold_minutes=settings.paper_max_hold_minutes)
+                wallet = cycle.wallet
+                now = now_utc()
+
+                rows = await repo.get_open_positions(cycle.id)
+                states = {st.symbol: st for st in await self.crypto_store.get_all()}
+
+                # 1. Resolve what is already open.
+                live: list[Position] = []
+                live_ids: dict[int, int] = {}
+                for row in rows:
+                    pos = self._restore_position(row)
+                    st = states.get(row.symbol)
+                    if st is None or st.current_price <= 0:
+                        live_ids[len(live)] = row.id
+                        live.append(pos)
+                        continue
+
+                    trade = resolve_at_price(pos, st.current_price, now, cfg, wallet)
+                    if trade is None:
+                        await repo.sync_position(row.id, pos)
+                        live_ids[len(live)] = row.id
+                        live.append(pos)
+                        continue
+
+                    wallet = trade.wallet_after
+                    await repo.record_trade(cycle.id, trade)
+                    await repo.delete_position(row.id)
+                    log.info("paper_trade_closed", symbol=pos.symbol,
+                             reason=trade.reason.value, net=round(trade.net_pnl, 2),
+                             wallet=round(wallet, 2))
+                    if settings.paper_alert_telegram:
+                        await self.notifier.send_text(
+                            format_paper_trade(trade, wallet), parse_mode=ParseMode.HTML)
+
+                cstate = CycleState(cycle_id=cycle.id, wallet=wallet,
+                                    peak_wallet=cycle.peak_wallet,
+                                    positions=live, position_ids=live_ids)
+
+                # 2. Consider new positions from this tick's signals.
+                for st in states.values():
+                    if st.current_price <= 0:
+                        continue
+                    for sig in self.crypto_engine.process(st):
+                        sig = self._apply_sentiment(sig)
+                        ok, _why = should_open(sig, cfg, cstate, now)
+                        if not ok:
+                            continue
+                        pos = open_from_signal(sig, cfg, cstate, now,
+                                               settings.paper_usdt_inr)
+                        if pos is None:
+                            continue
+                        cstate.wallet -= pos.margin
+                        wallet = cstate.wallet
+                        row = await repo.save_position(cycle.id, pos)
+                        cstate.position_ids[len(cstate.positions)] = row.id
+                        cstate.positions.append(pos)
+                        log.info("paper_trade_opened", symbol=pos.symbol,
+                                 side=pos.side.value, margin=round(pos.margin, 2),
+                                 confidence=pos.confidence)
+
+                await repo.update_cycle_wallet(cycle.id, wallet)
+
+                # 3. Has the cycle finished?
+                outcome = cycle_outcome(wallet + sum(p.margin for p in cstate.positions),
+                                        cfg, len(cstate.positions))
+                if outcome:
+                    await repo.end_cycle(cycle.id, outcome)
+                    trades = await repo.get_cycle_trades(cycle.id)
+                    log.info("paper_cycle_ended", cycle_id=cycle.id,
+                             outcome=outcome, trades=len(trades),
+                             wallet=round(wallet, 2))
+                    if settings.paper_alert_telegram:
+                        await self.notifier.send_text(
+                            format_cycle_end(cycle, outcome, summarise(trades, wallet, cfg)),
+                            parse_mode=ParseMode.HTML)
+        except Exception:
+            log.exception("paper_trading_job_failed")
+
+    def _apply_sentiment(self, sig):
+        """Let sentiment nudge confidence — it never creates or blocks a signal."""
+        if not settings.sentiment_feeds_enabled:
+            return sig
+        adjusted, reasons = adjust_confidence(
+            sig.confidence, sig.direction, self.fear_greed, None)
+        if adjusted == sig.confidence:
+            return sig
+        return replace(sig, confidence=adjusted,
+                       indicators_summary=" | ".join([sig.indicators_summary, *reasons]))
+
     async def _cleanup_job(self) -> None:
         async with AsyncSessionFactory() as session:
             repo = Repository(session)
@@ -617,6 +810,34 @@ class AppRunner:
             self._setup_sports_jobs()
         else:
             log.info("sports_jobs_disabled", hint="set SPORTS_ENABLED=true to re-enable")
+
+        # Paper trading simulator — off unless PAPER_TRADING_ENABLED is set.
+        if settings.paper_trading_enabled:
+            self.scheduler.add_job(
+                self._paper_trading_job,
+                "interval",
+                seconds=settings.paper_tick_interval_seconds,
+                id="paper_trading_tick",
+                max_instances=1,
+                next_run_time=datetime.now(timezone.utc) + timedelta(seconds=45),
+            )
+            log.info("paper_trading_enabled",
+                     wallet=settings.paper_starting_wallet,
+                     leverage=settings.paper_leverage,
+                     tick_seconds=settings.paper_tick_interval_seconds)
+        else:
+            log.info("paper_trading_disabled",
+                     hint="set PAPER_TRADING_ENABLED=true to run a cycle")
+
+        if settings.sentiment_feeds_enabled:
+            self.scheduler.add_job(
+                self._refresh_sentiment_job,
+                "interval",
+                minutes=settings.fear_greed_refresh_minutes,
+                id="sentiment_refresh",
+                max_instances=1,
+                next_run_time=datetime.now(timezone.utc),
+            )
 
         # Crypto & Commodities Interval Jobs
         self.scheduler.add_job(

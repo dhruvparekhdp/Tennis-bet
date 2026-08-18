@@ -35,3 +35,69 @@ def format_crypto_signal(sig: CryptoSignal) -> str:
         f"Confidence <b>{conf_pct}%</b> · Suggested stake <b>₹{stake_amt:,.0f}</b> "
         f"({stake_pct_display}% of bank)"
     )
+
+
+_REASON_TEXT = {
+    "target": "hit target",
+    "stop": "stopped out",
+    "liquidation": "LIQUIDATED",
+    "expiry": "time expired",
+    "cycle_end": "cycle closed",
+    "signal_flip": "setup reversed",
+    "conviction_lost": "conviction faded",
+    "market_shock": "market shock",
+}
+
+
+def format_paper_trade(trade, wallet: float) -> str:
+    """
+    One closed paper trade, with the costs shown rather than netted away.
+
+    Gross and fees are both printed because a run of small "wins" that are net
+    losses is the exact failure this system was built to catch, and a message
+    showing only the net number hides it.
+    """
+    pos = trade.position
+    won = trade.net_pnl > 0
+    icon = "\u2705" if won else "\u274c"
+    arrow = "LONG" if pos.side.value == "long" else "SHORT"
+    reason = _REASON_TEXT.get(trade.reason.value, trade.reason.value)
+    fees = trade.fees_paid - trade.funding_paid
+
+    lines = [
+        f"{icon} <b>{pos.symbol.upper()}</b> {arrow} — {reason}",
+        f"Entry <b>{pos.entry_price:,.4f}</b> \u2192 Exit <b>{trade.exit_price:,.4f}</b>",
+        f"Gross <b>\u20b9{trade.gross_pnl:,.2f}</b> "
+        f"\u2212 fees \u20b9{fees:,.2f}"
+        + (f" \u2212 funding \u20b9{trade.funding_paid:,.2f}" if trade.funding_paid else ""),
+        f"<b>Net \u20b9{trade.net_pnl:+,.2f}</b> "
+        f"({trade.return_on_margin * 100:+.1f}% on \u20b9{pos.margin:,.0f} margin)",
+        f"Wallet <b>\u20b9{wallet:,.2f}</b>",
+    ]
+    return "\n".join(lines)
+
+
+def format_cycle_end(cycle, outcome: str, summary: dict) -> str:
+    """The scorecard when a cycle finishes, so the next one can be judged against it."""
+    headline = {
+        "hit_target": "\U0001f3af Target reached",
+        "busted": "\U0001f480 Wallet exhausted",
+        "stopped": "\u23f9 Cycle stopped",
+    }.get(outcome, outcome)
+
+    rr = summary.get("realised_reward_risk")
+    costs = summary.get("costs_as_pct_of_gross")
+    lines = [
+        f"<b>{headline}</b> — cycle #{cycle.id}",
+        f"Wallet \u20b9{cycle.starting_wallet:,.0f} \u2192 <b>\u20b9{summary['wallet']:,.2f}</b>",
+        f"{summary['trades']} trades, {summary['win_rate_pct']}% won",
+        f"Gross \u20b9{summary['gross_pnl']:,.2f} \u2212 costs "
+        f"\u20b9{summary['trading_fees'] + summary['funding_paid']:,.2f} "
+        f"= <b>\u20b9{summary['net_pnl']:+,.2f}</b>",
+    ]
+    if costs is not None:
+        lines.append(f"Costs took {costs}% of gross profit")
+    if rr:
+        lines.append(f"Realised reward:risk {rr}")
+    lines.append(f"Longest losing streak {summary['longest_losing_streak']}")
+    return "\n".join(lines)

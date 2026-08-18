@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 from analysis.crypto_signals import _emit
 from analysis.crypto_state import CryptoState, OHLCVCandle
-from analysis.scalping import (
+from analysis.scalp_levels import (
     NoTrade,
     ScalpConfig,
     ScalpLevels,

@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 
 from aiohttp import web
 
-from analysis.scalping import ScalpConfig
+from analysis.scalp_levels import ScalpConfig
+from config.settings import settings as _SETTINGS
 
 _start_time = datetime.utcnow()
 
@@ -355,6 +356,117 @@ async def _api_crypto_signals(runner, request: web.Request) -> web.Response:
         for r in rows
     ]
     return web.Response(text=json.dumps(signals), content_type="application/json")
+
+
+async def _api_paper(runner, request: web.Request) -> web.Response:
+    """
+    Live state of the paper-trading cycle: wallet, open positions, trade log.
+
+    Unrealised P&L on open positions is marked against the current price and
+    reported net of the exit fee not yet paid — showing gross there would make
+    every position look better than closing it would actually be.
+    """
+    from analysis.paper_cycle import config_for_cycle, fees_for, summarise
+    from storage.database import AsyncSessionFactory
+    from storage.repository import Repository
+
+    async with AsyncSessionFactory() as session:
+        repo = Repository(session)
+        cycle = await repo.get_running_cycle()
+        if cycle is None:
+            recent = await repo.get_recent_cycles(limit=5)
+            return web.Response(
+                text=json.dumps({
+                    "running": False,
+                    "enabled": _SETTINGS.paper_trading_enabled,
+                    "past_cycles": [_cycle_row(c) for c in recent],
+                }),
+                content_type="application/json")
+
+        rows = await repo.get_open_positions(cycle.id)
+        trades = await repo.get_cycle_trades(cycle.id, limit=200)
+        cfg = config_for_cycle(cycle)
+
+    states = {st.symbol: st for st in await runner.crypto_store.get_all()}
+    positions = []
+    unrealised_total = 0.0
+    for r in rows:
+        st = states.get(r.symbol)
+        mark = st.current_price if st and st.current_price > 0 else r.entry_price
+        sign = 1.0 if r.side == "long" else -1.0
+        gross = sign * (mark - r.entry_price) * r.coin_qty * r.usdt_inr
+        exit_fee = mark * r.coin_qty * r.usdt_inr * fees_for(r.symbol).effective_taker_pct
+        net = gross - exit_fee
+        unrealised_total += net
+        positions.append({
+            "symbol": r.symbol.upper(),
+            "side": r.side,
+            "qty": r.coin_qty,
+            "entry": r.entry_price,
+            "mark": mark,
+            "margin": round(r.margin, 2),
+            "stop": r.stop_price,
+            "target": r.target_price,
+            "liq": r.liq_price,
+            "trailing": r.trail_active,
+            "confidence": round(r.confidence * 100),
+            "signal_type": r.signal_type,
+            "unrealised": round(net, 2),
+            "roe_pct": round(net / r.margin * 100, 2) if r.margin else 0.0,
+            "opened_at": r.opened_at.isoformat(),
+        })
+
+    return web.Response(text=json.dumps({
+        "running": True,
+        "enabled": _SETTINGS.paper_trading_enabled,
+        "cycle": _cycle_row(cycle),
+        "equity": round(cycle.wallet + sum(p["margin"] for p in positions)
+                        + unrealised_total, 2),
+        "unrealised": round(unrealised_total, 2),
+        "positions": positions,
+        "summary": summarise(trades, cycle.wallet, cfg),
+        "trades": [_trade_row(t) for t in trades[:60]],
+    }), content_type="application/json")
+
+
+def _cycle_row(c) -> dict:
+    return {
+        "id": c.id,
+        "status": c.status,
+        "wallet": round(c.wallet, 2),
+        "starting_wallet": round(c.starting_wallet, 2),
+        "target_wallet": round(c.target_wallet, 2),
+        "peak_wallet": round(c.peak_wallet, 2),
+        "leverage": c.leverage,
+        "stop_pct_of_margin": c.stop_pct_of_margin,
+        "reward_risk": c.reward_risk,
+        "min_confidence": c.min_confidence,
+        "trailing_enabled": c.trailing_enabled,
+        "scaled_sizing": c.scaled_sizing,
+        "started_at": c.started_at.isoformat(),
+        "ended_at": c.ended_at.isoformat() if c.ended_at else None,
+    }
+
+
+def _trade_row(t) -> dict:
+    return {
+        "symbol": t.symbol.upper(),
+        "side": t.side,
+        "entry": t.entry_price,
+        "exit": t.exit_price,
+        "margin": round(t.margin, 2),
+        "reason": t.exit_reason,
+        "gross": round(t.gross_pnl, 2),
+        "fees": round(t.trading_fees, 2),
+        "funding": round(t.funding_paid, 2),
+        "net": round(t.net_pnl, 2),
+        "roe_pct": round(t.return_on_margin * 100, 2),
+        "wallet_after": round(t.wallet_after, 2),
+        "confidence": round(t.confidence * 100),
+        "signal_type": t.signal_type,
+        "hours_held": round(t.hours_held, 2),
+        "closed_at": t.closed_at.isoformat(),
+    }
 
 
 async def _api_crypto_forecasts(runner, request: web.Request) -> web.Response:
@@ -2081,13 +2193,12 @@ async def _api_collectors_debug(runner, request: web.Request) -> web.Response:
     GET /api/debug/collectors
     """
     import traceback
-    from datetime import timezone
 
     from config.settings import settings
 
     out: dict = {
         "generated_at_ist": (
-            datetime.utcnow().replace(tzinfo=timezone.utc)
+            datetime.utcnow().replace(tzinfo=UTC)
             .astimezone(__import__("zoneinfo").ZoneInfo("Asia/Kolkata"))
             .strftime("%Y-%m-%d %H:%M:%S IST")
         ),
@@ -2109,8 +2220,8 @@ async def _api_collectors_debug(runner, request: web.Request) -> web.Response:
                                  if "tennis" in s.get("key","") and s.get("active")]
 
                 # Fetch odds for active keys + Grand Slam fallbacks
-                from datetime import timedelta, timezone as _tz
-                _now = datetime.now(_tz.utc)
+                from datetime import timedelta
+                _now = datetime.now(UTC)
                 _from = (_now - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 _to = (_now + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 sample_events: list[dict] = []
@@ -2881,6 +2992,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/crypto/coins", lambda req: _api_crypto_coins(runner, req))
     app.router.add_get("/api/crypto/signals", lambda req: _api_crypto_signals(runner, req))
     app.router.add_get("/api/crypto/forecasts", lambda req: _api_crypto_forecasts(runner, req))
+    app.router.add_get("/api/paper", lambda req: _api_paper(runner, req))
     app.router.add_post("/api/crypto/watchlist/add", lambda req: _api_crypto_watchlist_add(runner, req))
     app.router.add_post("/api/crypto/watchlist/remove", lambda req: _api_crypto_watchlist_remove(runner, req))
     app.router.add_get("/api/commodities", lambda req: _api_commodities(runner, req))
