@@ -37,7 +37,9 @@ from analysis.paper_trading import (
     ExitReason,
     Position,
     Side,
+    adverse_fraction_of_stop,
     close_position,
+    is_market_shock,
     open_position,
     resolve_candle,
 )
@@ -60,6 +62,8 @@ class BacktestResult:
     signals_taken: int = 0
     signals_rejected_confidence: int = 0
     signals_rejected_capital: int = 0
+    early_exits: int = 0
+    shocks_detected: int = 0
     ended_reason: str = "data_exhausted"
     first_ts: str | None = None
     last_ts: str | None = None
@@ -195,6 +199,8 @@ class BacktestResult:
                 "rejected_low_confidence": self.signals_rejected_confidence,
                 "rejected_no_capital": self.signals_rejected_capital,
                 "median_target_distance_pct": round(self.median_target_distance_pct, 4),
+                "early_exits": self.early_exits,
+                "market_shocks": self.shocks_detected,
                 "break_even_move_pct": round(self.config.break_even_move_pct(), 4),
             },
             "by_signal_type": self.by_signal_type(),
@@ -215,6 +221,8 @@ class BacktestEngine:
         # unless a sentiment series is supplied alongside the candles.
         if use_sentiment:
             self.analyzers.append(SentimentShiftAnalyzer())
+        self._last_review: dict[int, object] = {}
+        self._fast_mode_until = None
 
     def _recompute(self, state: CryptoState) -> None:
         """Same indicator maths as the live store, over real OHLC this time."""
@@ -233,6 +241,61 @@ class BacktestEngine:
         state.bollinger_lower, state.bollinger_bandwidth = low, bw
         state.atr_14 = _compute_atr(state.candles_1m, 14)
 
+    def _review_position(self, pos: Position, state: CryptoState, candle,
+                         shock: bool, cfg: CycleConfig) -> ExitReason | None:
+        """
+        Decide whether an open position should be closed early.
+
+        Returns the exit reason, or None to keep holding. Three ways out:
+
+        1. A shock bar that is already driving price most of the way to the
+           stop — take the exit now rather than at a worse fill.
+        2. The analyzers now point the other way.
+        3. Conviction has decayed below the floor.
+
+        Reviews are rate-limited, and run far more often once the market is
+        judged to be moving. Every early exit costs a round trip, so the bar
+        for acting is deliberately high.
+        """
+        rc = cfg.review
+        held_min = (candle.ts - pos.opened_at).total_seconds() / 60.0
+        if held_min < rc.min_hold_minutes_before_review:
+            return None
+
+        # A violent bar moving hard against us — act immediately, no rate limit.
+        if shock:
+            if adverse_fraction_of_stop(pos, candle.close) >= rc.shock_adverse_stop_fraction:
+                return ExitReason.MARKET_SHOCK
+
+        # Rate-limit the ordinary re-check; tighten the cadence in fast mode.
+        in_fast = self._fast_mode_until is not None and candle.ts <= self._fast_mode_until
+        interval = rc.fast_interval_minutes if in_fast else rc.normal_interval_minutes
+        last = self._last_review.get(id(pos))
+        if last is not None and (candle.ts - last).total_seconds() / 60.0 < interval:
+            return None
+        self._last_review[id(pos)] = candle.ts
+
+        # Re-run the analyzers and see what they say now.
+        best = None
+        for az in self.analyzers:
+            try:
+                sig = az.analyze(state)
+            except Exception:
+                continue
+            if sig is not None and (best is None or sig.confidence > best.confidence):
+                best = sig
+        if best is None:
+            return None   # no fresh read is not evidence against the position
+
+        now_side = Side.LONG if best.direction == "long" else Side.SHORT
+        if rc.exit_on_direction_flip and now_side is not pos.side:
+            return ExitReason.SIGNAL_FLIP
+        if (rc.exit_confidence_floor is not None
+                and now_side is pos.side
+                and best.confidence < rc.exit_confidence_floor):
+            return ExitReason.CONVICTION_LOST
+        return None
+
     def run(self, symbol: str, candles: list[Candle]) -> BacktestResult:
         cfg = self.config
         res = BacktestResult(symbol=symbol, config=cfg,
@@ -242,6 +305,8 @@ class BacktestEngine:
             res.ended_reason = "no_data"
             return res
 
+        self._last_review = {}
+        self._fast_mode_until = None
         res.first_ts = candles[0].ts.isoformat()
         res.last_ts = candles[-1].ts.isoformat()
 
@@ -294,8 +359,34 @@ class BacktestEngine:
             state.volume_24h = sum(x.volume for x in recent)
             state.price_24h_ago = state.candles_1m[0].close
 
-            # 3. Generate signals — one position per symbol at a time
-            if open_positions or len(open_positions) >= cfg.max_concurrent:
+            # 2b. Re-check open positions against the *current* signal state.
+            #     A stop answers "did price move against me"; this answers
+            #     "is the reason I opened this still true".
+            if open_positions and cfg.review.enabled:
+                avg_vol = sum(x.volume for x in recent) / len(recent) if recent else 0.0
+                shock = is_market_shock(c.high - c.low, state.atr_14,
+                                        c.volume, avg_vol, cfg.review)
+                if shock:
+                    res.shocks_detected += 1
+                    self._fast_mode_until = c.ts + timedelta(
+                        minutes=cfg.review.fast_mode_duration_minutes)
+
+                survivors: list[Position] = []
+                for pos in open_positions:
+                    verdict = self._review_position(pos, state, c, shock, cfg)
+                    if verdict is None:
+                        survivors.append(pos)
+                        continue
+                    trade = close_position(pos, c.close, verdict, c.ts, cfg.fees, wallet)
+                    wallet = trade.wallet_after
+                    res.trades.append(trade)
+                    res.early_exits += 1
+                open_positions = survivors
+
+            # 3. Open new positions — at most one per symbol, capped overall
+            if len(open_positions) >= cfg.max_concurrent:
+                continue
+            if any(p.symbol == symbol for p in open_positions):
                 continue
 
             for az in self.analyzers:
