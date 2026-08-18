@@ -255,11 +255,30 @@ class CryptoStateStore:
             )
             state.timestamp = timestamp
 
-            candle = OHLCVCandle(
-                open=price, high=price, low=price, close=price,
-                volume=volume_24h, timestamp=timestamp, is_closed=True,
-            )
-            append_candle(state, candle)
+            # Aggregate polls into a real minute bar instead of writing one
+            # flat candle per poll. A candle with high == low has zero true
+            # range, so ATR decayed toward zero and every ATR-derived level
+            # came out microscopic — the 0.05% targets seen on the dashboard.
+            #
+            # Two 30-second polls per minute still understate the true high and
+            # low, so this ATR is a floor on real volatility, never an
+            # overstatement. That is the safe direction to be wrong in: it
+            # refuses marginal trades rather than inventing them.
+            bucket = timestamp.replace(second=0, microsecond=0)
+            last = state.candles_1m[-1] if state.candles_1m else None
+
+            if last is not None and last.timestamp == bucket:
+                last.high = max(last.high, price)
+                last.low = min(last.low, price)
+                last.close = price
+                last.volume = volume_24h
+            else:
+                if last is not None:
+                    last.is_closed = True
+                append_candle(state, OHLCVCandle(
+                    open=price, high=price, low=price, close=price,
+                    volume=volume_24h, timestamp=bucket, is_closed=False,
+                ))
             recalculate_indicators(state)
 
     def _recalculate_indicators(self, state: CryptoState) -> None:

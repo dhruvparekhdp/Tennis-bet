@@ -6,7 +6,14 @@ from datetime import datetime
 
 from aiohttp import web
 
+from analysis.scalping import ScalpConfig
+
 _start_time = datetime.utcnow()
+
+# One cost model for the page and the engine. The dashboard used to carry its
+# own copy of the fee arithmetic in JavaScript, which drifted the moment the
+# fees were recalibrated against the real ledger.
+_SCALP = ScalpConfig()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1777,9 +1784,11 @@ function fmtPrice(p){
   if(p>=1) return p.toFixed(4);
   return p.toFixed(6);
 }
-// Round-trip cost on CoinDCX INR futures: 0.05% each way + 18% GST.
-// A target closer than this cannot pay for the trade even when it is reached.
-const BREAK_EVEN_PCT = 2*0.0005*1.18*100;
+// Injected from the Python cost model at render time — see _COST_SNIPPET.
+// Hardcoding these here is how the page and the engine drifted apart: the
+// dashboard called a signal viable that the engine would have refused.
+const BREAK_EVEN_PCT = __BREAK_EVEN_PCT__;
+const MIN_TARGET_PCT = __MIN_TARGET_PCT__;
 function renderCryptoCoins(coins){
   const el=document.getElementById('cr-coins');
   if(!coins.length){el.innerHTML='<div class="empty">Watchlist is empty — add a symbol above</div>';return;}
@@ -1861,10 +1870,13 @@ function renderCryptoSignalCard(s){
   // Distance to target, and whether it can survive the round-trip cost.
   const move = (s.target_price && s.current_price)
     ? Math.abs(s.target_price - s.current_price) / s.current_price * 100 : 0;
-  const viable = move >= BREAK_EVEN_PCT;
+  // Break-even is not the bar. A target merely equal to cost is a coin flip
+  // you pay to enter; MIN_TARGET_PCT is what the engine will actually take.
+  const viable = move >= MIN_TARGET_PCT;
   const warn = viable ? '' :
-    `<div class="cr-sig-warn">Target is only ${move.toFixed(3)}% away — below the
-     ${BREAK_EVEN_PCT.toFixed(3)}% round-trip cost, so this trade loses money even if it wins.</div>`;
+    `<div class="cr-sig-warn">Target is only ${move.toFixed(3)}% away. It costs
+     ${BREAK_EVEN_PCT.toFixed(3)}% to open and close, and the bot needs
+     ${MIN_TARGET_PCT.toFixed(3)}% before a trade is worth taking.</div>`;
   return `<div class="cr-sig-card${viable?'':' unviable'}">
     <div class="cr-sig-top"><span class="cr-sig-dir ${s.direction}">${s.direction.toUpperCase()}</span>
       <span class="cr-sig-sym">${esc(s.symbol)}</span>
@@ -2831,6 +2843,14 @@ function setSiteTheme(t){
 </script>
 """
 
+# The browser must never re-derive the cost model. These come straight from
+# the same ScalpConfig the analyzers use, so recalibrating fees updates the
+# page and the engine together.
+_HTML = (
+    _HTML
+    .replace("__BREAK_EVEN_PCT__", f"{_SCALP.round_trip_fee_pct * 100:.4f}")
+    .replace("__MIN_TARGET_PCT__", f"{_SCALP.min_target_pct * 100:.4f}")
+)
 _HTML = _HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _DATA_HTML = _DATA_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _SETTINGS_HTML = _SETTINGS_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
