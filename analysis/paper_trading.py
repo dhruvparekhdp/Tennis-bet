@@ -61,7 +61,6 @@ class FeeModel:
     """
 
     taker_pct: float = 0.0005         # 0.05% base brokerage
-    maker_pct: float = 0.0005         # INR futures charges the same both ways
     gst_pct: float = 0.18             # 18% GST on the brokerage, unavoidable
     maintenance_margin_pct: float = 0.0053   # measured, not the quoted 1.5%
 
@@ -173,8 +172,17 @@ class SlippageModel:
                   drift_pct: float = 0.0) -> float:
         """Closing a LONG means selling; closing a SHORT means buying."""
         if reason is ExitReason.TARGET:
-            return ref_price          # limit order, fills at the limit or not at all
+            # The only limit order in the set. Everything else is a market
+            # order and pays the spread; a stop or a shock pays more.
+            return ref_price
         buying = side is Side.SHORT
+        if reason is ExitReason.MARKET_SHOCK:
+            # Fired during a violent bar, so it fills like a stop, not like a
+            # calm market order. Anything less understates the cost of panic.
+            extra = self.stop_extra_pct
+            drift_pct = abs(drift_pct) * (1.0 if buying else -1.0)
+            return self.fill(ref_price, buying=buying, drift_pct=drift_pct,
+                             extra_adverse_pct=extra)
         if reason in (ExitReason.STOP, ExitReason.LIQUIDATION):
             extra = (self.stop_extra_pct if reason is ExitReason.STOP
                      else self.liquidation_extra_pct)
@@ -193,6 +201,16 @@ class SlippageModel:
 
 NO_SLIPPAGE = SlippageModel(spread_pct=0.0, trend_impact=0.0,
                             stop_extra_pct=0.0, liquidation_extra_pct=0.0)
+
+
+def sign_of(side: Side) -> float:
+    """+1 for a long, -1 for a short.
+
+    Every price relation in this module is the same formula with one sign
+    flipped. Writing it once with a multiplier keeps the two halves from
+    drifting apart, which is the usual way a short-side bug survives review.
+    """
+    return 1.0 if side is Side.LONG else -1.0
 
 
 def round_to_lot(qty: float, lot_step: float) -> float:
@@ -226,9 +244,8 @@ def liquidation_price(entry: float, side: Side, leverage: float, mm_pct: float) 
     if leverage <= 0:
         raise ValueError("leverage must be positive")
     inv = 1.0 / leverage
-    if side is Side.LONG:
-        return entry * (1.0 - inv) / (1.0 - mm_pct)
-    return entry * (1.0 + inv) / (1.0 + mm_pct)
+    s = sign_of(side)
+    return entry * (1.0 - s * inv) / (1.0 - s * mm_pct)
 
 
 def stop_and_target(
@@ -248,9 +265,8 @@ def stop_and_target(
     """
     stop_move = stop_pct_of_margin / leverage
     target_move = stop_move * reward_risk
-    if side is Side.LONG:
-        return entry * (1.0 - stop_move), entry * (1.0 + target_move)
-    return entry * (1.0 + stop_move), entry * (1.0 - target_move)
+    s = sign_of(side)
+    return entry * (1.0 - s * stop_move), entry * (1.0 + s * target_move)
 
 
 @dataclass
@@ -324,10 +340,16 @@ class Position:
         """
         return self.coin_qty * self.usdt_inr
 
+    @property
+    def sign(self) -> float:
+        return sign_of(self.side)
+
+    def favourable_move(self, price: float) -> float:
+        """Price distance in our favour. Negative when the trade is offside."""
+        return self.sign * (price - self.entry_price)
+
     def gross_pnl(self, exit_price: float) -> float:
-        if self.side is Side.LONG:
-            return (exit_price - self.entry_price) * self.quantity
-        return (self.entry_price - exit_price) * self.quantity
+        return self.favourable_move(exit_price) * self.quantity
 
     def mark_notional(self, mark: float) -> float:
         """
@@ -346,10 +368,7 @@ class Position:
     def r_multiple(self, price: float) -> float:
         """How many R the trade is up at `price`. Negative means offside."""
         risk = self.risk_per_unit
-        if risk <= 0:
-            return 0.0
-        move = (price - self.entry_price) if self.side is Side.LONG else (self.entry_price - price)
-        return move / risk
+        return self.favourable_move(price) / risk if risk > 0 else 0.0
 
     def update_trail(self, high: float, low: float, trail: TrailingStop,
                      fees: FeeModel) -> bool:
@@ -364,37 +383,34 @@ class Position:
         if not trail.enabled or self.leverage <= 0:
             return False
 
-        long = self.side is Side.LONG
-        extreme = high if long else low
-        best = max(self.peak_price or extreme, extreme) if long else \
-            min(self.peak_price or extreme, extreme)
+        s = self.sign
+        extreme = high if self.side is Side.LONG else low
+        # s * best is always the maximum, whichever side we are on.
+        best = s * max(s * (self.peak_price or extreme), s * extreme)
         self.peak_price = best
 
         risk = self.risk_per_unit
         if risk <= 0:
             return False
-        gain = (best - self.entry_price) if long else (self.entry_price - best)
         if not self.trail_active:
-            if gain < trail.activate_at_r * risk:
+            if self.favourable_move(best) < trail.activate_at_r * risk:
                 return False
             self.trail_active = True
             if trail.release_target:
                 # Nothing else closes the trade now, so the trail has to.
-                self.target_price = math.inf if long else -math.inf
+                self.target_price = s * math.inf
 
         # Distances are % of margin; dividing by leverage puts them in price.
         trail_move = self.entry_price * trail.trail_pct_of_margin / self.leverage
         step = self.entry_price * trail.step_pct_of_margin / self.leverage
-        candidate = best - trail_move if long else best + trail_move
+        candidate = best - s * trail_move
 
         if trail.lock_breakeven:
             # Entry plus the round trip, so the floor is a scratch not a loss.
-            be = self.entry_price * (1 + fees.round_trip_pct()) if long else \
-                self.entry_price * (1 - fees.round_trip_pct())
-            candidate = max(candidate, be) if long else min(candidate, be)
+            be = self.entry_price * (1 + s * fees.round_trip_pct())
+            candidate = s * max(s * candidate, s * be)
 
-        moved = candidate > self.stop_price + step if long else \
-            candidate < self.stop_price - step
+        moved = s * (candidate - self.stop_price) > step
         if moved:
             self.stop_price = candidate
         return moved
@@ -467,8 +483,7 @@ class Position:
         if close_qty <= 0:
             return 0.0, 0.0, 0.0
 
-        move = (price - self.entry_price) if self.side is Side.LONG else (self.entry_price - price)
-        gross = move * close_qty * self.usdt_inr
+        gross = self.favourable_move(price) * close_qty * self.usdt_inr
         fee = fees.exit_fee(close_qty * price * self.usdt_inr) if fee_model_exit else 0.0
 
         share = close_qty / held
@@ -526,15 +541,14 @@ def open_position(
     expires_at: datetime | None = None,
     usdt_inr: float = 1.0,
     lot_step: float = 0.0,
-    slippage: SlippageModel | None = None,
+    slippage: SlippageModel = NO_SLIPPAGE,
     drift_pct: float = 0.0,
 ) -> Position:
     # The signal quotes a price; we fill somewhere near it. Everything after
     # this point — stop, target, liquidation, size — is measured from where we
     # actually got in, because that is the position we are actually holding.
     signal_price = entry_price
-    if slippage is not None:
-        entry_price = slippage.entry_fill(entry_price, side, drift_pct)
+    entry_price = slippage.entry_fill(entry_price, side, drift_pct)
 
     stop, target = stop_and_target(entry_price, side, leverage, stop_pct_of_margin, reward_risk)
     pos = Position(
@@ -569,7 +583,7 @@ def resolve_candle(
     low: float,
     close: float,
     ts: datetime,
-    slippage: SlippageModel | None = None,
+    slippage: SlippageModel = NO_SLIPPAGE,
     drift_pct: float = 0.0,
 ) -> tuple[ExitReason, float] | None:
     """
@@ -589,23 +603,25 @@ def resolve_candle(
     # level first, so a stop above the liquidation price fires before it — and
     # once the trail has ratcheted the stop up, that is the normal case.
     # Booking a liquidation there would invent losses that cannot happen.
+    # Stop versus liquidation is decided by which level price REACHES first,
+    # not by a fixed precedence. A long falling toward both passes the higher
+    # level first, so a stop above the liquidation price fires before it — and
+    # once the trail has ratcheted the stop up, that is the normal case.
+    # Booking a liquidation there would invent losses that cannot happen.
+    s = pos.sign
+    adverse = low if pos.side is Side.LONG else high    # the way a loss lies
+    favour = high if pos.side is Side.LONG else low     # the way a win lies
+
     hit: tuple[ExitReason, float] | None = None
-    if pos.side is Side.LONG:
-        first, reason = ((pos.stop_price, ExitReason.STOP)
-                         if pos.stop_price > pos.liq_price
-                         else (pos.liq_price, ExitReason.LIQUIDATION))
-        if low <= first:
-            hit = (reason, first)
-        elif high >= pos.target_price:
-            hit = (ExitReason.TARGET, pos.target_price)
+    if s * pos.stop_price > s * pos.liq_price:
+        first, reason = pos.stop_price, ExitReason.STOP
     else:
-        first, reason = ((pos.stop_price, ExitReason.STOP)
-                         if pos.stop_price < pos.liq_price
-                         else (pos.liq_price, ExitReason.LIQUIDATION))
-        if high >= first:
-            hit = (reason, first)
-        elif low <= pos.target_price:
-            hit = (ExitReason.TARGET, pos.target_price)
+        first, reason = pos.liq_price, ExitReason.LIQUIDATION
+
+    if s * adverse <= s * first:
+        hit = (reason, first)
+    elif s * favour >= s * pos.target_price:
+        hit = (ExitReason.TARGET, pos.target_price)
 
     if hit is None and pos.expires_at is not None and ts >= pos.expires_at:
         hit = (ExitReason.EXPIRY, close)
@@ -613,9 +629,7 @@ def resolve_candle(
         return None
 
     reason, level = hit
-    if slippage is not None:
-        level = slippage.exit_fill(level, pos.side, reason, drift_pct)
-    return reason, level
+    return reason, slippage.exit_fill(level, pos.side, reason, drift_pct)
 
 
 def close_position(
@@ -923,9 +937,6 @@ class CycleConfig:
         flat = max(self.min_margin, wallet * self.margin_per_trade_pct)
         return flat if flat <= wallet and flat >= self.min_margin else 0.0
 
-    def margin_for(self, wallet: float) -> float:
-        return max(self.min_margin, wallet * self.margin_per_trade_pct)
-
     def break_even_move_pct(self) -> float:
         return self.fees.round_trip_pct() * 100.0
 
@@ -966,8 +977,6 @@ class CycleConfig:
         """
         if not self.trailing.enabled:
             return False
-        if self.trailing.release_target:
-            # release_target only takes effect ON activation, so it cannot
-            # rescue an activation threshold that is never reached.
-            pass
+        # release_target cannot rescue this: it only takes effect ON
+        # activation, so a threshold that is never reached stays never reached.
         return self.trailing.activate_at_r < self.reward_risk

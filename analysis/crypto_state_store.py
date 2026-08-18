@@ -85,6 +85,57 @@ def _compute_atr(candles: list[OHLCVCandle], period: int = 14) -> float:
     return sum(tr_list[-period:]) / period
 
 
+CANDLE_WINDOW = 120
+"""Rolling 1-minute window kept per symbol. Shared so the backtest cannot
+silently diverge from the live store by holding a different amount of history."""
+
+# The longest indicator lookback is EMA-200, but RSI and ATR only ever consume
+# their last `period + 1` inputs, so handing them the whole window is wasted
+# work for a bit-identical answer.
+_RSI_PERIOD = 14
+_ATR_PERIOD = 14
+
+
+def append_candle(state: CryptoState, candle: OHLCVCandle) -> None:
+    """Append and trim to the rolling window."""
+    state.candles_1m.append(candle)
+    if len(state.candles_1m) > CANDLE_WINDOW:
+        del state.candles_1m[:-CANDLE_WINDOW]
+
+
+def recalculate_indicators(state: CryptoState) -> None:
+    """
+    Recompute every indicator the analyzers read.
+
+    Module-level and self-free on purpose: the backtest calls this exact
+    function, so "the backtest sees the same indicators as live" is structural
+    rather than a comment that can rot.
+    """
+    closes = [c.close for c in state.candles_1m]
+    if len(closes) < 14:
+        return
+
+    state.rsi_14_prev = state.rsi_14
+    state.rsi_14 = _compute_rsi(closes[-(_RSI_PERIOD + 1):], _RSI_PERIOD)
+
+    ema_12 = _compute_ema(closes, 12)
+    ema_26 = _compute_ema(closes, 26)
+    state.macd_line = ema_12 - ema_26
+
+    state.ema_9 = _compute_ema(closes, 9)
+    state.ema_20 = _compute_ema(closes, 20)
+    state.ema_50 = _compute_ema(closes, 50)
+    state.ema_200 = _compute_ema(closes, 200)
+
+    upper, mid, lower, bw = _compute_bollinger(closes, 20, 2.0)
+    state.bollinger_upper = upper
+    state.bollinger_mid = mid
+    state.bollinger_lower = lower
+    state.bollinger_bandwidth = bw
+
+    state.atr_14 = _compute_atr(state.candles_1m[-(_ATR_PERIOD + 1):], _ATR_PERIOD)
+
+
 class CryptoStateStore:
     """
     Thread-safe in-memory cache for live crypto states.
@@ -149,8 +200,8 @@ class CryptoStateStore:
             else:
                 state.candles_1m.append(candle)
 
-            if len(state.candles_1m) > 120:
-                state.candles_1m = state.candles_1m[-120:]
+            if len(state.candles_1m) > CANDLE_WINDOW:
+                del state.candles_1m[:-CANDLE_WINDOW]
 
             if is_closed:
                 self._recalculate_indicators(state)
@@ -208,36 +259,11 @@ class CryptoStateStore:
                 open=price, high=price, low=price, close=price,
                 volume=volume_24h, timestamp=timestamp, is_closed=True,
             )
-            state.candles_1m.append(candle)
-            if len(state.candles_1m) > 120:
-                state.candles_1m = state.candles_1m[-120:]
-
-            self._recalculate_indicators(state)
+            append_candle(state, candle)
+            recalculate_indicators(state)
 
     def _recalculate_indicators(self, state: CryptoState) -> None:
-        closes = [c.close for c in state.candles_1m]
-        if len(closes) < 14:
-            return
-
-        state.rsi_14_prev = state.rsi_14
-        state.rsi_14 = _compute_rsi(closes, 14)
-
-        ema_12 = _compute_ema(closes, 12)
-        ema_26 = _compute_ema(closes, 26)
-        state.macd_line = ema_12 - ema_26
-
-        state.ema_9 = _compute_ema(closes, 9)
-        state.ema_20 = _compute_ema(closes, 20)
-        state.ema_50 = _compute_ema(closes, 50)
-        state.ema_200 = _compute_ema(closes, 200)
-
-        upper, mid, lower, bw = _compute_bollinger(closes, 20, 2.0)
-        state.bollinger_upper = upper
-        state.bollinger_mid = mid
-        state.bollinger_lower = lower
-        state.bollinger_bandwidth = bw
-
-        state.atr_14 = _compute_atr(state.candles_1m, 14)
+        recalculate_indicators(state)
 
     async def update_sentiment(self, base_asset: str, score: float, news_count: int) -> None:
         base = base_asset.upper()

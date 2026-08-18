@@ -18,26 +18,41 @@ import argparse
 import asyncio
 import json
 import os
+import statistics
 from datetime import UTC, datetime
 
 from analysis.backtest import BacktestEngine
-from analysis.paper_trading import NO_SLIPPAGE, CycleConfig, FeeModel, SlippageModel
+from analysis.paper_trading import (
+    NO_SLIPPAGE,
+    CycleConfig,
+    FeeModel,
+    SizingConfig,
+    SlippageModel,
+    TrailingStop,
+)
 from collectors.historical_klines import HistoricalKlines
 
 OUT_DIR = "backtest_results"
+
+
+RULE_W, SUB_W = 74, 68
+
+
+def _banner(title: str) -> None:
+    print("\n" + "=" * RULE_W)
+    print(f"  {title}")
+    print("=" * RULE_W)
 
 
 def _fmt_money(v: float) -> str:
     return f"{'+' if v >= 0 else '-'}Rs{abs(v):,.2f}"
 
 
-def print_report(res, cfg: CycleConfig) -> None:
+def print_report(res) -> None:
     s = res.summary()
     w, t, c, sig = s["wallet"], s["trades"], s["costs"], s["signals"]
-    print("\n" + "=" * 74)
-    print(f"  {res.symbol}   {s['period']['from'][:10]} -> {s['period']['to'][:10]}"
-          f"   ({s['period']['candles']:,} candles)")
-    print("=" * 74)
+    _banner(f"{res.symbol}   {s['period']['from'][:10]} -> {s['period']['to'][:10]}"
+            f"   ({s['period']['candles']:,} candles)")
 
     print(f"  wallet        Rs{w['start']:,.2f} -> Rs{w['final']:,.2f}"
           f"   {_fmt_money(w['net_pnl'])}  ({w['return_pct']:+.1f}%)   [{w['ended_reason']}]")
@@ -87,8 +102,7 @@ async def load(symbol: str, days: int, interval: str):
             print(f"       {e}")
         return []
     ranges = [c.true_range_pct for c in candles]
-    ranges.sort()
-    med = ranges[len(ranges) // 2] if ranges else 0.0
+    med = statistics.median(ranges) if ranges else 0.0
     print(f"  got {len(candles):,} candles via {hk.source_used}"
           f"   median intrabar range {med:.3f}%")
     if med == 0.0:
@@ -126,11 +140,26 @@ async def main() -> None:
                     help="perfect fills at the quoted price")
     ap.add_argument("--compare-slippage", action="store_true",
                     help="run each symbol with and without slippage, side by side")
+    ap.add_argument("--trail", action="store_true",
+                    help="enable the trailing stop")
+    ap.add_argument("--trail-at-r", type=float, default=0.75,
+                    help="R multiple at which trailing starts; must be < --rr")
+    ap.add_argument("--trail-pct", type=float, default=0.20,
+                    help="trail distance as a fraction of margin")
+    ap.add_argument("--scaled-sizing", action="store_true",
+                    help="size each trade by confidence instead of a flat percentage")
     ap.add_argument("--sweep", action="store_true", help="grid-search leverage / R:R / confidence")
     args = ap.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     os.makedirs(OUT_DIR, exist_ok=True)
+
+    if args.compare_slippage and args.no_slippage:
+        ap.error("--compare-slippage and --no-slippage contradict each other; "
+                 "--compare-slippage already runs both ways")
+    if args.trail and args.trail_at_r >= args.rr:
+        ap.error(f"--trail-at-r {args.trail_at_r} is not below --rr {args.rr}, so the "
+                 "target is reached first and the trail can never activate")
 
     data = {}
     for sym in symbols:
@@ -157,20 +186,22 @@ async def main() -> None:
             min_confidence=conf, fees=FeeModel(taker_pct=args.taker),
             usdt_inr=args.usdt_inr, lot_step=args.lot_step,
             slippage=slip_model(slippage and not args.no_slippage),
+            sizing=SizingConfig() if args.scaled_sizing else None,
+            trailing=TrailingStop(enabled=args.trail,
+                                  activate_at_r=args.trail_at_r,
+                                  trail_pct_of_margin=args.trail_pct),
         )
 
     if args.compare_slippage:
-        print("\n" + "=" * 74)
-        print("  PERFECT FILLS vs REALISTIC FILLS")
-        print("=" * 74)
+        _banner("  PERFECT FILLS vs REALISTIC FILLS")
         print(f"  {'symbol':<10} {'fills':<10} {'net P&L':>12} {'trades':>7} "
               f"{'win%':>7} {'avg slip':>10}")
-        print("  " + "-" * 68)
+        print("  " + "-" * SUB_W)
         for sym, candles in data.items():
             for label, on in (("perfect", False), ("realistic", True)):
                 r = BacktestEngine(build(args.leverage, args.rr, args.confidence,
                                          slippage=on)).run(sym, candles)
-                wr = r.wins / len(r.trades) * 100 if r.trades else 0.0
+                wr = r.win_rate * 100
                 slips = [t.entry_slippage_pct for t in r.trades]
                 avg = f"{sum(slips) / len(slips) * 100:+.4f}%" if slips else "-"
                 print(f"  {sym:<10} {label:<10} {_fmt_money(r.net_pnl):>12} "
@@ -178,12 +209,10 @@ async def main() -> None:
         return
 
     if args.sweep:
-        print("\n" + "=" * 74)
-        print("  PARAMETER SWEEP — net P&L summed across all symbols")
-        print("=" * 74)
+        _banner("  PARAMETER SWEEP — net P&L summed across all symbols")
         print(f"  {'lev':>5} {'R:R':>5} {'conf':>6} | {'net P&L':>12} {'trades':>7} "
               f"{'win%':>7} {'fees':>10}")
-        print("  " + "-" * 68)
+        print("  " + "-" * SUB_W)
         rows = []
         for lev in (5, 10, 20):
             for rr in (1.5, 2.0, 3.0):
@@ -215,7 +244,7 @@ async def main() -> None:
     all_out = {}
     for sym, candles in data.items():
         res = BacktestEngine(cfg).run(sym, candles)
-        print_report(res, cfg)
+        print_report(res)
         all_out[sym] = res.summary()
 
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
