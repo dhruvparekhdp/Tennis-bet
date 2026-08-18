@@ -20,6 +20,7 @@ from analysis.paper_trading import (
     liquidation_price,
     open_position,
     resolve_candle,
+    round_to_lot,
     stop_and_target,
 )
 from collectors.historical_klines import Candle
@@ -442,3 +443,174 @@ class TestTargetViabilityFilter(unittest.TestCase):
         r = BacktestEngine(cfg).run("BTCUSDT", synthetic(2000, seed=4))
         self.assertGreater(r.signals_rejected_unviable, 0)
         self.assertEqual(len(r.trades), 0, "no unviable trade should ever open")
+
+
+class TestQuantityAgainstRealTrade(unittest.TestCase):
+    """
+    Reconciles the whole position against the ETH screenshot, not just the fee.
+
+    Account showed: Rs533 margin, 20x, entry 1906.50, LTP 1904.00, 0.055 ETH,
+    position size Rs10,681.44, open fee Rs6.31, liquidation 1820.97,
+    P&L -Rs14.03 (-2.63% ROE).
+    """
+
+    # The rate that reconciles quantity, fee and P&L simultaneously. It sits
+    # well above spot USD/INR because CoinDCX's INR futures carry a premium.
+    RATE = 102.005
+    LOT = 0.001
+
+    def setUp(self):
+        self.f = FeeModel()
+        self.pos = open_position(
+            "ETHUSDT", Side.LONG, 1906.50, 533.0, 20, self.f, 0.20, 2.0,
+            datetime(2026, 8, 18), usdt_inr=self.RATE, lot_step=self.LOT,
+        )
+
+    def test_coin_quantity_matches_account(self):
+        self.assertAlmostEqual(self.pos.coin_qty, 0.055, places=6)
+
+    def test_naive_notional_over_price_is_wrong(self):
+        """The bug this replaced: INR notional / USDT price is 100x too big."""
+        naive = self.pos.target_notional / self.pos.entry_price
+        self.assertGreater(naive / self.pos.coin_qty, 90)
+
+    def test_position_size_is_marked_to_ltp(self):
+        self.assertAlmostEqual(self.pos.mark_notional(1904.00), 10681.44, delta=1.0)
+
+    def test_open_fee_matches_account(self):
+        self.assertAlmostEqual(self.pos.entry_fee, 6.31, delta=0.02)
+
+    def test_pnl_and_roe_match_account(self):
+        pnl = self.pos.gross_pnl(1904.00)
+        self.assertAlmostEqual(pnl, -14.03, delta=0.02)
+        self.assertAlmostEqual(pnl / self.pos.margin * 100, -2.63, delta=0.02)
+
+    def test_lot_rounding_is_to_nearest_not_truncated(self):
+        """Raw size is 0.054797; truncation would have shown 0.054, not 0.055."""
+        raw = self.pos.target_notional / (self.RATE * self.pos.entry_price)
+        self.assertLess(raw, 0.055)
+        self.assertEqual(round_to_lot(raw, self.LOT), 0.055)
+
+
+class TestScaleInScaleOut(unittest.TestCase):
+    """Double-checks on increasing and decreasing an open position."""
+
+    RATE, LOT = 102.005, 0.001
+
+    def _pos(self, side=Side.LONG):
+        return open_position(
+            "ETHUSDT", side, 2000.00, 1000.0, 10, FeeModel(), 0.20, 2.0,
+            datetime(2026, 8, 18), usdt_inr=self.RATE, lot_step=self.LOT,
+        )
+
+    # ---- increment -----------------------------------------------------
+    def test_increase_averages_the_entry(self):
+        p = self._pos()
+        q0 = p.coin_qty
+        p.increase(1000.0, 1900.00, FeeModel(), 0.20, 2.0)
+        added = p.coin_qty - q0
+        expected = (q0 * 2000.00 + added * 1900.00) / p.coin_qty
+        self.assertAlmostEqual(p.entry_price, expected, places=6)
+        self.assertLess(p.entry_price, 2000.00)   # averaged down
+        self.assertGreater(p.entry_price, 1900.00)
+
+    def test_increase_adds_margin_and_quantity(self):
+        p = self._pos()
+        q0, m0 = p.coin_qty, p.margin
+        p.increase(500.0, 2000.00, FeeModel(), 0.20, 2.0)
+        self.assertAlmostEqual(p.margin, m0 + 500.0, places=6)
+        # Half the margin added, so about half the coins — but each fill is
+        # snapped to a lot independently, so allow one lot of slack.
+        self.assertAlmostEqual(p.coin_qty, q0 * 1.5, delta=self.LOT)
+
+    def test_increase_charges_fee_only_on_the_added_notional(self):
+        f = FeeModel()
+        p = self._pos()
+        before = p.entry_fee
+        added_fee = p.increase(500.0, 2000.00, f, 0.20, 2.0)
+        self.assertAlmostEqual(p.entry_fee, before + added_fee, places=9)
+        # Half the original size added -> about half the original fee, within
+        # the one-lot rounding on the added leg.
+        one_lot_fee = f.entry_fee(self.LOT * 2000.00 * self.RATE)
+        self.assertAlmostEqual(added_fee, before * 0.5, delta=one_lot_fee)
+
+    def test_increase_moves_stop_target_and_liquidation_to_new_entry(self):
+        f = FeeModel()
+        p = self._pos()
+        old_stop, old_liq = p.stop_price, p.liq_price
+        p.increase(1000.0, 1900.00, f, 0.20, 2.0)
+        self.assertLess(p.stop_price, old_stop)
+        self.assertLess(p.liq_price, old_liq)
+        self.assertAlmostEqual(
+            p.liq_price,
+            liquidation_price(p.entry_price, Side.LONG,
+                              p.effective_leverage, f.maintenance_margin_pct),
+            places=6,
+        )
+
+    def test_increase_below_one_lot_is_refused(self):
+        p = self._pos()
+        q0, m0 = p.coin_qty, p.margin
+        self.assertEqual(p.increase(0.05, 2000.00, FeeModel(), 0.20, 2.0), 0.0)
+        self.assertEqual(p.coin_qty, q0)
+        self.assertEqual(p.margin, m0)
+
+    # ---- decrement -----------------------------------------------------
+    def test_reduce_leaves_leverage_and_liquidation_untouched(self):
+        p = self._pos()
+        lev, liq, entry = p.effective_leverage, p.liq_price, p.entry_price
+        p.reduce(p.coin_qty / 2, 2100.00, FeeModel())
+        self.assertAlmostEqual(p.effective_leverage, lev, places=6)
+        self.assertAlmostEqual(p.liq_price, liq, places=6)
+        self.assertAlmostEqual(p.entry_price, entry, places=9)
+
+    def test_reduce_frees_margin_pro_rata(self):
+        p = self._pos()
+        m0, q0 = p.margin, p.coin_qty
+        _, _, freed = p.reduce(q0 * 0.4, 2100.00, FeeModel())
+        share = (q0 - p.coin_qty) / q0
+        self.assertAlmostEqual(freed, m0 * share, places=6)
+        self.assertAlmostEqual(p.margin, m0 - freed, places=6)
+
+    def test_two_half_exits_equal_one_full_exit(self):
+        """Scaling out in two steps must not create or destroy money."""
+        f = FeeModel()
+        whole = self._pos()
+        g_whole = whole.gross_pnl(2100.00)
+        f_whole = f.exit_fee(whole.mark_notional(2100.00))
+
+        p = self._pos()
+        half = round_to_lot(p.coin_qty / 2, self.LOT)
+        g1, f1, _ = p.reduce(half, 2100.00, f)
+        g2, f2, _ = p.reduce(p.coin_qty, 2100.00, f)
+        self.assertAlmostEqual(g1 + g2, g_whole, places=6)
+        self.assertAlmostEqual(f1 + f2, f_whole, places=6)
+        self.assertAlmostEqual(p.coin_qty, 0.0, places=9)
+
+    def test_reduce_short_realises_the_opposite_sign(self):
+        f = FeeModel()
+        long_, short = self._pos(Side.LONG), self._pos(Side.SHORT)
+        g_long, _, _ = long_.reduce(long_.coin_qty, 2100.00, f)
+        g_short, _, _ = short.reduce(short.coin_qty, 2100.00, f)
+        self.assertGreater(g_long, 0)
+        self.assertAlmostEqual(g_short, -g_long, places=6)
+
+    def test_reduce_more_than_held_closes_the_position_only(self):
+        p = self._pos()
+        g, _, freed = p.reduce(p.coin_qty * 10, 2100.00, FeeModel())
+        self.assertAlmostEqual(p.coin_qty, 0.0, places=9)
+        self.assertAlmostEqual(p.margin, 0.0, places=6)
+        self.assertAlmostEqual(freed, 1000.0, places=6)
+
+    def test_round_trip_scale_in_then_full_out_conserves_money(self):
+        f = FeeModel()
+        p = self._pos()
+        spent = p.entry_fee
+        spent += p.increase(1000.0, 2000.00, f, 0.20, 2.0)
+        g, fee, freed = p.reduce(p.coin_qty, 2000.00, f)
+        self.assertAlmostEqual(g, 0.0, places=6)          # no price move
+        self.assertAlmostEqual(freed, 2000.0, places=6)   # both margins back
+        # Two opens on Rs10,000 of notional each, then one close on the
+        # combined Rs20,000 — four units of the same fee, and nothing else.
+        one_open = f.entry_fee(1000.0 * 10)
+        self.assertAlmostEqual(spent + fee, 4 * one_open, delta=0.5)

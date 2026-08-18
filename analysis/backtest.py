@@ -437,7 +437,13 @@ class BacktestEngine:
                 signal_type=sig.signal_type, timeframe=sig.timeframe,
                 confidence=sig.confidence,
                 expires_at=c.ts + timedelta(minutes=cfg.max_hold_minutes),
+                usdt_inr=cfg.usdt_inr, lot_step=cfg.lot_step,
             )
+
+            # Lot rounding can refuse a size outright on a small wallet.
+            if pos.coin_qty <= 0:
+                res.signals_rejected_unviable += 1
+                continue
 
             # Refuse targets that cannot pay for the round trip. This is the
             # filter that would have rejected every signal in the live dashboard.

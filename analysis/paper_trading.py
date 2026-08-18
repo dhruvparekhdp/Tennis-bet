@@ -21,6 +21,7 @@ Conventions
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -102,6 +103,23 @@ class FeeModel:
         return 2 * self.effective_taker_pct
 
 
+def round_to_lot(qty: float, lot_step: float) -> float:
+    """
+    Snap a raw quantity to the instrument's lot step, rounding to nearest.
+
+    CoinDCX rounds to nearest rather than truncating: a Rs533 ETH position at
+    20x with entry 1906.50 works out to 0.054888 raw, and the account shows
+    0.055, which only happens if you round up at the halfway point. A lot_step
+    of 0 means "no rounding" and returns the raw quantity untouched.
+    """
+    if lot_step <= 0:
+        return qty
+    steps = qty / lot_step
+    # round-half-up, because Python's round() is banker's rounding and would
+    # send an exact .5 lot to the even neighbour instead of always upward.
+    return math.floor(steps + 0.5) * lot_step
+
+
 def liquidation_price(entry: float, side: Side, leverage: float, mm_pct: float) -> float:
     """
     Exact liquidation price — where equity falls to the maintenance requirement.
@@ -160,18 +178,134 @@ class Position:
     confidence: float = 0.0
     expires_at: datetime | None = None
 
+    # Quote conversion. Defaults keep prices and margin in the same currency
+    # with no lot rounding, which is what the backtest harness assumes.
+    usdt_inr: float = 1.0
+    lot_step: float = 0.0
+
+    # Set once the position has been scaled in or out, because after that the
+    # size no longer follows from margin x leverage / entry.
+    _coin_qty: float | None = None
+
     @property
-    def notional(self) -> float:
+    def target_notional(self) -> float:
+        """What we asked for, before the exchange rounded the quantity to a lot."""
         return self.margin * self.leverage
 
     @property
+    def coin_qty(self) -> float:
+        """
+        Position size in coins, as the exchange actually fills it.
+
+        This is the number the account screen shows (0.055 ETH), and it is not
+        target_notional / entry_price: the price is quoted in USDT while the
+        margin is in INR, so the rate has to divide out first. Then the result
+        is snapped to the instrument's lot step, which is why the filled
+        notional rarely equals margin x leverage exactly.
+        """
+        if self._coin_qty is not None:
+            return self._coin_qty
+        raw = self.target_notional / (self.usdt_inr * self.entry_price)
+        return round_to_lot(raw, self.lot_step)
+
+    @property
+    def notional(self) -> float:
+        """Filled notional in INR — coins x price x rate, after lot rounding."""
+        return self.coin_qty * self.entry_price * self.usdt_inr
+
+    @property
     def quantity(self) -> float:
-        return self.notional / self.entry_price
+        """
+        P&L multiplier: INR earned per 1 USDT of price move.
+
+        Kept as a separate property from coin_qty so that gross_pnl and the
+        fee helpers can stay in INR while prices stay in USDT.
+        """
+        return self.coin_qty * self.usdt_inr
 
     def gross_pnl(self, exit_price: float) -> float:
         if self.side is Side.LONG:
             return (exit_price - self.entry_price) * self.quantity
         return (self.entry_price - exit_price) * self.quantity
+
+    def mark_notional(self, mark: float) -> float:
+        """
+        Notional at the current mark, which is the "position size" the CoinDCX
+        screen shows — not the entry notional. On the reconciled ETH trade the
+        two differ by Rs18, which is exactly the open-to-LTP drift.
+        """
+        return self.coin_qty * mark * self.usdt_inr
+
+    @property
+    def effective_leverage(self) -> float:
+        """Filled notional over margin. Drifts from the nominal leverage once
+        lot rounding or a scale-in has moved the size."""
+        return self.notional / self.margin if self.margin > 0 else 0.0
+
+    def _reprice_levels(self, stop_pct_of_margin: float, reward_risk: float,
+                        fees: FeeModel) -> None:
+        lev = self.effective_leverage
+        self.stop_price, self.target_price = stop_and_target(
+            self.entry_price, self.side, lev, stop_pct_of_margin, reward_risk
+        )
+        self.liq_price = liquidation_price(
+            self.entry_price, self.side, lev, fees.maintenance_margin_pct
+        )
+
+    def increase(self, add_margin: float, price: float, fees: FeeModel,
+                 stop_pct_of_margin: float, reward_risk: float) -> float:
+        """
+        Add margin to an open position (scale in). Returns the fee charged.
+
+        The average entry moves toward the new fill, so the stop, target and
+        liquidation all have to be recomputed off it — leaving them anchored to
+        the original entry is the classic way a scaled-in position ends up with
+        a stop that is already behind price.
+        """
+        if add_margin <= 0:
+            return 0.0
+        add_qty = round_to_lot(add_margin * self.leverage / (self.usdt_inr * price),
+                               self.lot_step)
+        if add_qty <= 0:
+            return 0.0  # too small to buy even one lot
+
+        old_qty = self.coin_qty
+        new_qty = old_qty + add_qty
+        self.entry_price = (old_qty * self.entry_price + add_qty * price) / new_qty
+        self._coin_qty = new_qty
+        self.margin += add_margin
+
+        fee = fees.entry_fee(add_qty * price * self.usdt_inr)
+        self.entry_fee += fee
+        self._reprice_levels(stop_pct_of_margin, reward_risk, fees)
+        return fee
+
+    def reduce(self, close_qty: float, price: float, fees: FeeModel,
+               fee_model_exit: bool = True) -> tuple[float, float, float]:
+        """
+        Close part of a position (scale out).
+
+        Returns (gross P&L realised, exit fee paid, margin freed). The entry
+        price is deliberately left alone: taking profit off the table does not
+        change what the remaining coins cost. Margin is released pro rata, so
+        the effective leverage — and therefore the liquidation price — is
+        unchanged, which is the property the tests below pin.
+        """
+        held = self.coin_qty
+        close_qty = round_to_lot(min(max(close_qty, 0.0), held), self.lot_step)
+        if close_qty <= 0:
+            return 0.0, 0.0, 0.0
+
+        move = (price - self.entry_price) if self.side is Side.LONG else (self.entry_price - price)
+        gross = move * close_qty * self.usdt_inr
+        fee = fees.exit_fee(close_qty * price * self.usdt_inr) if fee_model_exit else 0.0
+
+        share = close_qty / held
+        freed = self.margin * share
+        self.margin -= freed
+        self.entry_fee -= self.entry_fee * share  # the closed part's open fee is now spent
+        self._coin_qty = held - close_qty
+        return gross, fee, freed
 
     def unrealised(self, mark: float, fees: FeeModel) -> float:
         """Net P&L if closed right now, including the exit fee not yet paid."""
@@ -214,10 +348,11 @@ def open_position(
     timeframe: str = "",
     confidence: float = 0.0,
     expires_at: datetime | None = None,
+    usdt_inr: float = 1.0,
+    lot_step: float = 0.0,
 ) -> Position:
     stop, target = stop_and_target(entry_price, side, leverage, stop_pct_of_margin, reward_risk)
-    notional = margin * leverage
-    return Position(
+    pos = Position(
         symbol=symbol,
         side=side,
         entry_price=entry_price,
@@ -227,12 +362,18 @@ def open_position(
         target_price=target,
         liq_price=liquidation_price(entry_price, side, leverage, fees.maintenance_margin_pct),
         opened_at=opened_at,
-        entry_fee=fees.entry_fee(notional),
+        entry_fee=0.0,
         signal_type=signal_type,
         timeframe=timeframe,
         confidence=confidence,
         expires_at=expires_at,
+        usdt_inr=usdt_inr,
+        lot_step=lot_step,
     )
+    # Charged on what actually filled, not on what we asked for. With a coarse
+    # lot step those differ by enough to matter on a small wallet.
+    pos.entry_fee = fees.entry_fee(pos.notional)
+    return pos
 
 
 def resolve_candle(
@@ -498,6 +639,14 @@ class CycleConfig:
     # away when break-even alone needs 0.118% — those trades lose money even
     # when they "win", so the only correct action is not to take them.
     min_target_to_fee_ratio: float = 1.5
+
+    # Quote conversion for INR-margined futures on a USDT-priced pair.
+    # usdt_inr=1.0 with lot_step=0.0 keeps prices and margin in one currency
+    # with continuous sizing, which is what the historical backtest wants.
+    # For a live CoinDCX cycle set the rate and the instrument's lot step so
+    # the simulated fill size matches what the exchange would actually give.
+    usdt_inr: float = 1.0
+    lot_step: float = 0.0
 
     def is_target_viable(self, entry: float, target: float) -> bool:
         """Can this trade pay for itself if it works? If not, don't open it."""
