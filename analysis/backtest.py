@@ -63,6 +63,8 @@ class BacktestResult:
     signals_rejected_confidence: int = 0
     signals_rejected_capital: int = 0
     early_exits: int = 0
+    signals_rejected_unviable: int = 0
+    contradictions_seen: int = 0
     shocks_detected: int = 0
     ended_reason: str = "data_exhausted"
     first_ts: str | None = None
@@ -199,6 +201,8 @@ class BacktestResult:
                 "rejected_low_confidence": self.signals_rejected_confidence,
                 "rejected_no_capital": self.signals_rejected_capital,
                 "median_target_distance_pct": round(self.median_target_distance_pct, 4),
+                "rejected_target_too_small": self.signals_rejected_unviable,
+                "contradictory_readings": self.contradictions_seen,
                 "early_exits": self.early_exits,
                 "market_shocks": self.shocks_detected,
                 "break_even_move_pct": round(self.config.break_even_move_pct(), 4),
@@ -389,6 +393,11 @@ class BacktestEngine:
             if any(p.symbol == symbol for p in open_positions):
                 continue
 
+            # Collect every analyzer's view first, then act on the single most
+            # confident one. Taking them individually is how you end up holding
+            # a long and a short in the same coin at the same time — perfectly
+            # hedged, zero exposure, paying fees and funding on both.
+            candidates = []
             for az in self.analyzers:
                 try:
                     sig = az.analyze(state)
@@ -397,32 +406,50 @@ class BacktestEngine:
                 if sig is None:
                     continue
                 res.signals_generated += 1
+                candidates.append(sig)
 
-                if sig.confidence < cfg.min_confidence:
-                    res.signals_rejected_confidence += 1
-                    continue
+            if not candidates:
+                continue
 
-                margin = cfg.margin_for(wallet)
-                if margin > wallet or margin < cfg.min_margin:
-                    res.signals_rejected_capital += 1
-                    continue
+            contradictory = len({s.direction for s in candidates}) > 1
+            if contradictory:
+                res.contradictions_seen += 1
 
-                side = Side.LONG if sig.direction == "long" else Side.SHORT
-                pos = open_position(
-                    symbol=symbol, side=side, entry_price=c.close,
-                    margin=margin, leverage=cfg.leverage, fees=cfg.fees,
-                    stop_pct_of_margin=cfg.stop_pct_of_margin,
-                    reward_risk=cfg.reward_risk, opened_at=c.ts,
-                    signal_type=sig.signal_type, timeframe=sig.timeframe,
-                    confidence=sig.confidence,
-                    expires_at=c.ts + timedelta(minutes=cfg.max_hold_minutes),
-                )
-                wallet -= margin              # margin is locked while the position lives
-                open_positions.append(pos)
-                res.signals_taken += 1
-                res.target_distances_pct.append(
-                    abs(pos.target_price - pos.entry_price) / pos.entry_price * 100.0)
-                break                          # at most one new position per candle
+            sig = max(candidates, key=lambda s: s.confidence)
+
+            if sig.confidence < cfg.min_confidence:
+                res.signals_rejected_confidence += 1
+                continue
+
+            # Size by conviction, respecting what is already at risk.
+            committed = sum(p.margin for p in open_positions)
+            margin = cfg.margin_for_signal(wallet, sig.confidence, committed)
+            if margin <= 0 or margin > wallet:
+                res.signals_rejected_capital += 1
+                continue
+
+            side = Side.LONG if sig.direction == "long" else Side.SHORT
+            pos = open_position(
+                symbol=symbol, side=side, entry_price=c.close,
+                margin=margin, leverage=cfg.leverage, fees=cfg.fees,
+                stop_pct_of_margin=cfg.stop_pct_of_margin,
+                reward_risk=cfg.reward_risk, opened_at=c.ts,
+                signal_type=sig.signal_type, timeframe=sig.timeframe,
+                confidence=sig.confidence,
+                expires_at=c.ts + timedelta(minutes=cfg.max_hold_minutes),
+            )
+
+            # Refuse targets that cannot pay for the round trip. This is the
+            # filter that would have rejected every signal in the live dashboard.
+            if not cfg.is_target_viable(pos.entry_price, pos.target_price):
+                res.signals_rejected_unviable += 1
+                continue
+
+            wallet -= margin              # margin is locked while the position lives
+            open_positions.append(pos)
+            res.signals_taken += 1
+            res.target_distances_pct.append(
+                abs(pos.target_price - pos.entry_price) / pos.entry_price * 100.0)
 
         # 4. Close anything still open at the final price
         if open_positions:

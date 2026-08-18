@@ -329,3 +329,88 @@ class TestConcurrency(unittest.TestCase):
         ordered = sorted(r.trades, key=lambda t: t.position.opened_at)
         for a, b in zip(ordered, ordered[1:]):
             self.assertLessEqual(a.closed_at, b.position.opened_at)
+
+
+class TestConfidenceScaledSizing(unittest.TestCase):
+    """Bigger positions for stronger signals, with a cap on total exposure."""
+
+    def setUp(self):
+        from analysis.paper_trading import SizingConfig
+        self.sc = SizingConfig()
+
+    def test_produces_the_requested_tiers(self):
+        """On a Rs3,000 wallet: ~500 weak, ~1000 decent, ~1500 strong."""
+        self.assertAlmostEqual(self.sc.margin_for(3000, 0.65), 500, delta=15)
+        self.assertAlmostEqual(self.sc.margin_for(3000, 0.75), 1000, delta=15)
+        self.assertAlmostEqual(self.sc.margin_for(3000, 0.85), 1500, delta=15)
+
+    def test_size_increases_monotonically_with_confidence(self):
+        prev = 0.0
+        for c in (0.65, 0.70, 0.75, 0.80, 0.85):
+            m = self.sc.margin_for(3000, c)
+            self.assertGreaterEqual(m, prev)
+            prev = m
+
+    def test_clamps_outside_the_confidence_band(self):
+        self.assertAlmostEqual(self.sc.margin_for(3000, 0.30),
+                               self.sc.margin_for(3000, 0.65), delta=1)
+        self.assertAlmostEqual(self.sc.margin_for(3000, 0.99),
+                               self.sc.margin_for(3000, 0.85), delta=1)
+
+    def test_scales_with_wallet(self):
+        """Sizing is proportional, so the same rules work at 1k and at 20k."""
+        small = self.sc.margin_for(1000, 0.85)
+        big = self.sc.margin_for(10000, 0.85)
+        self.assertAlmostEqual(big / small, 10.0, delta=0.1)
+
+    def test_total_exposure_cap_refuses_over_commitment(self):
+        from analysis.paper_trading import SizingConfig
+        capped = SizingConfig(max_total_exposure_pct=0.60)
+        committed = 0.0
+        opened = 0
+        for _ in range(5):
+            m = capped.margin_for(3000, 0.85, committed)
+            if m <= 0:
+                break
+            committed += m
+            opened += 1
+        self.assertGreater(opened, 0)
+        self.assertLessEqual(committed, 3000 * 0.60 + 1)
+
+    def test_refuses_a_position_too_small_to_be_worth_the_fee(self):
+        self.assertEqual(self.sc.margin_for(100, 0.85, already_committed=99.0), 0.0)
+
+
+class TestTargetViabilityFilter(unittest.TestCase):
+    """Signals whose target cannot pay for the round trip must be refused."""
+
+    def setUp(self):
+        self.cfg = CycleConfig(leverage=10)
+
+    def test_rejects_the_live_dashboard_signals(self):
+        """Every signal observed on the live dashboard was unviable."""
+        for entry, target in [(1902, 1903), (1905, 1905.19),
+                              (1905, 1905.19), (1904, 1902)]:
+            self.assertFalse(self.cfg.is_target_viable(entry, target),
+                             f"{entry}->{target} should be refused")
+
+    def test_accepts_a_target_that_clears_the_hurdle(self):
+        # 1.0% away, comfortably past the ~0.18% requirement
+        self.assertTrue(self.cfg.is_target_viable(1900.0, 1919.0))
+
+    def test_rejects_degenerate_prices(self):
+        self.assertFalse(self.cfg.is_target_viable(1905.0, 1905.0))
+        self.assertFalse(self.cfg.is_target_viable(0.0, 100.0))
+
+    def test_threshold_follows_the_fee_model(self):
+        """Raise fees and more targets become unviable."""
+        pricey = CycleConfig(leverage=10, fees=FeeModel(taker_pct=0.005))
+        self.assertTrue(self.cfg.is_target_viable(1900.0, 1906.0))
+        self.assertFalse(pricey.is_target_viable(1900.0, 1906.0))
+
+    def test_engine_counts_what_it_refuses(self):
+        cfg = CycleConfig(starting_wallet=1000, leverage=10, min_confidence=0.60,
+                          reward_risk=0.02)   # absurdly tight targets
+        r = BacktestEngine(cfg).run("BTCUSDT", synthetic(2000, seed=4))
+        self.assertGreater(r.signals_rejected_unviable, 0)
+        self.assertEqual(len(r.trades), 0, "no unviable trade should ever open")
