@@ -21,7 +21,7 @@ import os
 from datetime import UTC, datetime
 
 from analysis.backtest import BacktestEngine
-from analysis.paper_trading import CycleConfig, FeeModel
+from analysis.paper_trading import NO_SLIPPAGE, CycleConfig, FeeModel, SlippageModel
 from collectors.historical_klines import HistoricalKlines
 
 OUT_DIR = "backtest_results"
@@ -109,7 +109,23 @@ async def main() -> None:
     ap.add_argument("--stop", type=float, default=0.20, help="stop as fraction of margin")
     ap.add_argument("--confidence", type=float, default=0.70)
     ap.add_argument("--margin-pct", type=float, default=0.20)
-    ap.add_argument("--taker", type=float, default=0.00075)
+    # Base brokerage only. FeeModel adds the 18% GST on top, so passing the
+    # GST-inclusive rate here would charge it twice.
+    ap.add_argument("--taker", type=float, default=0.0005)
+    ap.add_argument("--usdt-inr", type=float, default=1.0,
+                    help="INR per USDT; 1.0 keeps everything in one currency")
+    ap.add_argument("--lot-step", type=float, default=0.0,
+                    help="instrument lot step, e.g. 0.001 for ETH; 0 = continuous")
+    ap.add_argument("--spread", type=float, default=0.0001,
+                    help="half-spread crossed on a market order")
+    ap.add_argument("--trend-impact", type=float, default=0.30,
+                    help="fraction of recent drift carried into the fill price")
+    ap.add_argument("--stop-extra", type=float, default=0.0005,
+                    help="extra adverse move a triggered stop suffers")
+    ap.add_argument("--no-slippage", action="store_true",
+                    help="perfect fills at the quoted price")
+    ap.add_argument("--compare-slippage", action="store_true",
+                    help="run each symbol with and without slippage, side by side")
     ap.add_argument("--sweep", action="store_true", help="grid-search leverage / R:R / confidence")
     args = ap.parse_args()
 
@@ -126,13 +142,40 @@ async def main() -> None:
               "data.binance.vision / api.binance.com / public.coindcx.com")
         return
 
-    def build(lev, rr, conf):
+    def slip_model(enabled: bool) -> SlippageModel:
+        if not enabled:
+            return NO_SLIPPAGE
+        return SlippageModel(spread_pct=args.spread,
+                             trend_impact=args.trend_impact,
+                             stop_extra_pct=args.stop_extra)
+
+    def build(lev, rr, conf, slippage=True):
         return CycleConfig(
             starting_wallet=args.wallet, target_wallet=args.target,
             leverage=lev, margin_per_trade_pct=args.margin_pct,
             stop_pct_of_margin=args.stop, reward_risk=rr,
             min_confidence=conf, fees=FeeModel(taker_pct=args.taker),
+            usdt_inr=args.usdt_inr, lot_step=args.lot_step,
+            slippage=slip_model(slippage and not args.no_slippage),
         )
+
+    if args.compare_slippage:
+        print("\n" + "=" * 74)
+        print("  PERFECT FILLS vs REALISTIC FILLS")
+        print("=" * 74)
+        print(f"  {'symbol':<10} {'fills':<10} {'net P&L':>12} {'trades':>7} "
+              f"{'win%':>7} {'avg slip':>10}")
+        print("  " + "-" * 68)
+        for sym, candles in data.items():
+            for label, on in (("perfect", False), ("realistic", True)):
+                r = BacktestEngine(build(args.leverage, args.rr, args.confidence,
+                                         slippage=on)).run(sym, candles)
+                wr = r.wins / len(r.trades) * 100 if r.trades else 0.0
+                slips = [t.entry_slippage_pct for t in r.trades]
+                avg = f"{sum(slips) / len(slips) * 100:+.4f}%" if slips else "-"
+                print(f"  {sym:<10} {label:<10} {_fmt_money(r.net_pnl):>12} "
+                      f"{len(r.trades):>7} {wr:>6.1f}% {avg:>10}")
+        return
 
     if args.sweep:
         print("\n" + "=" * 74)

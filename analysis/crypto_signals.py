@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from analysis.crypto_signal import CryptoSignal, compute_crypto_stake
 from analysis.crypto_state import CryptoState
@@ -51,7 +51,7 @@ class RSIDivergenceAnalyzer:
             timeframe="1h",
             sentiment_score=state.sentiment_score,
             indicators_summary=f"RSI: {state.rsi_14:.1f} | ATR: {atr:.2f} | 24h: {state.price_change_24h_pct:+.1f}%",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
 
@@ -106,7 +106,7 @@ class VolumeSpikeAnalyzer:
             timeframe="30m",
             sentiment_score=state.sentiment_score,
             indicators_summary=f"Vol: {state.volume_ratio:.1f}x avg | RSI: {state.rsi_14:.1f}",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
 
@@ -157,7 +157,7 @@ class BollingerSqueezeAnalyzer:
             timeframe="4h",
             sentiment_score=state.sentiment_score,
             indicators_summary=f"Bandwidth: {state.bollinger_bandwidth*100:.2f}% | Mid: {state.bollinger_mid:.2f}",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
 
@@ -209,5 +209,5 @@ class SentimentShiftAnalyzer:
             timeframe="1d",
             sentiment_score=state.sentiment_score,
             indicators_summary=f"Sentiment: {state.sentiment_score:+.2f} | News items: {state.sentiment_news_count}",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )

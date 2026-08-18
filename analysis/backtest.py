@@ -50,6 +50,25 @@ log = structlog.get_logger()
 CANDLE_WINDOW = 120   # matches the live store's rolling window
 
 
+
+def _drift_pct(candles: list, i: int, lookback: int) -> float:
+    """
+    Average per-bar price change over the `lookback` bars ending before `i`.
+
+    Bar `i` is excluded deliberately. Its own move is the thing we are trying
+    to trade; letting it set our fill price would be look-ahead of the most
+    flattering kind.
+    """
+    if lookback <= 0 or i <= 0:
+        return 0.0
+    start = max(0, i - lookback)
+    first, last = candles[start].close, candles[i - 1].close
+    bars = i - start
+    if first <= 0 or bars <= 0:
+        return 0.0
+    return ((last - first) / first) / bars
+
+
 @dataclass
 class BacktestResult:
     symbol: str
@@ -322,12 +341,18 @@ class BacktestEngine:
         for i, c in enumerate(candles):
             res.candles_processed += 1
 
+            # Recent per-bar drift, from CLOSED bars only. This drives the
+            # trend term in the fill price, so it must never peek at the bar
+            # we are about to trade on.
+            drift = _drift_pct(candles, i, cfg.drift_lookback)
+
             # 1. Resolve existing positions against THIS candle before anything new
             #    is opened, so a position can never be opened and closed on the
             #    same bar using the same information.
             still_open: list[Position] = []
             for pos in open_positions:
-                hit = resolve_candle(pos, c.high, c.low, c.close, c.ts)
+                hit = resolve_candle(pos, c.high, c.low, c.close, c.ts,
+                                     slippage=cfg.slippage, drift_pct=drift)
                 if hit is None:
                     still_open.append(pos)
                     continue
@@ -438,6 +463,7 @@ class BacktestEngine:
                 confidence=sig.confidence,
                 expires_at=c.ts + timedelta(minutes=cfg.max_hold_minutes),
                 usdt_inr=cfg.usdt_inr, lot_step=cfg.lot_step,
+                slippage=cfg.slippage, drift_pct=drift,
             )
 
             # Lot rounding can refuse a size outright on a small wallet.

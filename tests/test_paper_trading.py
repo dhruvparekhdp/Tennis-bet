@@ -12,10 +12,12 @@ from datetime import UTC, datetime, timedelta
 
 from analysis.backtest import BacktestEngine
 from analysis.paper_trading import (
+    NO_SLIPPAGE,
     CycleConfig,
     ExitReason,
     FeeModel,
     Side,
+    SlippageModel,
     close_position,
     liquidation_price,
     open_position,
@@ -614,3 +616,145 @@ class TestScaleInScaleOut(unittest.TestCase):
         # combined Rs20,000 — four units of the same fee, and nothing else.
         one_open = f.entry_fee(1000.0 * 10)
         self.assertAlmostEqual(spent + fee, 4 * one_open, delta=0.5)
+
+
+class TestSlippage(unittest.TestCase):
+    """
+    "if eth is 1899 but not all trade execute at 1899 some will trigger at
+    1898.2 also or 1901 also depending on trend"
+    """
+
+    REF = 1899.0
+
+    def setUp(self):
+        self.s = SlippageModel()
+
+    def test_rising_market_fills_a_buy_above_the_quote(self):
+        fill = self.s.entry_fill(self.REF, Side.LONG, drift_pct=0.0035)
+        self.assertGreater(fill, self.REF)
+
+    def test_falling_market_fills_a_buy_below_the_quote(self):
+        """The trend term is signed by the market, so it helps as often as it hurts."""
+        fill = self.s.entry_fill(self.REF, Side.LONG, drift_pct=-0.0035)
+        self.assertLess(fill, self.REF)
+
+    def test_flat_market_still_costs_the_spread(self):
+        long_fill = self.s.entry_fill(self.REF, Side.LONG, drift_pct=0.0)
+        short_fill = self.s.entry_fill(self.REF, Side.SHORT, drift_pct=0.0)
+        self.assertGreater(long_fill, self.REF)   # buy lifts the ask
+        self.assertLess(short_fill, self.REF)     # sell hits the bid
+        self.assertAlmostEqual(long_fill - self.REF, self.REF - short_fill, places=9)
+
+    def test_the_quoted_1899_lands_either_side(self):
+        """Reproduces the exact example: 1899 becomes ~1898.2 or ~1901."""
+        down = self.s.entry_fill(self.REF, Side.LONG, drift_pct=-0.0015)
+        up = self.s.entry_fill(self.REF, Side.LONG, drift_pct=0.0037)
+        self.assertAlmostEqual(down, 1898.2, delta=0.2)
+        self.assertAlmostEqual(up, 1901.0, delta=0.3)
+
+    def test_stop_always_fills_worse_than_the_level(self):
+        for drift in (-0.004, 0.0, 0.004):
+            long_stop = self.s.exit_fill(1860.0, Side.LONG, ExitReason.STOP, drift)
+            short_stop = self.s.exit_fill(1940.0, Side.SHORT, ExitReason.STOP, drift)
+            with self.subTest(drift=drift):
+                self.assertLess(long_stop, 1860.0)     # sold lower than the stop
+                self.assertGreater(short_stop, 1940.0)  # bought higher than the stop
+
+    def test_stop_is_worse_than_an_ordinary_exit(self):
+        stop = self.s.exit_fill(1860.0, Side.LONG, ExitReason.STOP, 0.0)
+        expiry = self.s.exit_fill(1860.0, Side.LONG, ExitReason.EXPIRY, 0.0)
+        self.assertLess(stop, expiry)
+
+    def test_liquidation_is_worse_than_a_stop(self):
+        liq = self.s.exit_fill(1800.0, Side.LONG, ExitReason.LIQUIDATION, 0.0)
+        stop = self.s.exit_fill(1800.0, Side.LONG, ExitReason.STOP, 0.0)
+        self.assertLess(liq, stop)
+
+    def test_target_fills_exactly_at_the_limit(self):
+        """A limit order fills at its price or not at all — never better."""
+        for side in (Side.LONG, Side.SHORT):
+            for drift in (-0.005, 0.0, 0.005):
+                self.assertEqual(
+                    self.s.exit_fill(1950.0, side, ExitReason.TARGET, drift), 1950.0
+                )
+
+    def test_slippage_is_capped(self):
+        wild = self.s.entry_fill(self.REF, Side.LONG, drift_pct=0.90)
+        self.assertAlmostEqual(wild, self.REF * (1 + self.s.max_slip_pct), places=6)
+
+    def test_no_slippage_model_reproduces_perfect_fills(self):
+        self.assertEqual(NO_SLIPPAGE.entry_fill(self.REF, Side.LONG, 0.02), self.REF)
+        self.assertEqual(
+            NO_SLIPPAGE.exit_fill(self.REF, Side.LONG, ExitReason.STOP, 0.02), self.REF
+        )
+
+    def test_it_is_deterministic(self):
+        """No RNG anywhere — the same inputs must give bit-identical fills."""
+        a = [self.s.entry_fill(self.REF, Side.LONG, d / 10000) for d in range(-50, 50)]
+        b = [self.s.entry_fill(self.REF, Side.LONG, d / 10000) for d in range(-50, 50)]
+        self.assertEqual(a, b)
+
+
+class TestSlippageOnPositions(unittest.TestCase):
+    """Slippage has to reach the position, not just sit in a helper."""
+
+    def _open(self, drift, slip=None):
+        return open_position(
+            "ETHUSDT", Side.LONG, 1899.0, 1000.0, 10, FeeModel(), 0.20, 2.0,
+            datetime(2026, 8, 18), slippage=slip if slip is not None else SlippageModel(),
+            drift_pct=drift,
+        )
+
+    def test_entry_price_is_the_fill_not_the_quote(self):
+        p = self._open(0.0035)
+        self.assertEqual(p.signal_price, 1899.0)
+        self.assertGreater(p.entry_price, 1899.0)
+
+    def test_stop_and_target_are_measured_from_the_fill(self):
+        """Anchoring risk to the quote would understate the loss we can take."""
+        p = self._open(0.0035)
+        stop_move = (p.entry_price - p.stop_price) / p.entry_price
+        self.assertAlmostEqual(stop_move, 0.20 / 10, places=9)
+
+    def test_entry_slippage_pct_is_signed_against_us(self):
+        chased = self._open(0.0035)      # bought into a rally: bad
+        favoured = self._open(-0.0035)   # bought into a slide: good
+        self.assertGreater(chased.entry_slippage_pct, 0)
+        self.assertLess(favoured.entry_slippage_pct, 0)
+
+    def test_short_entry_slippage_sign_mirrors_long(self):
+        p = open_position(
+            "ETHUSDT", Side.SHORT, 1899.0, 1000.0, 10, FeeModel(), 0.20, 2.0,
+            datetime(2026, 8, 18), slippage=SlippageModel(), drift_pct=-0.0035,
+        )
+        self.assertLess(p.entry_price, 1899.0)      # sold lower
+        self.assertGreater(p.entry_slippage_pct, 0)  # which is against us
+
+    def test_resolve_candle_slips_the_stop_but_not_the_target(self):
+        p = self._open(0.0, NO_SLIPPAGE)
+        s = SlippageModel()
+        reason, price = resolve_candle(p, p.entry_price, p.stop_price - 1, p.stop_price,
+                                       datetime(2026, 8, 18), slippage=s, drift_pct=0.0)
+        self.assertIs(reason, ExitReason.STOP)
+        self.assertLess(price, p.stop_price)
+
+        reason, price = resolve_candle(p, p.target_price + 1, p.entry_price, p.target_price,
+                                       datetime(2026, 8, 18), slippage=s, drift_pct=0.0)
+        self.assertIs(reason, ExitReason.TARGET)
+        self.assertEqual(price, p.target_price)
+
+    def test_slippage_makes_a_round_trip_cost_more(self):
+        f = FeeModel()
+        clean = self._open(0.0, NO_SLIPPAGE)
+        slipped = self._open(0.0)
+        # Same quote, same stop distance, but the slipped entry is higher and
+        # its stop fills lower, so the realised loss is strictly larger.
+        _, clean_px = resolve_candle(clean, clean.entry_price, clean.stop_price - 1,
+                                     clean.stop_price, datetime(2026, 8, 18),
+                                     slippage=NO_SLIPPAGE)
+        _, slip_px = resolve_candle(slipped, slipped.entry_price, slipped.stop_price - 1,
+                                    slipped.stop_price, datetime(2026, 8, 18),
+                                    slippage=SlippageModel())
+        a = close_position(clean, clean_px, ExitReason.STOP, datetime(2026, 8, 18), f, 1000.0)
+        b = close_position(slipped, slip_px, ExitReason.STOP, datetime(2026, 8, 18), f, 1000.0)
+        self.assertLess(b.net_pnl, a.net_pnl)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 @dataclass
@@ -56,7 +56,7 @@ class CryptoState:
     sentiment_news_count: int = 0
     last_sentiment_update: datetime | None = None
 
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def price_change_24h_pct(self) -> float:
@@ -111,7 +111,7 @@ class CommodityState:
     price_history: list[tuple[float, datetime]] = field(default_factory=list)  # [(price, ts)]
     atr_14: float = 0.0
     rsi_14: float = 50.0
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def price_change_24h_pct(self) -> float:
@@ -144,9 +144,9 @@ class NewsItem:
 
         created_str = post.get("created_at")
         try:
-            pub_date = datetime.fromisoformat(created_str.replace("Z", "+00:00")) if created_str else datetime.now(timezone.utc)
+            pub_date = datetime.fromisoformat(created_str.replace("Z", "+00:00")) if created_str else datetime.now(UTC)
         except Exception:
-            pub_date = datetime.now(timezone.utc)
+            pub_date = datetime.now(UTC)
 
         return cls(
             title=post.get("title", ""),

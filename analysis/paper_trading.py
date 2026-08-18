@@ -103,6 +103,98 @@ class FeeModel:
         return 2 * self.effective_taker_pct
 
 
+@dataclass(frozen=True)
+class SlippageModel:
+    """
+    Where an order actually fills, versus the price the signal quoted.
+
+    A signal that says "ETH at 1899" almost never fills at 1899. Three separate
+    effects move it, and they do not all point the same way:
+
+      1. The spread. A market buy lifts the ask, a market sell hits the bid.
+         This is always adverse, whichever way you are trading.
+      2. The trend. In a market drifting upward, a buy chases and fills higher
+         while a sell gets lifted into and fills better. This is the one that
+         makes 1899 become 1901 on a rally and 1898.2 on a slide, and it is
+         signed by the drift, not by our direction — so it helps as often as it
+         hurts.
+      3. Stops specifically. A stop is a market order fired during the move
+         that triggered it, so it gaps through the level. Always adverse, and
+         larger than ordinary entry slippage.
+
+    Targets are limit orders and fill at the limit or not at all, so they get
+    no slippage. That is the honest treatment: giving targets a favourable fill
+    would be the simulator flattering itself.
+
+    Deterministic by construction — every term comes from the data, never from
+    a random draw, so a backtest re-run gives the identical answer.
+    """
+
+    # Half-spread crossed on a market order. BTC/ETH perps sit near 1bp.
+    spread_pct: float = 0.0001
+
+    # How much of the recent per-bar drift is carried into the fill. 0.30 means
+    # a bar that moved 1% pushes the fill 0.30% in that direction.
+    trend_impact: float = 0.30
+
+    # Extra adverse move a stop suffers over and above the spread.
+    stop_extra_pct: float = 0.0005
+
+    # A liquidation is the exchange closing you at market during a violent
+    # move; it is the worst fill on the book.
+    liquidation_extra_pct: float = 0.0015
+
+    # Nothing is allowed to move a fill further than this, so one freak bar
+    # cannot dominate a whole backtest.
+    max_slip_pct: float = 0.0060
+
+    def _clamp(self, slip: float) -> float:
+        return max(-self.max_slip_pct, min(self.max_slip_pct, slip))
+
+    def fill(self, ref_price: float, buying: bool, drift_pct: float = 0.0,
+             extra_adverse_pct: float = 0.0) -> float:
+        """
+        Fill price for a market order.
+
+        `buying` is True when we are lifting offers — opening a LONG or closing
+        a SHORT. `drift_pct` is the recent per-bar price change as a fraction;
+        positive means the market is rising.
+        """
+        adverse = self.spread_pct + extra_adverse_pct
+        directional = self.trend_impact * drift_pct
+        # Adverse always pushes against us; directional follows the market.
+        slip = (adverse if buying else -adverse) + directional
+        return ref_price * (1.0 + self._clamp(slip))
+
+    def entry_fill(self, ref_price: float, side: Side, drift_pct: float = 0.0) -> float:
+        return self.fill(ref_price, buying=side is Side.LONG, drift_pct=drift_pct)
+
+    def exit_fill(self, ref_price: float, side: Side, reason: ExitReason,
+                  drift_pct: float = 0.0) -> float:
+        """Closing a LONG means selling; closing a SHORT means buying."""
+        if reason is ExitReason.TARGET:
+            return ref_price          # limit order, fills at the limit or not at all
+        buying = side is Side.SHORT
+        if reason in (ExitReason.STOP, ExitReason.LIQUIDATION):
+            extra = (self.stop_extra_pct if reason is ExitReason.STOP
+                     else self.liquidation_extra_pct)
+            # A stop is triggered BY an adverse move, so the local direction is
+            # against us no matter what the preceding bars did. Feeding the raw
+            # drift in here would let a prior uptrend fill a long's stop above
+            # the stop level, which cannot happen — and would quietly flatter
+            # every losing trade in the backtest. Volatility makes the gap
+            # bigger, never favourable, so only its magnitude is used.
+            drift_pct = abs(drift_pct) * (1.0 if buying else -1.0)
+        else:
+            extra = 0.0
+        return self.fill(ref_price, buying=buying,
+                         drift_pct=drift_pct, extra_adverse_pct=extra)
+
+
+NO_SLIPPAGE = SlippageModel(spread_pct=0.0, trend_impact=0.0,
+                            stop_extra_pct=0.0, liquidation_extra_pct=0.0)
+
+
 def round_to_lot(qty: float, lot_step: float) -> float:
     """
     Snap a raw quantity to the instrument's lot step, rounding to nearest.
@@ -183,6 +275,9 @@ class Position:
     usdt_inr: float = 1.0
     lot_step: float = 0.0
 
+    # What the signal quoted, before slippage. entry_price is where we filled.
+    signal_price: float = 0.0
+
     # Set once the position has been scaled in or out, because after that the
     # size no longer follows from margin x leverage / entry.
     _coin_qty: float | None = None
@@ -235,6 +330,14 @@ class Position:
         two differ by Rs18, which is exactly the open-to-LTP drift.
         """
         return self.coin_qty * mark * self.usdt_inr
+
+    @property
+    def entry_slippage_pct(self) -> float:
+        """How far the fill landed from the quoted price, signed against us."""
+        if not self.signal_price:
+            return 0.0
+        raw = (self.entry_price - self.signal_price) / self.signal_price
+        return raw if self.side is Side.LONG else -raw
 
     @property
     def effective_leverage(self) -> float:
@@ -326,6 +429,11 @@ class ClosedTrade:
     hours_held: float = 0.0
 
     @property
+    def entry_slippage_pct(self) -> float:
+        """Entry fill versus the quoted signal price, signed against us."""
+        return self.position.entry_slippage_pct
+
+    @property
     def return_on_margin(self) -> float:
         return self.net_pnl / self.position.margin if self.position.margin else 0.0
 
@@ -350,7 +458,16 @@ def open_position(
     expires_at: datetime | None = None,
     usdt_inr: float = 1.0,
     lot_step: float = 0.0,
+    slippage: SlippageModel | None = None,
+    drift_pct: float = 0.0,
 ) -> Position:
+    # The signal quotes a price; we fill somewhere near it. Everything after
+    # this point — stop, target, liquidation, size — is measured from where we
+    # actually got in, because that is the position we are actually holding.
+    signal_price = entry_price
+    if slippage is not None:
+        entry_price = slippage.entry_fill(entry_price, side, drift_pct)
+
     stop, target = stop_and_target(entry_price, side, leverage, stop_pct_of_margin, reward_risk)
     pos = Position(
         symbol=symbol,
@@ -369,6 +486,7 @@ def open_position(
         expires_at=expires_at,
         usdt_inr=usdt_inr,
         lot_step=lot_step,
+        signal_price=signal_price,
     )
     # Charged on what actually filled, not on what we asked for. With a coarse
     # lot step those differ by enough to matter on a small wallet.
@@ -382,6 +500,8 @@ def resolve_candle(
     low: float,
     close: float,
     ts: datetime,
+    slippage: SlippageModel | None = None,
+    drift_pct: float = 0.0,
 ) -> tuple[ExitReason, float] | None:
     """
     Decide whether a candle closes this position, and at what price.
@@ -395,24 +515,31 @@ def resolve_candle(
 
     Returns None if the position survives the candle.
     """
+    hit: tuple[ExitReason, float] | None = None
     if pos.side is Side.LONG:
         if low <= pos.liq_price:
-            return ExitReason.LIQUIDATION, pos.liq_price
-        if low <= pos.stop_price:
-            return ExitReason.STOP, pos.stop_price
-        if high >= pos.target_price:
-            return ExitReason.TARGET, pos.target_price
+            hit = (ExitReason.LIQUIDATION, pos.liq_price)
+        elif low <= pos.stop_price:
+            hit = (ExitReason.STOP, pos.stop_price)
+        elif high >= pos.target_price:
+            hit = (ExitReason.TARGET, pos.target_price)
     else:
         if high >= pos.liq_price:
-            return ExitReason.LIQUIDATION, pos.liq_price
-        if high >= pos.stop_price:
-            return ExitReason.STOP, pos.stop_price
-        if low <= pos.target_price:
-            return ExitReason.TARGET, pos.target_price
+            hit = (ExitReason.LIQUIDATION, pos.liq_price)
+        elif high >= pos.stop_price:
+            hit = (ExitReason.STOP, pos.stop_price)
+        elif low <= pos.target_price:
+            hit = (ExitReason.TARGET, pos.target_price)
 
-    if pos.expires_at is not None and ts >= pos.expires_at:
-        return ExitReason.EXPIRY, close
-    return None
+    if hit is None and pos.expires_at is not None and ts >= pos.expires_at:
+        hit = (ExitReason.EXPIRY, close)
+    if hit is None:
+        return None
+
+    reason, level = hit
+    if slippage is not None:
+        level = slippage.exit_fill(level, pos.side, reason, drift_pct)
+    return reason, level
 
 
 def close_position(
@@ -647,6 +774,14 @@ class CycleConfig:
     # the simulated fill size matches what the exchange would actually give.
     usdt_inr: float = 1.0
     lot_step: float = 0.0
+
+    # Fills land near the quoted price, not on it. NO_SLIPPAGE reproduces the
+    # old perfect-fill behaviour when you want to isolate its effect.
+    slippage: SlippageModel = field(default_factory=SlippageModel)
+
+    # How many closed bars of drift feed the trend term. Three bars is enough
+    # to tell a run from a single spike without lagging into irrelevance.
+    drift_lookback: int = 3
 
     def is_target_viable(self, entry: float, target: float) -> bool:
         """Can this trade pay for itself if it works? If not, don't open it."""

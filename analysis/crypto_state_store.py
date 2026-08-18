@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -246,7 +246,7 @@ class CryptoStateStore:
                 if state.base_asset == base or base in ("ALL", "CRYPTO"):
                     state.sentiment_score = score
                     state.sentiment_news_count = news_count
-                    state.last_sentiment_update = datetime.now(timezone.utc)
+                    state.last_sentiment_update = datetime.now(UTC)
 
     async def get(self, symbol: str) -> CryptoState | None:
         async with self._lock:
