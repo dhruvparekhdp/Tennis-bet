@@ -243,3 +243,109 @@ class TestDashboardSharesTheCostModel(unittest.TestCase):
 
     def test_the_page_gates_on_the_engine_bar_not_bare_break_even(self):
         self.assertIn("move >= MIN_TARGET_PCT", self.html)
+
+
+class TestInstrumentSpecsAgainstRealTransactions(unittest.TestCase):
+    """
+    Pinned to four CoinDCX screenshots from 18 Aug 2026. The cost model used to
+    assume one fee and one maintenance margin for every market; both vary.
+    """
+
+    def test_eth_close_fee_matches_the_ledger(self):
+        """Fee Rs6.36 on a Rs10,776 close."""
+        from analysis.instruments import spec_for
+        notional = 0.055 * 1920.930 * 102.0
+        self.assertAlmostEqual(notional * spec_for("ethusdt").effective_taker_pct,
+                               6.36, delta=0.02)
+
+    def test_gold_is_five_times_cheaper_than_ether(self):
+        """Fee Rs1.73 on a Rs14,688 close — 0.0118%, not 0.0590%."""
+        from analysis.instruments import spec_for
+        eth, xau = spec_for("ethusdt"), spec_for("xauusdt")
+        self.assertAlmostEqual(xau.effective_taker_pct * 100, 0.0118, places=4)
+        self.assertAlmostEqual(eth.taker_pct / xau.taker_pct, 5.0, places=6)
+
+    def test_gold_close_fee_matches_the_ledger(self):
+        from analysis.instruments import spec_for
+        notional = 14_687.73
+        self.assertAlmostEqual(notional * spec_for("xauusdt").effective_taker_pct,
+                               1.73, delta=0.02)
+
+    def test_maintenance_margin_differs_by_market(self):
+        """Back-solved from the two quoted liquidation prices."""
+        from analysis.instruments import spec_for
+        from analysis.paper_trading import Side, liquidation_price
+        eth_liq = liquidation_price(1906.50, Side.LONG, 20,
+                                    spec_for("ethusdt").maintenance_margin_pct)
+        xau_liq = liquidation_price(4365.91, Side.LONG, 25,
+                                    spec_for("xauusdt").maintenance_margin_pct)
+        self.assertAlmostEqual(eth_liq, 1820.97, delta=0.5)
+        self.assertAlmostEqual(xau_liq, 4234.93, delta=0.5)
+
+    def test_the_usdt_inr_rate_reconciles_three_independent_ways(self):
+        # gross P&L on the ETH close
+        self.assertAlmostEqual(80.95 / (0.055 * (1920.930 - 1906.500)), 102.0, delta=0.1)
+        # position size on the open XAU trade
+        self.assertAlmostEqual(16_439.44 / (0.037 * 4355.97), 102.0, delta=0.1)
+        # active P&L on the same position
+        self.assertAlmostEqual(-37.50 / (0.037 * (4355.97 - 4365.91)), 102.0, delta=0.3)
+
+    def test_unknown_markets_fall_back_to_the_expensive_side(self):
+        """A cheap guess would admit trades that cannot pay for themselves."""
+        from analysis.instruments import spec_for
+        unknown = spec_for("dogeusdt")
+        self.assertAlmostEqual(unknown.taker_pct, spec_for("ethusdt").taker_pct)
+        self.assertGreater(unknown.taker_pct, spec_for("xauusdt").taker_pct)
+
+    def test_base_asset_strips_every_quote_currency(self):
+        from analysis.instruments import base_asset
+        self.assertEqual(base_asset("ethusdt"), "ETH")
+        self.assertEqual(base_asset("XAUUSDT"), "XAU")
+        self.assertEqual(base_asset("btcinr"), "BTC")
+        self.assertEqual(base_asset("solusdc"), "SOL")
+
+
+class TestCostFrameIsPerMarket(unittest.TestCase):
+    def test_gold_gets_a_far_lower_minimum_target(self):
+        base = ScalpConfig()
+        eth, xau = base.for_symbol("ethusdt"), base.for_symbol("xauusdt")
+        self.assertAlmostEqual(eth.min_target_pct * 100, 0.336, places=3)
+        self.assertLess(xau.min_target_pct, eth.min_target_pct)
+
+    def test_a_gold_move_refused_as_crypto_is_accepted_as_gold(self):
+        """The concrete consequence: same move, different verdict."""
+        base = ScalpConfig()
+        # Between the two floors: gold needs 0.0736%, crypto needs 0.168%.
+        atr = 0.0012
+        as_crypto = scalp_levels(4365.91, True, atr, base.for_symbol("ethusdt"),
+                                 symbol="ethusdt")
+        as_gold = scalp_levels(4365.91, True, atr, base.for_symbol("xauusdt"),
+                               symbol="xauusdt")
+        self.assertIs(as_crypto, NoTrade.TOO_QUIET)
+        self.assertIsInstance(as_gold, ScalpLevels)
+
+    def test_a_quiet_market_stretches_the_target_to_the_floor(self):
+        """Above the floor but below the minimum, the target is raised — not shrunk."""
+        base = ScalpConfig()
+        got = scalp_levels(4365.91, True, 0.0020, base.for_symbol("ethusdt"),
+                           symbol="ethusdt")
+        self.assertAlmostEqual(got.target_pct, base.for_symbol("ethusdt").min_target_pct,
+                               delta=0.00002)
+        self.assertGreater(got.target_pct, 0.0020)
+
+    def test_your_three_winning_trades_all_clear_the_floor(self):
+        """
+        ETH +0.757% at 6.4x cost, XAU +0.494% at 20.9x, XAU TP +1.243% at 52.7x.
+        Every one is accepted; every dashboard signal was not.
+        """
+        base = ScalpConfig()
+        for symbol, move in (("ethusdt", 0.007569), ("xauusdt", 0.004939),
+                             ("xauusdt", 0.012430)):
+            with self.subTest(symbol=symbol, move=move):
+                self.assertGreater(move, base.for_symbol(symbol).min_target_pct)
+
+    def test_the_dashboard_signals_do_not(self):
+        crypto = ScalpConfig().for_symbol("xrpusdt")
+        for move in (0.00050, 0.00080, 0.00170):
+            with self.subTest(move=move):
+                self.assertLess(move, crypto.min_target_pct)

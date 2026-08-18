@@ -27,8 +27,10 @@ state, so the live path and the backtest can share it.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
+
+from analysis.instruments import spec_for, tick_for
 
 
 class NoTrade(StrEnum):
@@ -50,18 +52,16 @@ REASON_TEXT = {
 }
 
 
-def tick_for_price(price: float) -> float:
+def tick_for_price(price: float, symbol: str = "") -> float:
     """
     Smallest price step for an instrument trading near `price`.
 
-    Exchanges quote roughly five significant figures, so the tick scales with
-    magnitude: ~0.0001 for a $1 coin, ~0.01 for a $1,000 one, ~1.0 for BTC.
-    Deriving it beats a fixed decimal count, which is simultaneously too coarse
-    for cheap coins and pointlessly fine for expensive ones.
+    Prefers the measured tick from the instrument table and falls back to a
+    magnitude rule. The fallback alone was wrong by 10x for both ETH and XAU,
+    which quote to 0.01 where the rule says 0.1 — coarse enough to refuse
+    setups that are perfectly tradeable.
     """
-    if price <= 0:
-        return 0.0
-    return 10.0 ** (math.floor(math.log10(price)) - 4)
+    return tick_for(symbol, price)
 
 
 def round_to_tick(price: float, tick: float, *, up: bool) -> float:
@@ -102,6 +102,16 @@ class ScalpConfig:
     funding_blackout_minutes: int = 15
     max_signal_age_seconds: int = 90
 
+    def for_symbol(self, symbol: str) -> ScalpConfig:
+        """
+        Re-cost this frame for one market.
+
+        Gold's brokerage is a fifth of ether's, which moves the minimum viable
+        target from 0.336% to 0.071%. Holding every market to the crypto floor
+        would refuse gold scalps that are comfortably profitable.
+        """
+        return replace(self, round_trip_fee_pct=spec_for(symbol).round_trip_pct)
+
     @property
     def cost_floor_pct(self) -> float:
         """Everything a round trip costs before the market moves at all."""
@@ -141,6 +151,7 @@ def scalp_levels(
     reward_risk: float = 1.0,
     atr_target_multiple: float = 1.0,
     minutes_to_funding: float | None = None,
+    symbol: str = "",
 ) -> ScalpLevels | NoTrade:
     """
     Build target and stop for a short hold, or explain why there is no trade.
@@ -160,7 +171,7 @@ def scalp_levels(
     target_pct = max(atr_pct * atr_target_multiple, cfg.min_target_pct)
     stop_pct = target_pct / reward_risk if reward_risk > 0 else target_pct
 
-    tick = tick_for_price(entry)
+    tick = tick_for_price(entry, symbol)
     if tick > 0 and tick / entry > target_pct * cfg.max_tick_share_of_target:
         return NoTrade.TICK_TOO_COARSE
 

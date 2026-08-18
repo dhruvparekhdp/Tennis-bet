@@ -48,11 +48,15 @@ def _emit(
         log.debug("scalp.no_atr", symbol=state.symbol, signal_type=signal_type)
         return None
 
+    # Cost is per-market: gold is five times cheaper to trade than ether, so
+    # holding both to the same floor would refuse profitable gold scalps.
+    cfg = SCALP.for_symbol(state.symbol)
     levels = scalp_levels(
         entry=price,
         is_long=direction == "long",
         atr_pct=state.atr_14 / price,
-        cfg=SCALP,
+        cfg=cfg,
+        symbol=state.symbol,
         reward_risk=reward_risk,
         atr_target_multiple=atr_target_multiple,
     )

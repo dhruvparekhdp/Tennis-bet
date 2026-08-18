@@ -258,7 +258,9 @@ class TestBacktestEngine(unittest.TestCase):
 
     def test_engine_detects_edge_in_mean_reverting_market(self):
         """The analyzers are mean-reversion logic, so a reverting series should pay."""
-        def reverting(n, seed, anchor=100.0, pull=0.02, vol=0.004):
+        # Anchored at a realistic BTC price: the tick gate is per-instrument
+        # now, and BTC's 0.1 tick really is coarse on a $100 series.
+        def reverting(n, seed, anchor=62_000.0, pull=0.02, vol=0.004):
             random.seed(seed)
             out, p = [], anchor
             for i in range(n):
