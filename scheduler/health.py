@@ -842,6 +842,8 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .cr-sig-desc{font-size:12px;color:#94a3b8;margin-bottom:6px}
 .cr-sig-row{display:flex;gap:14px;font-size:11px;color:#64748b;flex-wrap:wrap}
 .cr-sig-row b{color:#e2e8f0}
+.cr-sig-card.unviable{opacity:.72;border-color:#7f1d1d}
+.cr-sig-warn{margin-top:8px;font-size:11px;color:#fca5a5;background:#2a1114;border:1px solid #7f1d1d;border-radius:6px;padding:7px 9px;line-height:1.5}
 .cr-commodity{display:flex;gap:14px;flex-wrap:wrap}
 .cr-comm-card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:12px 16px;min-width:140px}
 .cr-comm-name{font-size:11px;color:#64748b;margin-bottom:4px}
@@ -1767,11 +1769,17 @@ function renderWcGroups(data){
 }
 
 // ── CRYPTO ────────────────────────────────────────────────────────────────────
+// Enough precision that entry, target and stop are always distinguishable.
+// Rounding a $1,905 price to whole dollars made every signal render as
+// "Entry $1,905  Target $1,905  Stop $1,905", hiding the real distances.
 function fmtPrice(p){
-  if(p>=1000) return p.toLocaleString('en-US',{maximumFractionDigits:0});
-  if(p>=1) return p.toFixed(2);
+  if(p>=1000) return p.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  if(p>=1) return p.toFixed(4);
   return p.toFixed(6);
 }
+// Round-trip cost on CoinDCX INR futures: 0.05% each way + 18% GST.
+// A target closer than this cannot pay for the trade even when it is reached.
+const BREAK_EVEN_PCT = 2*0.0005*1.18*100;
 function renderCryptoCoins(coins){
   const el=document.getElementById('cr-coins');
   if(!coins.length){el.innerHTML='<div class="empty">Watchlist is empty — add a symbol above</div>';return;}
@@ -1850,7 +1858,14 @@ function renderCryptoSignalsPage(){
 
 function renderCryptoSignalCard(s){
   const name=CR_SIG_NAME[s.signal_type]||s.signal_type.replace(/_/g,' ');
-  return `<div class="cr-sig-card">
+  // Distance to target, and whether it can survive the round-trip cost.
+  const move = (s.target_price && s.current_price)
+    ? Math.abs(s.target_price - s.current_price) / s.current_price * 100 : 0;
+  const viable = move >= BREAK_EVEN_PCT;
+  const warn = viable ? '' :
+    `<div class="cr-sig-warn">Target is only ${move.toFixed(3)}% away — below the
+     ${BREAK_EVEN_PCT.toFixed(3)}% round-trip cost, so this trade loses money even if it wins.</div>`;
+  return `<div class="cr-sig-card${viable?'':' unviable'}">
     <div class="cr-sig-top"><span class="cr-sig-dir ${s.direction}">${s.direction.toUpperCase()}</span>
       <span class="cr-sig-sym">${esc(s.symbol)}</span>
       <span class="cr-sig-name">${esc(name)}</span>
@@ -1860,8 +1875,9 @@ function renderCryptoSignalCard(s){
       <span>Entry <b>$${fmtPrice(s.current_price)}</b></span>
       ${s.target_price?`<span>Target <b>$${fmtPrice(s.target_price)}</b></span>`:''}
       ${s.stop_loss?`<span>Stop <b>$${fmtPrice(s.stop_loss)}</b></span>`:''}
-      <span>Edge <b>${s.edge_pct>=0?'+':''}${s.edge_pct}%</b></span>
+      <span>Move <b>${move.toFixed(3)}%</b></span>
     </div>
+    ${warn}
   </div>`;
 }
 function renderCommodities(rows){
@@ -2777,7 +2793,7 @@ html[data-theme] body{background:var(--bg)!important;color:var(--text)!important
 html[data-theme] header,html[data-theme] .topbar,html[data-theme] .tab-bar{background:var(--panel)!important;border-color:var(--line)!important}
 html[data-theme] header h1,html[data-theme] .topbar h1,html[data-theme] h2,html[data-theme] .tab-btn.active{color:var(--text-strong)!important}
 html[data-theme] .card,html[data-theme] .status-card,html[data-theme] .match-card,html[data-theme] .signal-card,html[data-theme] .fb-card,html[data-theme] .fb-sig-card,html[data-theme] .scalp-card,html[data-theme] .mc2,html[data-theme] .wc-group,html[data-theme] .cr-coin,html[data-theme] .cr-sig-card,html[data-theme] .cr-comm-card,html[data-theme] .cr-sig-tab{background:var(--panel)!important;border-color:var(--line)!important}
-html[data-theme] .mc2-top,html[data-theme] .mc2-dt,html[data-theme] .mc2-details,html[data-theme] .mc2-ob,html[data-theme] .mc-scoreboard,html[data-theme] .mc-header,html[data-theme] .sc-header,html[data-theme] .sc-footer,html[data-theme] .sc-probs,html[data-theme] .scalp-head,html[data-theme] .scalp-foot,html[data-theme] .fb-header,html[data-theme] .mc-prob,html[data-theme] .mc-odds-box,html[data-theme] .scroll,html[data-theme] .toc a,html[data-theme] .wc-group-hd,html[data-theme] .cr-note,html[data-theme] .cr-input,html[data-theme] .cr-glossary,html[data-theme] .cr-page-btn{background:var(--panel2)!important;border-color:var(--line2)!important}
+html[data-theme] .mc2-top,html[data-theme] .mc2-dt,html[data-theme] .mc2-details,html[data-theme] .mc2-ob,html[data-theme] .mc-scoreboard,html[data-theme] .mc-header,html[data-theme] .sc-header,html[data-theme] .sc-footer,html[data-theme] .sc-probs,html[data-theme] .scalp-head,html[data-theme] .scalp-foot,html[data-theme] .fb-header,html[data-theme] .mc-prob,html[data-theme] .mc-odds-box,html[data-theme] .scroll,html[data-theme] .toc a,html[data-theme] .wc-group-hd,html[data-theme] .cr-note,html[data-theme] .cr-input,html[data-theme] .cr-sig-warn,html[data-theme] .cr-glossary,html[data-theme] .cr-page-btn{background:var(--panel2)!important;border-color:var(--line2)!important}
 html[data-theme] .card-value,html[data-theme] .mc2-plname,html[data-theme] .mc2-setnow b,html[data-theme] .mvm .val,html[data-theme] .sb-cur,html[data-theme] .sb-sets-total,html[data-theme] .mc-name,html[data-theme] .mc-sets-won,html[data-theme] .mc-game-score,html[data-theme] .sc-bet-player,html[data-theme] .scalp-player,html[data-theme] .fb-team-name,html[data-theme] .fb-score,html[data-theme] .status-val,html[data-theme] .prob-pct,html[data-theme] .mc2-problbl b,html[data-theme] .card-name,html[data-theme] .meta-value,html[data-theme] .sc-conf,html[data-theme] .toc a,html[data-theme] .tbl-head h2,html[data-theme] .cr-coin-sym,html[data-theme] .cr-coin-price,html[data-theme] .cr-comm-price,html[data-theme] .cr-sig-sym{color:var(--text-strong)!important}
 html[data-theme] .card-title,html[data-theme] .card-sub,html[data-theme] .refresh,html[data-theme] section h2,html[data-theme] .mc2-lbl span,html[data-theme] .mvm .lab,html[data-theme] .status-name,html[data-theme] .empty,html[data-theme] footer,html[data-theme] .subtitle,html[data-theme] .card-meta,html[data-theme] .meta-label,html[data-theme] .mc2-obimp,html[data-theme] .mc2-obname,html[data-theme] .mc2-setnow,html[data-theme] .mc2-problbl,html[data-theme] .note,html[data-theme] #status,html[data-theme] .mvm .h{color:var(--muted)!important}
 html[data-theme] .mc2-sets{color:var(--score)!important}

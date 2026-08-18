@@ -318,6 +318,61 @@ def close_position(
 
 
 @dataclass(frozen=True)
+class SizingConfig:
+    """
+    Position size scales with conviction, so a strong setup gets more capital
+    than a marginal one.
+
+    Example on a Rs3,000 wallet with the defaults below:
+
+        confidence 65%  ->  Rs500   (weak, minimum size)
+        confidence 75%  ->  Rs1,000 (decent)
+        confidence 85%  ->  Rs1,500 (strong, maximum size)
+
+    Sizes interpolate linearly between floor and ceiling across the confidence
+    band, then get clipped so the open book never exceeds max_total_exposure_pct
+    of the wallet. Without that cap, three strong signals at once would commit
+    every rupee you have — and three simultaneous stops would take a fifth of
+    the wallet in one move.
+    """
+
+    # Share of wallet at the bottom and top of the confidence band.
+    floor_margin_pct: float = 0.167      # ~Rs500 of Rs3,000
+    ceiling_margin_pct: float = 0.50     # ~Rs1,500 of Rs3,000
+
+    # Confidence range the scale is stretched across.
+    floor_confidence: float = 0.65
+    ceiling_confidence: float = 0.85
+
+    min_margin: float = 50.0             # below this a trade is not worth the fee
+    max_total_exposure_pct: float = 1.00  # cap on all open margin combined
+
+    def margin_for(self, wallet: float, confidence: float,
+                   already_committed: float = 0.0) -> float:
+        """
+        Margin for one trade, given conviction and what is already at risk.
+
+        Returns 0.0 when the trade cannot be funded — the caller should skip
+        rather than open something too small to overcome its own fee.
+        """
+        span = self.ceiling_confidence - self.floor_confidence
+        if span <= 0:
+            frac = 1.0
+        else:
+            frac = (confidence - self.floor_confidence) / span
+        frac = max(0.0, min(1.0, frac))
+
+        pct = self.floor_margin_pct + frac * (self.ceiling_margin_pct - self.floor_margin_pct)
+        margin = wallet * pct
+
+        # Respect the total-exposure ceiling across everything already open.
+        room = wallet * self.max_total_exposure_pct - already_committed
+        margin = min(margin, room, wallet)
+
+        return margin if margin >= self.min_margin else 0.0
+
+
+@dataclass(frozen=True)
 class ReviewConfig:
     """
     Rules for re-checking a position after it has been opened.
@@ -436,6 +491,28 @@ class CycleConfig:
     max_hold_minutes: int = 240
     fees: FeeModel = field(default_factory=FeeModel)
     review: ReviewConfig = field(default_factory=ReviewConfig)
+    sizing: SizingConfig | None = None   # None = flat margin_per_trade_pct
+
+    # A signal whose target is closer than this multiple of the round-trip fee
+    # is refused outright. Observed live signals were placing targets 0.01-0.08%
+    # away when break-even alone needs 0.118% — those trades lose money even
+    # when they "win", so the only correct action is not to take them.
+    min_target_to_fee_ratio: float = 1.5
+
+    def is_target_viable(self, entry: float, target: float) -> bool:
+        """Can this trade pay for itself if it works? If not, don't open it."""
+        if entry <= 0 or target <= 0:
+            return False
+        move = abs(target - entry) / entry
+        return move >= self.fees.round_trip_pct() * self.min_target_to_fee_ratio
+
+    def margin_for_signal(self, wallet: float, confidence: float,
+                          already_committed: float = 0.0) -> float:
+        """Confidence-scaled size when sizing is configured, else the flat size."""
+        if self.sizing is not None:
+            return self.sizing.margin_for(wallet, confidence, already_committed)
+        flat = max(self.min_margin, wallet * self.margin_per_trade_pct)
+        return flat if flat <= wallet and flat >= self.min_margin else 0.0
 
     def margin_for(self, wallet: float) -> float:
         return max(self.min_margin, wallet * self.margin_per_trade_pct)
