@@ -39,28 +39,61 @@ class ExitReason(str, Enum):
 
 @dataclass(frozen=True)
 class FeeModel:
-    """CoinDCX futures defaults. An automated system takes the market, so taker."""
+    """
+    CoinDCX INR futures costs, calibrated against real account transactions
+    rather than published rate cards.
 
-    taker_pct: float = 0.00075        # 0.075%
-    maker_pct: float = 0.00025        # 0.025%
-    maintenance_margin_pct: float = 0.015   # 1.5% on the first ~50k of position
+    Reconciled 18 Aug 2026 against a live ETH/USDT position:
+      * open fee Rs6.31 on a Rs10,681.44 position  -> 0.0591% effective
+        which is 0.05% base x 1.18 GST. The 18% GST is charged on the
+        brokerage and is NOT optional, so the effective rate is what matters.
+      * liquidation at 1820.97 from entry 1906.50 at 20x (-4.49%) implies a
+        maintenance margin near 0.53%, not the 1.5% quoted for larger tiers.
+      * funding was Rs0.23 / Rs0.50 / Rs0.70 across three 8-hourly windows,
+        roughly 0.0066% of notional per window.
+    """
+
+    taker_pct: float = 0.0005         # 0.05% base brokerage
+    maker_pct: float = 0.0005         # INR futures charges the same both ways
+    gst_pct: float = 0.18             # 18% GST on the brokerage, unavoidable
+    maintenance_margin_pct: float = 0.0053   # measured, not the quoted 1.5%
+
+    # Perpetual futures pay/charge funding every 8 hours while a position is
+    # open. Ignoring it understates the cost of anything held for hours, which
+    # is most of what this system does. Positive = longs pay shorts.
+    funding_rate_per_8h: float = 0.0000655
 
     # Strictly, liquidating at the liquidation price leaves the maintenance margin
-    # behind (~14% of margin at 10x). In practice CoinDCX charges a liquidation
-    # clearance fee, and a fast market fills you worse than the trigger price, so
-    # the residual usually disappears. Default to the conservative assumption that
-    # a liquidation costs the whole margin; set False to keep the exact residual.
+    # behind. In practice CoinDCX charges a liquidation clearance fee, and a fast
+    # market fills you worse than the trigger price, so the residual usually
+    # disappears. Default to the conservative assumption that a liquidation costs
+    # the whole margin; set False to keep the exact residual.
     liquidation_consumes_margin: bool = True
 
+    @property
+    def effective_taker_pct(self) -> float:
+        """What actually leaves the wallet, GST included."""
+        return self.taker_pct * (1 + self.gst_pct)
+
     def entry_fee(self, notional: float) -> float:
-        return notional * self.taker_pct
+        return notional * self.effective_taker_pct
 
     def exit_fee(self, notional: float) -> float:
-        return notional * self.taker_pct
+        return notional * self.effective_taker_pct
+
+    def funding_cost(self, notional: float, hours_held: float) -> float:
+        """
+        Funding paid over the life of a position, charged on notional.
+
+        Modelled as a cost in both directions: the rate flips sign with market
+        positioning, so assuming you always receive it would flatter results.
+        """
+        periods = max(0.0, hours_held) / 8.0
+        return notional * self.funding_rate_per_8h * periods
 
     def round_trip_pct(self) -> float:
         """Price move required just to break even, as a fraction (leverage-independent)."""
-        return 2 * self.taker_pct
+        return 2 * self.effective_taker_pct
 
 
 def liquidation_price(entry: float, side: Side, leverage: float, mm_pct: float) -> float:
@@ -146,9 +179,11 @@ class ClosedTrade:
     closed_at: datetime
     reason: ExitReason
     gross_pnl: float
-    fees_paid: float
+    fees_paid: float          # trading fees + funding, all-in
     net_pnl: float
     wallet_after: float
+    funding_paid: float = 0.0
+    hours_held: float = 0.0
 
     @property
     def return_on_margin(self) -> float:
@@ -250,7 +285,9 @@ def close_position(
     """
     gross = pos.gross_pnl(exit_price)
     exit_fee = fees.exit_fee(exit_price * pos.quantity)
-    total_fees = pos.entry_fee + exit_fee
+    hours_held = max(0.0, (closed_at - pos.opened_at).total_seconds() / 3600.0)
+    funding = fees.funding_cost(pos.notional, hours_held)
+    total_fees = pos.entry_fee + exit_fee + funding
     net = gross - total_fees
 
     if reason is ExitReason.LIQUIDATION and fees.liquidation_consumes_margin:
@@ -267,6 +304,8 @@ def close_position(
         reason=reason,
         gross_pnl=gross,
         fees_paid=total_fees,
+        funding_paid=funding,
+        hours_held=hours_held,
         net_pnl=net,
         wallet_after=wallet_before + pos.margin + net,
     )

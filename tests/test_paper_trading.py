@@ -48,15 +48,20 @@ class TestFuturesMaths(unittest.TestCase):
         self.f = FeeModel()
 
     def test_fees_charged_on_notional_not_margin(self):
-        """At 10x a 0.075% fee costs 0.75% of margin per side. This is the trap."""
+        """At 10x the round trip costs ~1.18% of margin. This is the trap."""
         margin = 1000.0
         for lev in (1, 5, 10, 20):
             rt = self.f.entry_fee(margin * lev) + self.f.exit_fee(margin * lev)
-            self.assertAlmostEqual(rt / margin, 2 * 0.00075 * lev, places=9)
+            self.assertAlmostEqual(rt / margin, 2 * self.f.effective_taker_pct * lev, places=9)
 
     def test_break_even_move_is_leverage_independent(self):
         """Leverage multiplies gain and fee equally, so it never changes the sign."""
-        self.assertAlmostEqual(self.f.round_trip_pct(), 0.0015, places=9)
+        self.assertAlmostEqual(self.f.round_trip_pct(), 2 * 0.0005 * 1.18, places=9)
+
+    def test_gst_is_included_in_the_effective_rate(self):
+        """18% GST on brokerage is unavoidable, so it belongs in the fee, not a footnote."""
+        self.assertAlmostEqual(self.f.effective_taker_pct, 0.0005 * 1.18, places=9)
+        self.assertGreater(self.f.effective_taker_pct, self.f.taker_pct)
 
     def test_liquidation_long_and_short(self):
         lp = liquidation_price(100.0, Side.LONG, 10, 0.015)
@@ -122,9 +127,59 @@ class TestFuturesMaths(unittest.TestCase):
     def test_winning_trade_matches_hand_calculation(self):
         p = open_position("X", Side.LONG, 100.0, 200.0, 10, self.f, 0.20, 2.0, T0)
         t = close_position(p, 104.0, ExitReason.TARGET, T0, self.f, wallet_before=800.0)
+        eff = self.f.effective_taker_pct
         self.assertAlmostEqual(t.gross_pnl, (104 - 100) * 20.0, places=9)
-        self.assertAlmostEqual(t.fees_paid, 2000 * 0.00075 + 104 * 20 * 0.00075, places=9)
+        # closed instantly, so no funding accrues
+        self.assertAlmostEqual(t.fees_paid, 2000 * eff + 104 * 20 * eff, places=9)
         self.assertAlmostEqual(t.wallet_after, 800 + 200 + t.net_pnl, places=9)
+
+    def test_funding_accrues_with_time_held(self):
+        """A position held for hours costs funding on top of the trading fees."""
+        p = open_position("X", Side.LONG, 100.0, 200.0, 10, self.f, 0.20, 2.0, T0)
+        quick = close_position(p, 100.0, ExitReason.EXPIRY, T0, self.f, 800.0)
+        held = close_position(p, 100.0, ExitReason.EXPIRY,
+                              T0 + timedelta(hours=24), self.f, 800.0)
+        self.assertAlmostEqual(quick.funding_paid, 0.0, places=9)
+        self.assertGreater(held.funding_paid, 0.0)
+        self.assertGreater(held.fees_paid, quick.fees_paid)
+        self.assertAlmostEqual(held.hours_held, 24.0, places=6)
+
+
+class TestCalibrationAgainstRealTrades(unittest.TestCase):
+    """
+    Pins the cost model to figures observed on a real CoinDCX INR futures
+    account on 18 Aug 2026. If CoinDCX changes its rates these will fail,
+    which is exactly what should happen.
+    """
+
+    SIZE = 10681.44      # position notional, INR
+    MARGIN = 533.31
+    ENTRY = 1906.50
+    OBSERVED_OPEN_FEE = 6.31
+    OBSERVED_LIQ = 1820.97
+    OBSERVED_FUNDING_16H = 1.43
+
+    def setUp(self):
+        self.f = FeeModel()
+
+    def test_open_fee_matches_account(self):
+        self.assertAlmostEqual(self.f.entry_fee(self.SIZE), self.OBSERVED_OPEN_FEE, delta=0.05)
+
+    def test_liquidation_price_matches_account(self):
+        lp = liquidation_price(self.ENTRY, Side.LONG, 20, self.f.maintenance_margin_pct)
+        self.assertAlmostEqual(lp, self.OBSERVED_LIQ, delta=1.0)
+
+    def test_funding_matches_account(self):
+        self.assertAlmostEqual(self.f.funding_cost(self.SIZE, 16),
+                               self.OBSERVED_FUNDING_16H, delta=0.25)
+
+    def test_pnl_formula_matches_account(self):
+        """qty x price move, converted at the implied USDT rate."""
+        qty, ltp = 0.055, 1904.00
+        usdt_inr = self.SIZE / (qty * self.ENTRY)
+        pnl = qty * (ltp - self.ENTRY) * usdt_inr
+        self.assertAlmostEqual(pnl, -14.03, delta=0.05)
+        self.assertAlmostEqual(pnl / self.MARGIN * 100, -2.63, delta=0.05)
 
 
 class TestConfigSanity(unittest.TestCase):
