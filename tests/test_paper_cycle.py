@@ -434,7 +434,9 @@ class TestDashboardSurface(unittest.TestCase):
         self.assertIn("switchTab('paper')", self.html)
 
     def test_switching_to_the_tab_loads_it(self):
-        self.assertIn("if(tab==='paper') loadPaper();", self.html)
+        """The sidebar rewrite reindented this; the wiring is what matters."""
+        self.assertIn("if(tab==='paper')", self.html)
+        self.assertIn("loadPaper();", self.html)
 
     def test_the_endpoint_is_registered(self):
         import inspect

@@ -358,6 +358,96 @@ async def _api_crypto_signals(runner, request: web.Request) -> web.Response:
     return web.Response(text=json.dumps(signals), content_type="application/json")
 
 
+def _signal_row(r) -> dict:
+    return {
+        "id": r.id, "symbol": r.symbol.upper(), "signal_type": r.signal_type,
+        "direction": r.direction, "confidence": round(r.confidence * 100),
+        "current_price": r.current_price, "target_price": r.target_price,
+        "stop_loss": r.stop_loss, "edge_pct": r.edge_pct,
+        "timeframe": r.timeframe, "outcome": r.outcome, "pnl_pct": r.pnl_pct,
+        "timestamp": r.timestamp.isoformat(),
+    }
+
+
+async def _api_signal_history(runner, request: web.Request) -> web.Response:
+    """
+    Signals in a window. `before` carves out the recent end, which is what
+    separates the dashboard's live 7 days from the archive behind it.
+    """
+    from storage.database import AsyncSessionFactory
+    from storage.repository import Repository
+
+    days = max(1, min(365, int(request.query.get("days") or 7)))
+    before = max(0, min(365, int(request.query.get("before") or 0)))
+    async with AsyncSessionFactory() as session:
+        repo = Repository(session)
+        rows = await repo.crypto_signals_between(days, before)
+        counts = await repo.crypto_signal_counts() if before else None
+
+    payload = [_signal_row(r) for r in rows]
+    if counts is None:
+        return web.json_response(payload)
+    return web.json_response({"signals": payload, "counts": counts})
+
+
+async def _api_signal_accuracy(runner, request: web.Request) -> web.Response:
+    """
+    Calibration, move-size distribution and per-setup accuracy.
+
+    Buckets that have no resolved signals report a null win rate rather than
+    zero — a bucket nobody has traded is not a bucket that loses.
+    """
+    import statistics
+
+    from analysis.scalp_levels import ScalpConfig
+    from storage.database import AsyncSessionFactory
+    from storage.repository import Repository
+
+    async with AsyncSessionFactory() as session:
+        repo = Repository(session)
+        rows = await repo.crypto_signals_between(365)
+        counts = await repo.crypto_signal_counts()
+
+    done = [r for r in rows if r.outcome in ("won", "lost")]
+    moves = [abs(r.target_price - r.current_price) / r.current_price * 100
+             for r in rows if r.current_price and r.target_price]
+
+    def rate(group):
+        g = [r for r in group if r.outcome in ("won", "lost")]
+        if not g:
+            return None, 0
+        return round(sum(1 for r in g if r.outcome == "won") / len(g) * 100, 1), len(g)
+
+    calibration = []
+    for lo in (60, 65, 70, 75, 80, 85, 90):
+        band = [r for r in done if lo <= r.confidence * 100 < lo + 5]
+        wr, n = rate(band)
+        if n:
+            calibration.append({"bucket": lo, "win_rate_pct": wr, "n": n})
+
+    by_setup = []
+    for kind in sorted({r.signal_type for r in done}):
+        wr, n = rate([r for r in done if r.signal_type == kind])
+        if n:
+            by_setup.append({"signal_type": kind, "win_rate_pct": wr, "n": n})
+
+    edges = [0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.8, 1.2, 2.0, 5.0]
+    buckets, prev = [], 0.0
+    for e in edges:
+        buckets.append({"upper_pct": e,
+                        "n": sum(1 for m in moves if prev <= m < e)})
+        prev = e
+
+    overall, resolved = rate(rows)
+    return web.json_response({
+        "total": len(rows), "resolved": resolved, "pending": counts["pending"],
+        "win_rate_pct": overall,
+        "median_move_pct": round(statistics.median(moves), 4) if moves else None,
+        "min_target_pct": round(ScalpConfig().min_target_pct * 100, 4),
+        "calibration": calibration, "by_setup": by_setup, "move_buckets": buckets,
+    })
+
+
 async def _api_sentiment_ingest(runner, request: web.Request) -> web.Response:
     """
     Accept scored headlines from an external analyser (Hermes on a laptop).
@@ -1205,31 +1295,157 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .fb-sig-red_card_advantage{background:#7f1d1d;color:#fca5a5}
 .fb-sig-clean_sheet_likely{background:#134e4a;color:#99f6e4}
 .fb-sig-time{font-size:11px;color:#475569;margin-left:auto}
+/* ── Sidebar shell ─────────────────────────────────────────────────────── */
+.app{display:flex;min-height:100vh}
+.sidebar{width:212px;flex:none;background:#0f172a;border-right:1px solid #334155;
+  padding:16px 0;display:flex;flex-direction:column;gap:2px;position:sticky;top:0;height:100vh}
+.side-brand{padding:0 16px 16px;display:flex;align-items:center;gap:9px}
+.side-brand b{color:#f1f5f9;font-size:13px;font-weight:600;letter-spacing:-.01em}
+.side-group{padding:12px 16px 6px;font-size:9px;font-weight:600;color:#475569;
+  text-transform:uppercase;letter-spacing:.09em}
+.side-item{padding:7px 16px;display:flex;align-items:center;gap:9px;cursor:pointer;
+  border-left:2px solid transparent;color:#94a3b8;font-size:12px;text-decoration:none;
+  transition:background .12s,color .12s}
+.side-item:hover{background:#16202f;color:#cbd5e1}
+.side-item.active{background:#1e293b;border-left-color:#0ea5e9;color:#f1f5f9;font-weight:600}
+.side-item svg{flex:none;stroke:#64748b}
+.side-item.active svg{stroke:#0ea5e9}
+.side-foot{margin-top:auto;padding:12px 16px;border-top:1px solid #1e293b;
+  display:flex;flex-direction:column;gap:5px}
+.side-dot{width:6px;height:6px;border-radius:50%;background:#4ade80;display:inline-block}
+.main{flex-grow:1;min-width:0;display:flex;flex-direction:column}
+.main-head{padding:16px 24px;border-bottom:1px solid #334155;display:flex;
+  align-items:center;gap:16px;flex-wrap:wrap}
+.main-head h1{font-size:17px;font-weight:600;color:#f1f5f9;letter-spacing:-.01em;margin:0}
+.main-head .sub{font-size:11px;color:#64748b;margin-top:2px}
+.main-body{padding:20px 24px;display:flex;flex-direction:column;gap:16px}
+.side-toggle{display:none}
+/* Phone: the sidebar becomes a bottom bar. Icons-only in a rail would put the
+   nav under the thumb-unreachable top-left corner on a 6" screen. */
+@media(max-width:820px){
+  .app{flex-direction:column}
+  .sidebar{position:fixed;bottom:0;left:0;right:0;top:auto;width:auto;height:auto;
+    flex-direction:row;border-right:none;border-top:1px solid #334155;padding:0;
+    overflow-x:auto;z-index:50;gap:0}
+  .side-brand,.side-group,.side-foot{display:none}
+  .side-item{flex-direction:column;gap:3px;padding:8px 14px;border-left:none;
+    border-top:2px solid transparent;font-size:9px;white-space:nowrap}
+  .side-item.active{border-left:none;border-top-color:#0ea5e9}
+  .main-body{padding:14px 12px 76px}
+  .main-head{padding:12px 14px}
+}
+
 </style>
 </head>
 <body>
-<header>
-  <h1 id="page-title">🪙 Crypto Monitor</h1>
-  <span class="refresh" id="refresh-label">Loading&hellip;</span>
-  <a class="nav-btn" id="nav-crypto" href="/">🪙 Crypto</a>
-  <a class="nav-btn" id="nav-sports" href="/sports">🎾 Sports</a>
-  <a class="nav-btn" href="/settings">⚙️ Settings</a>
-  <a class="nav-btn" href="/data">🗄️ History</a>
-</header>
+<div class="app">
+<nav class="sidebar" id="sidebar">
+  <div class="side-brand">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0ea5e9" stroke-width="2"><path d="M3 17l6-6 4 4 8-8"/><path d="M17 7h4v4"/></svg>
+    <b>Trading Desk</b>
+  </div>
+  <div class="side-group">Live</div>
+  <div class="side-item" data-tab="dashboard" onclick="switchTab('dashboard')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h7V3H3zM14 21h7v-9h-7zM14 9h7V3h-7zM3 21h7v-6H3z"/></svg><span>Dashboard</span></div>
+  <div class="side-item" data-tab="crypto" onclick="switchTab('crypto')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M17 7h4v4"/></svg><span>Signals</span></div>
+  <div class="side-item" data-tab="paper" onclick="switchTab('paper')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h12"/></svg><span>Paper Trading</span></div>
+  <div class="side-item" data-tab="guard" onclick="switchTab('guard')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V7z"/></svg><span>Session Guard</span></div>
+  <div class="side-group">Analysis</div>
+  <div class="side-item" data-tab="accuracy" onclick="switchTab('accuracy')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V10M18 20V4M6 20v-4"/></svg><span>Accuracy</span></div>
+  <div class="side-item" data-tab="historic" onclick="switchTab('historic')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5a9 3 0 1018 0 9 3 0 10-18 0M3 5v14a9 3 0 0018 0V5"/></svg><span>Historic Data</span></div>
+  <div class="side-item" data-tab="watchlist" onclick="switchTab('watchlist')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.2l5.9-.9z"/></svg><span>Watchlist</span></div>
+  <div class="side-group">Other</div>
+  <a class="side-item" data-tab="sports" href="/sports"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18M3 12h18"/></svg><span>Sports</span></a>
+  <a class="side-item" data-tab="diag" href="/api/debug/collectors"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4"/></svg><span>Diagnostics</span></a>
+  <a class="side-item" data-tab="settings" href="/settings"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 00-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 00-1.7-1L14.5 3h-4l-.4 2.6a7 7 0 00-1.7 1l-2.4-1-2 3.4L6 11a7 7 0 000 2l-2 1.6 2 3.4 2.4-1a7 7 0 001.7 1l.4 2.6h4l.4-2.6a7 7 0 001.7-1l2.4 1 2-3.4-2-1.6a7 7 0 00.1-1z"/></svg><span>Settings</span></a>
+  <div class="side-foot">
+    <div style="display:flex;align-items:center;gap:6px">
+      <span class="side-dot" id="side-status-dot"></span>
+      <span style="font-size:10px;color:#94a3b8" id="side-status">Loading&hellip;</span>
+    </div>
+    <div style="font-size:9px;color:#475569" id="side-uptime">&mdash;</div>
+  </div>
+</nav>
+<div class="main">
+  <div class="main-head">
+    <div style="min-width:0">
+      <h1 id="page-title">Dashboard</h1>
+      <div class="sub" id="page-sub">Last 7 days</div>
+    </div>
+    <div style="flex-grow:1"></div>
+    <span class="refresh" id="refresh-label">Loading&hellip;</span>
+  </div>
+  <div class="main-body">
 
-<div class="grid" id="grid-crypto">
-  <div class="card"><div class="card-title">Crypto Watchlist</div><div class="card-value" id="stat-crypto-coins">&mdash;</div><div class="card-sub">symbols tracked</div></div>
-  <div class="card"><div class="card-title">Crypto Signals</div><div class="card-value" id="stat-crypto-signals">&mdash;</div><div class="card-sub">last 24h</div></div>
-  <div class="card"><div class="card-title">Uptime</div><div class="card-value" id="stat-uptime">&mdash;</div><div class="card-sub">since restart</div></div>
+
+<div id="tab-dashboard" class="tab-content active">
+  <div class="cards" id="dash-cards"></div>
+  <section>
+    <h2>Predictions &middot; last 7 days</h2>
+    <div class="cr-note">Anything older rolls into <b>Historic Data</b>. Move is the distance to target; &times; cost is how many round trips it covers.</div>
+    <div id="dash-signals"><div class="empty">Loading&hellip;</div></div>
+  </section>
+  <section>
+    <h2>Why signals were refused</h2>
+    <div id="dash-refused"><div class="empty">Loading&hellip;</div></div>
+  </section>
 </div>
 
-<div class="grid" id="grid-sports" style="display:none">
-  <div class="card"><div class="card-title">Tennis Live</div><div class="card-value" id="stat-matches">&mdash;</div><div class="card-sub">matches now</div></div>
-  <div class="card"><div class="card-title">Football Live</div><div class="card-value" id="stat-fb-matches">&mdash;</div><div class="card-sub">matches now</div></div>
-  <div class="card"><div class="card-title">Signals (24h)</div><div class="card-value" id="stat-signals">&mdash;</div><div class="card-sub">tennis + football</div></div>
-  <div class="card"><div class="card-title">Uptime</div><div class="card-value" id="stat-uptime-sports">&mdash;</div><div class="card-sub">since restart</div></div>
+
+<div id="tab-guard" class="tab-content">
+  <section>
+    <h2>Session Guard</h2>
+    <div class="cr-note">Behavioural flags computed from your own closed trades — size drift, hold-time drift, and how much of each gross was kept after costs.</div>
+    <div class="cards" id="guard-cards"></div>
+    <div id="guard-flags" style="margin-top:14px"><div class="empty">Loading&hellip;</div></div>
+  </section>
+  <section>
+    <h2>Session drift</h2>
+    <div id="guard-drift"><div class="empty">Loading&hellip;</div></div>
+  </section>
 </div>
 
+<div id="tab-accuracy" class="tab-content">
+  <section>
+    <h2>Accuracy</h2>
+    <div id="acc-banner"></div>
+    <div class="cards" id="acc-cards"></div>
+  </section>
+  <section>
+    <h2>Is confidence honest?</h2>
+    <div class="cr-note">Stated confidence against realised win rate. Below the line means the bot is overconfident, and the sizing ladder is sizing on noise.</div>
+    <div id="acc-calibration"><div class="empty">Loading&hellip;</div></div>
+  </section>
+  <section>
+    <h2>Move size vs the cost floor</h2>
+    <div class="cr-note">Every signal bucketed by how far its target sat. Red bars could not have paid for the round trip.</div>
+    <div id="acc-moves"><div class="empty">Loading&hellip;</div></div>
+  </section>
+  <section>
+    <h2>Accuracy by setup</h2>
+    <div id="acc-setups"><div class="empty">Loading&hellip;</div></div>
+  </section>
+</div>
+
+<div id="tab-historic" class="tab-content">
+  <section>
+    <h2>Historic Data</h2>
+    <div class="cr-note">Everything older than 7 days. Read-only archive.</div>
+    <div class="cards" id="hist-cards"></div>
+    <div id="hist-table" style="margin-top:14px"><div class="empty">Loading&hellip;</div></div>
+  </section>
+</div>
+
+<div id="tab-watchlist" class="tab-content">
+  <section>
+    <h2>Watchlist</h2>
+    <div class="cr-note">Prices update every 30&ndash;60s from CoinDCX. Futures-only instruments such as gold come from the derivatives feed.</div>
+    <div class="cr-watchlist-manager">
+      <input type="text" id="cr-add-input2" class="cr-input" placeholder="Add symbol, e.g. xauusdt" onkeydown="if(event.key==='Enter')addCryptoSymbol2()">
+      <button class="cr-add-btn" onclick="addCryptoSymbol2()">+ Add</button>
+    </div>
+    <div id="wl-coins"><div class="empty">Loading&hellip;</div></div>
+  </section>
+</div>
 
 <div id="tab-paper" class="tab-content">
   <section>
@@ -1250,11 +1466,6 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   </section>
 </div>
 
-<div class="tab-bar" id="tabbar-sports" style="display:none">
-  <button class="tab-btn active" data-tab="tennis" onclick="switchTab('tennis')">🎾 Tennis</button>
-  <button class="tab-btn" data-tab="scalping" onclick="switchTab('scalping')">🎯 Scalping <span id="scalp-count-badge" class="tab-badge" style="display:none">0</span></button>
-  <button class="tab-btn" data-tab="football" onclick="switchTab('football')">⚽ Football</button>
-</div>
 
 <div class="sports-paused" id="sports-paused-banner" style="display:none">
   Sports data collection is currently <b>paused</b> — these pages show the last data that was stored, but nothing new is being fetched. Re-enable by setting <code>SPORTS_ENABLED=true</code> in your Render environment variables.
@@ -1298,10 +1509,6 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   </section>
 </div>
 
-<div class="tab-bar" id="tabbar-crypto">
-  <button class="tab-btn active" data-tab="crypto" onclick="switchTab('crypto')">🪙 Market</button>
-  <button class="tab-btn" data-tab="paper" onclick="switchTab('paper')">📒 Paper Trading</button>
-</div>
 
 <div id="tab-crypto" class="tab-content active">
   <section>
@@ -1348,6 +1555,9 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   </section>
 </div>
 
+  </div>
+</div>
+</div>
 <footer>Auto-refreshes every 30s &middot; <span id="last-updated">&mdash;</span> &middot; <a href="/data" style="color:#38bdf8;text-decoration:none">🗄️ DB Dump</a> &middot; <a href="/settings" style="color:#3fb950;text-decoration:none">⚙️ Settings</a> &middot; <a href="/api/debug/collectors" style="color:#a78bfa;text-decoration:none">🔬 Debug</a></footer>
 
 <script>
@@ -1884,10 +2094,274 @@ async function loadPaper(){
     : '<div class="empty">No trades closed yet</div>';
 }
 
+
+// ── SIDEBAR VIEWS ─────────────────────────────────────────────────────────
+// Everything below computes from endpoints that already exist. Where a number
+// genuinely cannot be produced yet it says so rather than showing a zero.
+
+function card(label,value,sub,cls){
+  return `<div class="card"><div class="card-title">${label}</div>
+    <div class="card-value ${cls||''}">${value}</div><div class="card-sub">${sub||''}</div></div>`;
+}
+function moveOf(s){
+  return (s.target_price && s.current_price)
+    ? Math.abs(s.target_price - s.current_price) / s.current_price * 100 : 0;
+}
+function xCost(s){ return moveOf(s) / BREAK_EVEN_PCT; }
+
+async function loadDashboard(){
+  const [sigs,paper] = await Promise.all([jget('/api/signals/history?days=7',[]), jget('/api/paper',{})]);
+  const taken = sigs.filter(s=>xCost(s) >= MIN_TARGET_PCT/BREAK_EVEN_PCT);
+  const eq = paper.running ? paper.equity : null;
+  const s = paper.summary || {};
+  document.getElementById('dash-cards').innerHTML =
+      card('Equity', eq==null?'&mdash;':money(eq),
+           paper.running?`from ${money(paper.cycle.starting_wallet)}`:'no cycle running',
+           eq!=null && paper.running && eq>=paper.cycle.starting_wallet?'pos':'')
+    + card('Signals, 7d', sigs.length, `${taken.length} viable · ${sigs.length-taken.length} refused`)
+    + card('Hit rate, 7d', s.win_rate_pct!=null?s.win_rate_pct+'%':'&mdash;',
+           s.trades?`${s.trades} closed trades`:'needs closed trades')
+    + card('Costs, 7d', s.trading_fees!=null?money(s.trading_fees+s.funding_paid):'&mdash;',
+           s.costs_as_pct_of_gross!=null?s.costs_as_pct_of_gross+'% of gross':'', 'neg');
+
+  document.getElementById('dash-signals').innerHTML = sigs.length ? `
+    <div class="scroll"><table class="tbl"><thead><tr>
+      <th>Fired</th><th>Symbol</th><th>Setup</th><th>Dir</th><th>Move</th><th>&times; cost</th><th>Conf</th>
+    </tr></thead><tbody>` + sigs.slice(0,40).map(x=>{
+      const m=moveOf(x), xc=xCost(x), ok=m>=MIN_TARGET_PCT;
+      return `<tr>
+        <td class="sub">${fmtSignalTime(x.timestamp)}</td>
+        <td><b>${esc(x.symbol)}</b></td>
+        <td>${esc(CR_SIG_NAME[x.signal_type]||x.signal_type)}</td>
+        <td class="${x.direction==='long'?'pos':'neg'}">${x.direction.toUpperCase()}</td>
+        <td>${m.toFixed(3)}%</td>
+        <td class="${ok?'pos':'neg'}">${xc.toFixed(1)}&times;</td>
+        <td>${x.confidence}%</td></tr>`;
+    }).join('') + '</tbody></table></div>'
+    : '<div class="empty">No signals in the last 7 days</div>';
+
+  const refused = {};
+  sigs.forEach(x=>{ if(moveOf(x) < MIN_TARGET_PCT) refused['below the cost floor'] = (refused['below the cost floor']||0)+1; });
+  const rows = Object.entries(refused);
+  document.getElementById('dash-refused').innerHTML = rows.length
+    ? rows.map(([k,v])=>`<div style="display:flex;align-items:center;gap:10px;padding:4px 0">
+        <div style="height:6px;background:#334155;border-radius:3px;width:${Math.min(240,v*12)}px"></div>
+        <span style="font-size:11px;color:#94a3b8">${esc(k)} · ${v}</span></div>`).join('')
+    : '<div class="empty">Nothing refused in this window</div>';
+}
+
+async function loadWatchlist(){
+  const coins = await jget('/api/crypto/coins',[]);
+  const el = document.getElementById('wl-coins');
+  const prev = document.getElementById('cr-coins');
+  renderCryptoCoins.call(null, coins);
+  el.innerHTML = prev ? prev.innerHTML : '<div class="empty">No symbols</div>';
+}
+
+async function loadGuard(){
+  const paper = await jget('/api/paper',{});
+  const trades = (paper.trades||[]).slice().reverse();   // oldest first
+  if(!trades.length){
+    document.getElementById('guard-cards').innerHTML='';
+    document.getElementById('guard-flags').innerHTML='<div class="empty">No closed trades yet — flags appear once a session has trades to compare.</div>';
+    document.getElementById('guard-drift').innerHTML='';
+    return;
+  }
+  const notional = t => Math.abs(t.margin) * (t.leverage||1);
+  const kept = t => t.gross ? (t.net/t.gross*100) : null;
+  const first = trades[0], last = trades[trades.length-1];
+
+  const sizeDrift = notional(last)/notional(first)-1;
+  const keptFirst = kept(first), keptLast = kept(last);
+  document.getElementById('guard-cards').innerHTML =
+      card('Trades', trades.length, 'this cycle')
+    + card('Size trend', (sizeDrift>=0?'+':'')+(sizeDrift*100).toFixed(0)+'%',
+           `${money(notional(first))} → ${money(notional(last))}`, sizeDrift>0.25?'neg':'')
+    + card('Median hold', fmtHours(median(trades.map(t=>t.hours_held))), 'per trade')
+    + card('Kept of gross', keptLast==null?'&mdash;':keptLast.toFixed(0)+'%',
+           keptFirst!=null?`was ${keptFirst.toFixed(0)}% on the first`:'',
+           keptLast!=null && keptLast<60?'neg':'pos');
+
+  const flags=[];
+  if(sizeDrift > 0.25 && keptLast!=null && keptFirst!=null && keptLast < keptFirst)
+    flags.push(['red','Escalating size while the edge shrank',
+      'Each trade got larger while less of the gross survived costs. Fees scale with size; the edge did not.',
+      `${money(notional(first))} → ${money(notional(last))} · kept ${keptFirst.toFixed(0)}% → ${keptLast.toFixed(0)}%`]);
+  const thin = trades.filter(t=>t.gross && Math.abs(t.gross)>0 && (t.fees+t.funding)/Math.abs(t.gross) > 0.33);
+  if(thin.length)
+    flags.push(['red','Trades where costs took a third or more',
+      'At this size the round trip is eating the result. The target has to clear the cost floor by a wide margin, not by a hair.',
+      thin.map(t=>`${t.symbol} ${money(t.gross)} gross, ${money(t.fees+t.funding)} fees`).join(' · ')]);
+  const quick = trades.filter(t=>t.hours_held!=null && t.hours_held < 0.1);
+  if(quick.length >= 2)
+    flags.push(['amber','Several trades held under six minutes',
+      'Short holds capture small moves, and a small move is where the fee share is largest.',
+      `${quick.length} of ${trades.length} trades`]);
+  const flips=[];
+  for(let i=1;i<trades.length;i++){
+    const a=trades[i-1], b=trades[i];
+    if(a.symbol===b.symbol && a.side!==b.side &&
+       Math.abs(new Date(b.closed_at)-new Date(a.closed_at)) < 45*60*1000)
+      flips.push(`${a.symbol} ${a.side}→${b.side}`);
+  }
+  if(flips.length)
+    flags.push(['amber','Direction reversed in the same symbol within the hour',
+      'Closing one side and opening the other shortly after usually means the exit was about discomfort rather than the setup changing.',
+      flips.join(' · ')]);
+  if(!flags.length)
+    flags.push(['ok','Nothing to flag',
+      'Size, hold time and cost share are all steady across this session.',
+      `${trades.length} trades compared`]);
+
+  const COL={red:['#f87171','#3f1d1d'],amber:['#fbbf24','#3a2f14'],ok:['#4ade80','#14532d']};
+  document.getElementById('guard-flags').innerHTML = flags.map(([lv,t,d,e])=>{
+    const [c,bg]=COL[lv];
+    return `<div style="border:1px solid ${c};background:${bg};border-radius:8px;padding:11px 13px;margin-bottom:9px">
+      <div style="font-size:12px;font-weight:600;color:#f1f5f9">${esc(t)}</div>
+      <div style="font-size:11px;color:#cbd5e1;margin-top:3px">${esc(d)}</div>
+      <div style="font-size:10px;color:#94a3b8;margin-top:5px">${esc(e)}</div></div>`;
+  }).join('');
+
+  document.getElementById('guard-drift').innerHTML = `
+    <div class="scroll"><table class="tbl"><thead><tr>
+      <th>#</th><th>Symbol</th><th>Notional</th><th>Held</th><th>Gross</th><th>Costs</th><th>Kept</th>
+    </tr></thead><tbody>` + trades.map((t,i)=>{
+      const k=kept(t);
+      return `<tr><td class="sub">${i+1}</td><td><b>${esc(t.symbol)}</b></td>
+        <td>${money(notional(t))}</td><td>${fmtHours(t.hours_held)}</td>
+        <td class="${t.gross>=0?'pos':'neg'}">${signed(t.gross)}</td>
+        <td class="neg">-${money(t.fees+t.funding)}</td>
+        <td class="${k!=null&&k<60?'neg':'pos'}">${k==null?'&mdash;':k.toFixed(0)+'%'}</td></tr>`;
+    }).join('') + '</tbody></table></div>';
+}
+
+function median(xs){ const v=xs.filter(x=>x!=null).sort((a,b)=>a-b); return v.length?v[Math.floor(v.length/2)]:null; }
+function fmtHours(h){
+  if(h==null) return '&mdash;';
+  if(h<1/60) return Math.round(h*3600)+'s';
+  if(h<1) return Math.round(h*60)+'m';
+  return h.toFixed(1)+'h';
+}
+
+async function loadAccuracy(){
+  const stats = await jget('/api/signals/accuracy',{});
+  const banner = document.getElementById('acc-banner');
+  if(!stats.resolved){
+    banner.innerHTML = `<div class="cr-sig-warn">Outcomes are not resolved yet, so accuracy cannot be computed.
+      ${stats.pending||0} signals are stored as pending. The resolver walks stored candles forward from
+      each signal to see whether target or stop came first — until it runs, every chart here is empty rather than wrong.</div>`;
+  } else { banner.innerHTML=''; }
+
+  document.getElementById('acc-cards').innerHTML =
+      card('Signals', stats.total||0, 'in the archive')
+    + card('Resolved', stats.resolved||0, stats.pending?`${stats.pending} pending`:'')
+    + card('Win rate', stats.win_rate_pct!=null?stats.win_rate_pct+'%':'&mdash;', 'of resolved')
+    + card('Median move', stats.median_move_pct!=null?stats.median_move_pct.toFixed(3)+'%':'&mdash;',
+           stats.median_move_pct!=null?(stats.median_move_pct/BREAK_EVEN_PCT).toFixed(1)+'× cost':'');
+
+  document.getElementById('acc-calibration').innerHTML =
+    (stats.calibration||[]).length ? barRows((stats.calibration||[]).map(b=>
+      [`${b.bucket}% stated`, b.win_rate_pct, `${b.win_rate_pct}% · n=${b.n}`]))
+    : '<div class="empty">Needs resolved outcomes</div>';
+
+  document.getElementById('acc-moves').innerHTML =
+    (stats.move_buckets||[]).length ? moveHistogram(stats.move_buckets)
+    : '<div class="empty">Needs archived signals</div>';
+
+  document.getElementById('acc-setups').innerHTML =
+    (stats.by_setup||[]).length ? barRows((stats.by_setup||[]).map(b=>
+      [esc(CR_SIG_NAME[b.signal_type]||b.signal_type), b.win_rate_pct, `${b.win_rate_pct}% · n=${b.n}`]))
+    : '<div class="empty">Needs resolved outcomes</div>';
+}
+
+function barRows(rows){
+  const mx = Math.max(...rows.map(r=>r[1]), 1);
+  return '<div style="display:flex;flex-direction:column;gap:8px">' + rows.map(([lab,v,note])=>
+    `<div style="display:grid;grid-template-columns:130px 1fr 92px;align-items:center;gap:10px">
+      <span style="font-size:11px;color:#94a3b8">${lab}</span>
+      <div style="height:8px;background:#0f172a;border-radius:4px;overflow:hidden">
+        <div style="height:8px;width:${v/mx*100}%;background:#0ea5e9;border-radius:4px"></div></div>
+      <span style="font-size:10px;color:#64748b;text-align:right">${note}</span></div>`).join('') + '</div>';
+}
+
+function moveHistogram(buckets){
+  const mx = Math.max(...buckets.map(b=>b.n), 1);
+  return '<div style="display:flex;align-items:flex-end;gap:5px;height:130px">' + buckets.map(b=>{
+    const under = b.upper_pct < MIN_TARGET_PCT;
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;height:100%;justify-content:flex-end">
+      <div style="width:100%;height:${b.n/mx*100}%;background:${under?'#f87171':'#0ea5e9'};border-radius:2px 2px 0 0"
+           title="${b.n} signals"></div>
+      <span style="font-size:9px;color:#475569">${b.upper_pct}%</span></div>`;
+  }).join('') + `</div><div style="font-size:10px;color:#64748b;margin-top:6px">
+    Red is under the ${MIN_TARGET_PCT.toFixed(3)}% the engine requires. Break-even alone is ${BREAK_EVEN_PCT.toFixed(3)}%.</div>`;
+}
+
+async function loadHistoric(){
+  const d = await jget('/api/signals/history?days=365&before=7',{signals:[],counts:{}});
+  const c = d.counts||{};
+  document.getElementById('hist-cards').innerHTML =
+      card('Archived signals', c.signals||0, 'older than 7 days')
+    + card('Closed trades', c.trades||0, 'across all cycles')
+    + card('Snapshots', c.snapshots||0, 'price + indicator')
+    + card('Cycles', c.cycles||0, 'completed');
+  const rows = d.signals||[];
+  document.getElementById('hist-table').innerHTML = rows.length ? `
+    <div class="scroll"><table class="tbl"><thead><tr>
+      <th>Date</th><th>Symbol</th><th>Setup</th><th>Dir</th><th>Entry</th><th>Move</th><th>&times; cost</th><th>Conf</th><th>Outcome</th>
+    </tr></thead><tbody>` + rows.map(x=>{
+      const m=moveOf(x);
+      return `<tr>
+        <td class="sub">${new Date(x.timestamp).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
+        <td><b>${esc(x.symbol)}</b></td>
+        <td>${esc(CR_SIG_NAME[x.signal_type]||x.signal_type)}</td>
+        <td class="${x.direction==='long'?'pos':'neg'}">${x.direction.toUpperCase()}</td>
+        <td>${fmtPrice(x.current_price)}</td><td>${m.toFixed(3)}%</td>
+        <td class="${m>=MIN_TARGET_PCT?'pos':'neg'}">${(m/BREAK_EVEN_PCT).toFixed(1)}&times;</td>
+        <td>${x.confidence}%</td>
+        <td class="sub">${esc(x.outcome||'pending')}</td></tr>`;
+    }).join('') + '</tbody></table></div>'
+    : '<div class="empty">Nothing older than 7 days yet</div>';
+}
+
+const TAB_META = {
+  dashboard:{title:'Dashboard',       sub:'Last 7 days'},
+  crypto:   {title:'Signals',         sub:'Live market and recent predictions'},
+  paper:    {title:'Paper Trading',   sub:'Simulated only — never places a real order'},
+  guard:    {title:'Session Guard',   sub:'Behavioural flags from your own trades'},
+  accuracy: {title:'Accuracy',        sub:'Calibration, move size and setup performance'},
+  historic: {title:'Historic Data',   sub:'Older than 7 days · read-only archive'},
+  watchlist:{title:'Watchlist',       sub:'Symbols the collectors track'},
+  tennis:   {title:'Tennis',          sub:'Live matches'},
+  scalping: {title:'Scalping',        sub:'Sure-shot in-play winners'},
+  football: {title:'Football',        sub:'Live matches'},
+};
+
 function switchTab(tab){
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
+  document.querySelectorAll('.side-item').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.toggle('active',c.id==='tab-'+tab));
-  if(tab==='paper') loadPaper();
+  const m = TAB_META[tab];
+  if(m){
+    document.getElementById('page-title').textContent = m.title;
+    document.getElementById('page-sub').textContent = m.sub;
+  }
+  // The hash keeps a reload on the same screen, which matters on a free
+  // instance that restarts often.
+  if(location.hash !== '#'+tab) history.replaceState(null,'','#'+tab);
+  if(tab==='paper')     loadPaper();
+  if(tab==='guard')     loadGuard();
+  if(tab==='accuracy')  loadAccuracy();
+  if(tab==='historic')  loadHistoric();
+  if(tab==='watchlist') loadWatchlist();
+  if(tab==='dashboard') loadDashboard();
+}
+
+function addCryptoSymbol2(){
+  const el=document.getElementById('cr-add-input2');
+  const v=(el.value||'').trim(); if(!v) return;
+  el.value='';
+  fetch('/api/crypto/watchlist',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({symbol:v})}).then(()=>loadWatchlist());
 }
 
 // ── VIEW ROUTING ──────────────────────────────────────────────────────────────
@@ -2376,6 +2850,7 @@ async function refresh(){
   }
 }
 initView();
+switchTab((location.hash||'#dashboard').slice(1));
 refresh();
 setInterval(refresh,30000);
 </script>
@@ -3294,6 +3769,8 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/debug/coindcx", lambda req: _api_debug_coindcx(runner, req))
     app.router.add_post("/api/sentiment/ingest", lambda req: _api_sentiment_ingest(runner, req))
     app.router.add_get("/api/sentiment/recent", lambda req: _api_sentiment_recent(runner, req))
+    app.router.add_get("/api/signals/history", lambda req: _api_signal_history(runner, req))
+    app.router.add_get("/api/signals/accuracy", lambda req: _api_signal_accuracy(runner, req))
     app.router.add_post("/api/crypto/watchlist/add", lambda req: _api_crypto_watchlist_add(runner, req))
     app.router.add_post("/api/crypto/watchlist/remove", lambda req: _api_crypto_watchlist_remove(runner, req))
     app.router.add_get("/api/commodities", lambda req: _api_commodities(runner, req))

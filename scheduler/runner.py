@@ -615,6 +615,73 @@ class AppRunner:
         return replace(sig, confidence=adjusted,
                        indicators_summary=" | ".join([sig.indicators_summary, *reasons]))
 
+
+    async def _resolve_signal_outcomes_job(self) -> None:
+        """
+        Decide whether past signals reached target or stop.
+
+        Without this every crypto signal stays "pending" forever and no
+        accuracy figure can exist — the tennis path has had a resolver since
+        the start, the crypto path never did.
+
+        Resolution walks the stored candle window forward from the signal and
+        applies the same pessimism the backtest uses: if a bar contains both
+        levels the stop is booked, because the path within a bar is unknowable
+        and a resolver that breaks ties in its own favour reports accuracy it
+        has not earned.
+        """
+        try:
+            async with AsyncSessionFactory() as session:
+                repo = Repository(session)
+                pending = await repo.pending_crypto_signals(
+                    older_than_minutes=settings.paper_max_hold_minutes)
+                if not pending:
+                    return
+
+                states = {st.symbol: st for st in await self.crypto_store.get_all()}
+                resolved = 0
+                for sig in pending:
+                    st = states.get(sig.symbol.lower())
+                    if st is None or not st.candles_1m:
+                        continue
+                    after = [c for c in st.candles_1m
+                             if c.timestamp.replace(tzinfo=None) > sig.timestamp]
+                    if not after:
+                        continue
+
+                    long_ = sig.direction == "long"
+                    outcome, pnl = None, 0.0
+                    for c in after:
+                        hit_stop = c.low <= sig.stop_loss if long_ else c.high >= sig.stop_loss
+                        hit_tgt = c.high >= sig.target_price if long_ else c.low <= sig.target_price
+                        if hit_stop:            # checked first, deliberately
+                            outcome = "lost"
+                            pnl = (sig.stop_loss - sig.current_price) / sig.current_price * 100
+                            break
+                        if hit_tgt:
+                            outcome = "won"
+                            pnl = (sig.target_price - sig.current_price) / sig.current_price * 100
+                            break
+                    if outcome is None:
+                        # Ran out of window without touching either level. Only
+                        # call it expired once the candles have moved well past
+                        # it, so a short history is not mistaken for a verdict.
+                        span = (after[-1].timestamp.replace(tzinfo=None) - sig.timestamp)
+                        if span.total_seconds() / 60 < settings.paper_max_hold_minutes:
+                            continue
+                        outcome = "expired"
+                        pnl = (after[-1].close - sig.current_price) / sig.current_price * 100
+
+                    await repo.resolve_crypto_signal(
+                        sig.id, outcome, round(pnl * (1 if long_ else -1), 4))
+                    resolved += 1
+
+                if resolved:
+                    log.info("signal_outcomes_resolved", resolved=resolved,
+                             still_pending=len(pending) - resolved)
+        except Exception:
+            log.exception("resolve_signal_outcomes_failed")
+
     async def _cleanup_job(self) -> None:
         async with AsyncSessionFactory() as session:
             repo = Repository(session)
@@ -862,6 +929,15 @@ class AppRunner:
         else:
             log.info("paper_trading_disabled",
                      hint="set PAPER_TRADING_ENABLED=true to run a cycle")
+
+        self.scheduler.add_job(
+            self._resolve_signal_outcomes_job,
+            "interval",
+            minutes=15,
+            id="resolve_signal_outcomes",
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
+        )
 
         if settings.sentiment_feeds_enabled:
             self.scheduler.add_job(
