@@ -177,6 +177,10 @@ class Settings(BaseSettings):
     # gross instead of 50%, and no indicator family may argue the other way.
     high_conviction_only: bool = False
 
+    # Public URL to ping so the free instance is never idle for 15 minutes.
+    # Render injects RENDER_EXTERNAL_URL itself; this is the manual override.
+    self_ping_url: str = ""
+
     # Free, keyless sentiment inputs that adjust confidence (never fire trades).
     sentiment_feeds_enabled: bool = True
     fear_greed_refresh_minutes: int = 60
