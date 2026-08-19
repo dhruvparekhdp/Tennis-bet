@@ -565,6 +565,7 @@ class Repository:
         min_confidence: float,
         trailing_enabled: bool,
         scaled_sizing: bool,
+        scaled_leverage: bool = False,
     ) -> PaperCycle:
         """
         Begin a cycle, recording the configuration it runs under.
@@ -585,6 +586,7 @@ class Repository:
             min_confidence=min_confidence,
             trailing_enabled=trailing_enabled,
             scaled_sizing=scaled_sizing,
+            scaled_leverage=scaled_leverage,
             status="running",
         )
         self.session.add(cycle)

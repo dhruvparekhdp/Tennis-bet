@@ -56,7 +56,7 @@ class CycleState:
 
 def config_for_cycle(row) -> CycleConfig:
     """Rebuild the exact configuration a cycle was started under."""
-    from analysis.paper_trading import SizingConfig, TrailingStop
+    from analysis.paper_trading import LeverageConfig, SizingConfig, TrailingStop
 
     return CycleConfig(
         starting_wallet=row.starting_wallet,
@@ -66,6 +66,8 @@ def config_for_cycle(row) -> CycleConfig:
         reward_risk=row.reward_risk,
         min_confidence=row.min_confidence,
         sizing=SizingConfig() if row.scaled_sizing else None,
+        leverage_scaling=(LeverageConfig(ceiling_leverage=row.leverage)
+                          if getattr(row, "scaled_leverage", False) else None),
         trailing=TrailingStop(enabled=row.trailing_enabled, activate_at_r=0.75),
     )
 
@@ -117,10 +119,18 @@ def open_from_signal(
     state: CycleState,
     now: datetime,
     usdt_inr: float,
+    atr_pct: float | None = None,
 ) -> Position | None:
     """Build a position from a signal, or None if it fails the viability gate."""
     margin = cfg.margin_for_signal(state.wallet, signal.confidence,
                                    committed_margin(state.positions))
+    if margin <= 0:
+        return None
+
+    # Leverage may scale with confidence too, bounded by volatility, so the
+    # margin has to be re-capped against total exposure afterwards.
+    leverage = cfg.leverage_for_signal(signal.confidence, atr_pct)
+    margin = cfg.cap_margin_to_notional(margin, leverage, state.wallet)
     if margin <= 0:
         return None
 
@@ -130,7 +140,7 @@ def open_from_signal(
         side=Side.LONG if signal.direction == "long" else Side.SHORT,
         entry_price=signal.current_price,
         margin=margin,
-        leverage=cfg.leverage,
+        leverage=leverage,
         fees=fees_for(signal.symbol),
         stop_pct_of_margin=cfg.stop_pct_of_margin,
         reward_risk=cfg.reward_risk,

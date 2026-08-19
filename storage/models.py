@@ -364,6 +364,9 @@ class PaperCycle(Base):
     min_confidence: Mapped[float] = mapped_column(Float)
     trailing_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     scaled_sizing: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Leverage scaled by confidence too, bounded by volatility. Stored per
+    # cycle so an old cycle still says how it was actually run.
+    scaled_leverage: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # running | hit_target | busted | stopped
     status: Mapped[str] = mapped_column(String, default="running", index=True)
