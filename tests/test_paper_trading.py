@@ -494,8 +494,41 @@ class TestTargetViabilityFilter(unittest.TestCase):
     def test_threshold_follows_the_fee_model(self):
         """Raise fees and more targets become unviable."""
         pricey = CycleConfig(leverage=10, fees=FeeModel(taker_pct=0.005))
-        self.assertTrue(self.cfg.is_target_viable(1900.0, 1906.0))
-        self.assertFalse(pricey.is_target_viable(1900.0, 1906.0))
+        # 0.526% — comfortably over the 0.354% floor the 3.0x default sets.
+        self.assertTrue(self.cfg.is_target_viable(1900.0, 1910.0))
+        self.assertFalse(pricey.is_target_viable(1900.0, 1910.0))
+
+    def test_the_real_trade_that_motivated_raising_the_default(self):
+        """
+        A 0.177% ETH move grossed Rs57.53 and paid Rs38.24 in fees, keeping
+        Rs19.29. It is 0.118% x 1.5 to the digit, so the old 1.5x default let
+        it through exactly. At 3.0x it is refused.
+        """
+        entry = 2000.0
+        target = entry * 1.00177
+        self.assertFalse(self.cfg.is_target_viable(entry, target))
+        lenient = CycleConfig(leverage=10, min_target_to_fee_ratio=1.5)
+        self.assertTrue(lenient.is_target_viable(entry, target))
+
+    def test_a_fixed_roe_target_shrinks_as_leverage_rises(self):
+        """
+        The trap behind that trade: the target is a percentage of MARGIN, the
+        fee is a percentage of PRICE. They diverge with leverage.
+        """
+        moves = []
+        for lev in (10, 25, 50, 100):
+            cfg = CycleConfig(leverage=lev, stop_pct_of_margin=0.20, reward_risk=1.0)
+            moves.append(cfg.target_move_pct())
+        self.assertEqual(moves, sorted(moves, reverse=True))
+        self.assertAlmostEqual(moves[0], 2.0, places=6)    # 10x
+        self.assertAlmostEqual(moves[-1], 0.2, places=6)   # 100x
+
+    def test_a_fixed_roe_target_is_refused_past_the_leverage_ceiling(self):
+        below = CycleConfig(leverage=50, stop_pct_of_margin=0.20, reward_risk=1.0)
+        above = CycleConfig(leverage=100, stop_pct_of_margin=0.20, reward_risk=1.0)
+        self.assertTrue(below.roe_target_is_viable())
+        self.assertFalse(above.roe_target_is_viable())
+        self.assertAlmostEqual(below.max_leverage_for_roe(), 56.5, delta=0.5)
 
     def test_engine_counts_what_it_refuses(self):
         cfg = CycleConfig(starting_wallet=1000, leverage=10, min_confidence=0.60,

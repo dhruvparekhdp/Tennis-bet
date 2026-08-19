@@ -162,6 +162,50 @@ class ScalpConfig:
         """The smallest target worth executing."""
         return self.cost_floor_pct * self.min_edge_multiple
 
+    def roe_target_is_viable(self, roe_target: float, leverage: float) -> bool:
+        """Does a fixed ROE target still ask for a big enough price move?"""
+        return roe_to_price_move(roe_target, leverage) >= self.min_target_pct
+
+    def max_leverage_for(self, roe_target: float) -> float:
+        """The leverage ceiling at which this ROE target stays worth taking."""
+        return max_leverage_for_roe_target(roe_target, self.min_target_pct)
+
+
+def roe_to_price_move(roe_target: float, leverage: float) -> float:
+    """
+    What a fixed return-on-margin target actually asks of price.
+
+    move = roe / leverage. This is the trap in setting every trade to the same
+    percentage: the target is denominated in MARGIN, but the cost of trading
+    is denominated in PRICE. Raise leverage and the same 20% asks for a
+    smaller and smaller price move, until it asks for less than the round trip
+    costs — at which point the trade loses money at the moment it succeeds.
+
+        20% ROE at  10x -> 2.000% price move
+        20% ROE at  25x -> 0.800%
+        20% ROE at  50x -> 0.400%
+        20% ROE at 100x -> 0.200%   below ether's 0.336% floor
+
+    Observed: three ETH trades captured 1.878%, 0.637% and 0.177%. The last
+    one paid Rs38.24 in fees to keep Rs19.29 — a 20% target that had shrunk
+    beneath its own costs.
+    """
+    if leverage <= 0:
+        return 0.0
+    return roe_target / leverage
+
+
+def max_leverage_for_roe_target(roe_target: float, min_move: float) -> float:
+    """
+    Highest leverage at which a fixed ROE target still clears the cost floor.
+
+    Above this the target is unreachable in the only sense that matters: it
+    can be hit and still lose money.
+    """
+    if min_move <= 0:
+        return float("inf")
+    return roe_target / min_move
+
 
 @dataclass(frozen=True)
 class ScalpLevels:

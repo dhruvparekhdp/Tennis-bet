@@ -896,11 +896,15 @@ class CycleConfig:
     review: ReviewConfig = field(default_factory=ReviewConfig)
     sizing: SizingConfig | None = None   # None = flat margin_per_trade_pct
 
-    # A signal whose target is closer than this multiple of the round-trip fee
-    # is refused outright. Observed live signals were placing targets 0.01-0.08%
-    # away when break-even alone needs 0.118% — those trades lose money even
-    # when they "win", so the only correct action is not to take them.
-    min_target_to_fee_ratio: float = 1.5
+    # How many times the round-trip cost a target must clear.
+    #
+    # Raised from 1.5 to 3.0 after a real trade landed exactly on the old
+    # value. At 1.5x you keep 1 - 1/1.5 = 33% of gross: the ledger showed a
+    # 0.177% ETH move (0.118% x 1.5, to the digit) that grossed Rs57.53 and
+    # paid Rs38.24 in fees, keeping Rs19.29. It passed the filter and should
+    # not have. At 3.0x a trade keeps two thirds of what it earns, which is
+    # the least that is worth executing.
+    min_target_to_fee_ratio: float = 3.0
 
     # Quote conversion for INR-margined futures on a USDT-priced pair.
     # usdt_inr=1.0 with lot_step=0.0 keeps prices and margin in one currency
@@ -963,7 +967,27 @@ class CycleConfig:
             "target_to_fee_ratio": round(tgt / be, 2) if be else None,
             "stop_inside_liquidation": self.stop_move_pct() < self.liquidation_move_pct(),
             "trailing_can_activate": self.trailing_can_activate(),
+            "roe_at_target_pct": round(self.stop_pct_of_margin * self.reward_risk * 100, 2),
+            "max_leverage_for_this_roe": round(self.max_leverage_for_roe(), 1),
+            "roe_target_viable": self.roe_target_is_viable(),
         }
+
+    def roe_target_is_viable(self) -> bool:
+        """
+        Is the target still a big enough PRICE move at this leverage?
+
+        The target is set as a percentage of margin, but the fee is a
+        percentage of price. Those diverge as leverage rises, and past a
+        certain point a fixed ROE target asks for less movement than the round
+        trip costs — so hitting it loses money.
+        """
+        return self.target_move_pct() / 100.0 >= self.fees.round_trip_pct() * self.min_target_to_fee_ratio
+
+    def max_leverage_for_roe(self) -> float:
+        """Leverage ceiling before this ROE target drops beneath its own costs."""
+        floor = self.fees.round_trip_pct() * self.min_target_to_fee_ratio
+        roe = self.stop_pct_of_margin * self.reward_risk
+        return roe / floor if floor > 0 else float("inf")
 
     def trailing_can_activate(self) -> bool:
         """
