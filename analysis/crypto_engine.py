@@ -7,6 +7,7 @@ import structlog
 from analysis.crypto_signal import CryptoSignal
 from analysis.crypto_signals import (
     BollingerSqueezeAnalyzer,
+    ConfluenceAnalyzer,
     RSIDivergenceAnalyzer,
     SentimentShiftAnalyzer,
     VolumeSpikeAnalyzer,
@@ -21,6 +22,9 @@ class CryptoEngine:
     """Orchestrates all crypto signal detectors with cooldown deduplication and thresholding."""
 
     def __init__(self) -> None:
+        # Listed first because it is the one that requires agreement; the
+        # others each fire on a single observation.
+        self.confluence = ConfluenceAnalyzer()
         self.rsi_divergence = RSIDivergenceAnalyzer()
         self.volume_spike = VolumeSpikeAnalyzer()
         self.bollinger_squeeze = BollingerSqueezeAnalyzer()
@@ -33,6 +37,7 @@ class CryptoEngine:
     def process(self, state: CryptoState) -> list[CryptoSignal]:
         """Evaluate all signal strategies against current crypto market state."""
         candidates: list[CryptoSignal | None] = [
+            self.confluence.analyze(state),
             self.rsi_divergence.analyze(state),
             self.volume_spike.analyze(state),
             self.bollinger_squeeze.analyze(state),

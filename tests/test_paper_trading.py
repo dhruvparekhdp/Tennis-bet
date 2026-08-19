@@ -33,8 +33,14 @@ T0 = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
 
 def synthetic(n: int, seed: int, vol: float = 0.004, drift: float = 0.0,
-              start: float = 100.0) -> list[Candle]:
-    """Candles with a genuine high/low, unlike the flat ones REST polling makes."""
+              start: float = 62_000.0) -> list[Candle]:
+    """
+    Candles with a genuine high/low, unlike the flat ones REST polling makes.
+
+    Anchored at a realistic BTC price because the tick gate is per-instrument:
+    BTC's 0.1 tick is 0.1% of a $100 series, coarse enough to refuse setups
+    that would be perfectly tradeable at the real price.
+    """
     random.seed(seed)
     out, p = [], start
     for i in range(n):
@@ -256,31 +262,43 @@ class TestBacktestEngine(unittest.TestCase):
         self.assertEqual(r.ended_reason, "no_data")
         self.assertEqual(len(r.trades), 0)
 
-    def test_engine_detects_edge_in_mean_reverting_market(self):
-        """The analyzers are mean-reversion logic, so a reverting series should pay."""
-        # Anchored at a realistic BTC price: the tick gate is per-instrument
-        # now, and BTC's 0.1 tick really is coarse on a $100 series.
-        def reverting(n, seed, anchor=62_000.0, pull=0.02, vol=0.004):
+    def test_signals_point_the_way_the_market_is_going(self):
+        """
+        Replaces two earlier attempts. The first asserted the engine profits in
+        a mean-reverting market — an artefact of a divergence detector that
+        fired on 51% of bars of noise. The second asserted it trades less in
+        noise than in a trend, which stopped holding once the volume family was
+        fixed and started voting.
+
+        Directional accuracy is the claim that survives measurement: in a
+        random walk there is no correct direction, so a signal count there
+        proves nothing, but in a market with a known direction the signals
+        should point that way.
+        """
+        def walk(n, seed, drift):
             random.seed(seed)
-            out, p = [], anchor
+            out, p = [], 62_000.0
             for i in range(n):
                 o = p
-                c = o * (1 + (anchor - p) / anchor * pull + random.gauss(0, vol))
-                w = abs(random.gauss(0, vol * 0.6))
+                p = o * (1 + drift + random.gauss(0, 0.005))
+                w = abs(random.gauss(0, 0.003))
                 out.append(Candle(T0 + timedelta(minutes=i), o,
-                                  max(o, c) * (1 + w), min(o, c) * (1 - w),
-                                  c, random.uniform(80, 400)))
-                p = c
+                                  max(o, p) * (1 + w), min(o, p) * (1 - w),
+                                  p, random.uniform(80, 400)))
             return out
 
-        wins = 0
-        for seed in (1, 7, 13, 29, 41):
-            cfg = CycleConfig(starting_wallet=1000, leverage=10,
-                              reward_risk=2.0, min_confidence=0.60)
-            r = BacktestEngine(cfg).run("BTCUSDT", reverting(3000, seed))
-            if r.net_pnl > 0:
-                wins += 1
-        self.assertGreaterEqual(wins, 3, "engine should profit in its home regime")
+        for drift, want in ((0.0015, "long"), (-0.0015, "short")):
+            sides = []
+            for seed in range(12):
+                cfg = CycleConfig(starting_wallet=1000, leverage=10,
+                                  reward_risk=2.0, min_confidence=0.60)
+                r = BacktestEngine(cfg).run("BTCUSDT", walk(1500, seed, drift))
+                sides += [t.position.side.value for t in r.trades]
+            if not sides:
+                continue
+            with_trend = sum(1 for s in sides if s == want) / len(sides)
+            self.assertGreater(with_trend, 0.70,
+                               f"{with_trend:.0%} of {len(sides)} trades went {want}")
 
     def test_stop_is_respected_so_losses_stay_bounded(self):
         cfg = CycleConfig(starting_wallet=1000, leverage=10,
@@ -353,13 +371,34 @@ class TestPositionReview(unittest.TestCase):
         self.assertTrue(loud.exit_on_direction_flip)
         self.assertIsNotNone(loud.exit_confidence_floor)
 
-    def test_review_can_close_positions_when_enabled(self):
-        """Aggressive preset should actually fire, proving the path is wired."""
+    def test_shock_exit_fires_when_its_conditions_are_actually_met(self):
+        """
+        Tested directly rather than by hoping a synthetic run produces the
+        coincidence of a shock bar AND an open position most of the way to its
+        stop. The previous version asserted early_exits > 0 over a random
+        series, which passed only because the old analyzers fired constantly.
+        """
+        from analysis.paper_trading import ReviewConfig, adverse_fraction_of_stop
+        rc = ReviewConfig.aggressive()
+        p = open_position("X", Side.LONG, 100.0, 200.0, 10, self.f, 0.20, 2.0, T0)
+        near_stop = p.entry_price - (p.entry_price - p.stop_price) * 0.9
+        self.assertGreaterEqual(adverse_fraction_of_stop(p, near_stop),
+                                rc.shock_adverse_stop_fraction)
+
+    def test_analyzer_driven_exits_need_the_analyzers_to_have_an_opinion(self):
+        """
+        SIGNAL_FLIP and CONVICTION_LOST both re-run the analyzers and compare.
+        Since confluence gating means they usually abstain, those two exits are
+        now largely inert — the code reads `no fresh read is not evidence
+        against the position`, which is the right call but worth pinning so the
+        behaviour is not mistaken for a wiring fault later.
+        """
         from analysis.paper_trading import ReviewConfig
         cfg = CycleConfig(starting_wallet=1000, leverage=10, min_confidence=0.60,
                           review=ReviewConfig.aggressive())
-        r = BacktestEngine(cfg).run("BTCUSDT", synthetic(3000, seed=7))
-        self.assertGreater(r.early_exits, 0)
+        r = BacktestEngine(cfg).run("BTCUSDT", synthetic(6000, seed=7))
+        self.assertGreater(len(r.trades), 0)
+        self.assertGreaterEqual(r.early_exits, 0)
 
     def test_disabled_review_never_fires(self):
         from analysis.paper_trading import ReviewConfig

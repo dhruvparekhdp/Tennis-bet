@@ -64,11 +64,27 @@ def tick_for_price(price: float, symbol: str = "") -> float:
     return tick_for(symbol, price)
 
 
+# Float noise, in units of ticks. 62000 * (1 - 0.0056) evaluates to
+# 61652.799999999996, which is 616527.9999999999 ticks — a bare floor() then
+# moves the level a WHOLE tick, widening the stop and pushing reward-to-risk
+# under 1.0. That silently refused signals until it was traced.
+_TICK_EPSILON = 1e-6
+
+
 def round_to_tick(price: float, tick: float, *, up: bool) -> float:
-    """Snap to a tick, always away from entry so a level never lands inside it."""
+    """
+    Snap to a tick, always away from entry so a level never lands inside it.
+
+    Values already on the grid stay put: a level that is within float noise of
+    an exact tick is treated as being on it, rather than shunted a full tick in
+    whichever direction the error happened to point.
+    """
     if tick <= 0:
         return price
     steps = price / tick
+    nearest = round(steps)
+    if abs(steps - nearest) < _TICK_EPSILON:
+        return nearest * tick
     return (math.ceil(steps) if up else math.floor(steps)) * tick
 
 

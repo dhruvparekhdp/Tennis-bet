@@ -71,33 +71,42 @@ class CryptoState:
             return 1.0
         return self.volume_24h / self.volume_24h_avg
 
-    def rsi_divergence(self, lookback: int = 14) -> str | None:
+    def rsi_divergence(self, lookback: int = 40) -> str | None:
         """
-        Detect Regular Bullish or Bearish RSI Divergence:
-        - Bullish: Price made lower low, but RSI made higher low.
-        - Bearish: Price made higher high, but RSI made lower high.
+        Regular RSI divergence, measured at confirmed swing pivots.
+
+        Bullish — price makes a lower low while RSI makes a higher low.
+        Bearish — price makes a higher high while RSI makes a lower high.
+
+        The previous version compared the minimum of one half-window against
+        the other and then asked whether RSI happened to be ticking upward. It
+        never read RSI at the two lows, which is the entire definition. Measured
+        on pure noise that condition fired on 51% of bars — a coin flip, and the
+        reason nearly every signal on the dashboard was a "momentum reversal".
         """
-        candles = self.candles_1m[-lookback:] if len(self.candles_1m) >= lookback else self.candles_1m
-        if len(candles) < 8:
+        from analysis.indicators import divergence, rsi_series
+
+        candles = self.candles_1m[-lookback:] if len(self.candles_1m) >= lookback \
+            else self.candles_1m
+        if len(candles) < 20:
             return None
 
         closes = [c.close for c in candles]
         lows = [c.low for c in candles]
         highs = [c.high for c in candles]
+        rs = rsi_series(closes)
+        if len(rs) < 8:
+            return None
 
-        # Recent vs older half
-        half = len(candles) // 2
-        older_low, recent_low = min(lows[:half]), min(lows[half:])
-        older_high, recent_high = max(highs[:half]), max(highs[half:])
+        # RSI starts later than price, so both series are trimmed to the same
+        # bars before any comparison — otherwise the pivots do not line up.
+        offset = len(closes) - len(rs)
+        lows_a, highs_a = lows[offset:], highs[offset:]
 
-        # Bullish: price lower low while RSI is in oversold/recovering state
-        if recent_low < older_low and self.rsi_14 > self.rsi_14_prev and self.rsi_14 < 45:
+        if divergence(lows_a, rs, bullish=True):
             return "bullish"
-
-        # Bearish: price higher high while RSI is in overbought/cooling state
-        if recent_high > older_high and self.rsi_14 < self.rsi_14_prev and self.rsi_14 > 55:
+        if divergence(highs_a, rs, bullish=False):
             return "bearish"
-
         return None
 
 

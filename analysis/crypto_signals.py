@@ -4,8 +4,12 @@ from datetime import UTC, datetime
 
 import structlog
 
+from analysis import indicators as ind
+from analysis.confluence import MIN_AGREEING_FAMILIES as MIN_AGREEING
+from analysis.confluence import evaluate
 from analysis.crypto_signal import CryptoSignal, compute_crypto_stake
 from analysis.crypto_state import CryptoState
+from analysis.patterns import range_breakout
 from analysis.scalp_levels import NoTrade, ScalpConfig, scalp_levels
 
 log = structlog.get_logger()
@@ -159,32 +163,45 @@ class VolumeSpikeAnalyzer:
 
 
 class BollingerSqueezeAnalyzer:
-    """Detects volatility compression (Bandwidth squeeze) preceding sharp directional expansion."""
+    """Volatility compression followed by a genuine break out of it."""
 
     def analyze(self, state: CryptoState) -> CryptoSignal | None:
-        if len(state.candles_1m) < 25 or state.bollinger_bandwidth <= 0:
+        candles = state.candles_1m
+        if len(candles) < 40 or state.current_price <= 0:
             return None
 
-        # Squeeze threshold: tight bandwidth (< 0.025 or 2.5% band width)
-        if state.bollinger_bandwidth > 0.025:
+        highs = [c.high for c in candles]
+        lows = [c.low for c in candles]
+        closes = [c.close for c in candles]
+
+        # The squeeze is Bollinger inside Keltner, not band width below a
+        # constant. The old `bandwidth > 0.025` test was scale-dependent: 2.5%
+        # is a dead market for a small coin and a violent one for BTC, so the
+        # same number meant two different things depending on the symbol.
+        # It must have been squeezed RECENTLY and be breaking out NOW — a
+        # squeeze that is still on says a move is coming but not which way.
+        was_squeezed = ind.squeeze_on(highs[:-1], lows[:-1], closes[:-1])
+        still_squeezed = ind.squeeze_on(highs, lows, closes)
+        if not was_squeezed or still_squeezed:
             return None
 
-        price = state.current_price
-        # Breakout trigger if price crosses outer bands
-        if price > state.bollinger_upper:
-            direction = "long"
-        elif price < state.bollinger_lower:
-            direction = "short"
-        else:
+        atr_value = ind.atr(highs, lows, closes) or 0.0
+        breakout = range_breakout(candles, lookback=20, buffer_atr=atr_value * 0.25)
+        if breakout is None or breakout.direction == 0:
             return None
 
         return _emit(
-            state, direction=direction, signal_type="bollinger_squeeze",
-            trigger_desc=("Price had been coiled in a tight range and just broke out "
-                          "— squeezes like this often lead to a bigger move."),
-            confidence=0.70, timeframe="4h",
-            atr_target_multiple=1.4, reward_risk=1.0,
-            extra_indicators=f"Bandwidth {state.bollinger_bandwidth * 100:.2f}%",
+            state,
+            direction="long" if breakout.direction > 0 else "short",
+            signal_type="bollinger_squeeze",
+            trigger_desc=("Price coiled into a tight squeeze and has just broken out "
+                          "of its recent range — compression like this often releases "
+                          "into a real move."),
+            confidence=0.70,
+            timeframe="4h",
+            atr_target_multiple=1.4,
+            reward_risk=1.0,
+            extra_indicators="squeeze released",
         )
 
 
@@ -214,4 +231,56 @@ class SentimentShiftAnalyzer:
             atr_target_multiple=2.0, reward_risk=1.0,
             extra_indicators=(f"Sentiment {state.sentiment_score:+.2f} | "
                               f"News {state.sentiment_news_count}"),
+        )
+
+
+class ConfluenceAnalyzer:
+    """
+    The primary analyzer: trades only where independent evidence agrees.
+
+    The other four analyzers each look at one thing and fire on it. This one
+    asks five families — trend, momentum, volume, structure and pattern — and
+    requires at least three to agree before it will say anything. Volatility is
+    a veto rather than a vote, because a quiet market is not a reason to go
+    either way; it is a reason to stand aside.
+
+    Confidence here is earned rather than assigned: it comes from the share of
+    available evidence that agrees, penalised by whatever disagrees. The other
+    analyzers hand out fixed numbers like 0.68 and 0.70, which look like
+    measurements but are not.
+    """
+
+    def analyze(self, state: CryptoState) -> CryptoSignal | None:
+        if len(state.candles_1m) < 60 or state.current_price <= 0:
+            return None
+
+        cost_floor = SCALP.for_symbol(state.symbol).cost_floor_pct
+        verdict = evaluate(state.candles_1m, min_atr_pct=cost_floor)
+        if verdict.direction is None:
+            if verdict.vetoes:
+                log.debug("confluence.no_trade", symbol=state.symbol,
+                          reason=verdict.vetoes[0])
+            return None
+
+        agree = verdict.agreeing_families
+        against = verdict.dissenting_families
+        detail = verdict.summary()
+        trigger = (f"{agree} of 5 independent checks agree on a "
+                   f"{verdict.direction}"
+                   + (f", {against} against" if against else "")
+                   + (f" — {detail}" if detail else "."))
+
+        # Target multiple scales with agreement: more independent confirmation
+        # is a reason to expect a larger move, not merely a bigger position.
+        multiple = 1.0 + 0.25 * max(0, agree - MIN_AGREEING)
+        return _emit(
+            state,
+            direction=verdict.direction,
+            signal_type="confluence",
+            trigger_desc=trigger,
+            confidence=verdict.confidence,
+            timeframe="1h",
+            atr_target_multiple=multiple,
+            reward_risk=1.0,
+            extra_indicators=f"{agree}/5 agree",
         )
