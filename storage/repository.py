@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta
 
 import numpy as np
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from storage.models import (
@@ -756,6 +756,63 @@ class Repository:
             .where(NewsSentiment.symbol.in_([symbol.lower(), "all"]))
             .order_by(NewsSentiment.published_at.desc()).limit(200))
         return list(res.scalars().all())
+
+    # ── Signal history and accuracy ───────────────────────────────────────
+
+    async def crypto_signals_between(self, newer_than_days: int,
+                                     older_than_days: int = 0,
+                                     limit: int = 400) -> list[CryptoSignalLog]:
+        """
+        Signals inside a window. `older_than_days` carves out the recent end,
+        which is what splits the live dashboard from the archive.
+        """
+        now = datetime.utcnow()
+        q = select(CryptoSignalLog).where(
+            CryptoSignalLog.timestamp >= now - timedelta(days=newer_than_days))
+        if older_than_days:
+            q = q.where(CryptoSignalLog.timestamp < now - timedelta(days=older_than_days))
+        res = await self.session.execute(
+            q.order_by(CryptoSignalLog.timestamp.desc()).limit(limit))
+        return list(res.scalars().all())
+
+    async def pending_crypto_signals(self, older_than_minutes: int = 240,
+                                     limit: int = 200) -> list[CryptoSignalLog]:
+        """
+        Signals old enough to have resolved but still marked pending.
+
+        The age floor matters: resolving a signal the moment it fires would
+        record whatever the first tick did, which is noise rather than outcome.
+        """
+        cutoff = datetime.utcnow() - timedelta(minutes=older_than_minutes)
+        res = await self.session.execute(
+            select(CryptoSignalLog)
+            .where(CryptoSignalLog.outcome == "pending")
+            .where(CryptoSignalLog.timestamp <= cutoff)
+            .order_by(CryptoSignalLog.timestamp).limit(limit))
+        return list(res.scalars().all())
+
+    async def resolve_crypto_signal(self, signal_id: int, outcome: str,
+                                    pnl_pct: float) -> None:
+        row = await self.session.get(CryptoSignalLog, signal_id)
+        if row is None:
+            return
+        row.outcome = outcome
+        row.pnl_pct = pnl_pct
+        await self.session.commit()
+
+    async def crypto_signal_counts(self) -> dict:
+        async def count(model, where=None):
+            q = select(func.count()).select_from(model)
+            if where is not None:
+                q = q.where(where)
+            return int((await self.session.execute(q)).scalar() or 0)
+        return {
+            "signals": await count(CryptoSignalLog),
+            "trades": await count(PaperTrade),
+            "snapshots": await count(CryptoSnapshot),
+            "cycles": await count(PaperCycle),
+            "pending": await count(CryptoSignalLog, CryptoSignalLog.outcome == "pending"),
+        }
 
 
 def _parse_dt(value) -> datetime:
