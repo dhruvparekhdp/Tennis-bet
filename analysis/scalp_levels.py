@@ -118,6 +118,30 @@ class ScalpConfig:
     funding_blackout_minutes: int = 15
     max_signal_age_seconds: int = 90
 
+    @classmethod
+    def high_conviction(cls) -> ScalpConfig:
+        """
+        Fewer trades, each with room to actually pay.
+
+        Calibrated on the closed trades from the account. What separates a good
+        one from a poor one is not the win — all of them won — but how much of
+        the gross survived the round trip, and that is pure arithmetic:
+
+            kept = 1 - 1 / (move / round_trip_cost)
+
+        Observed, and matching the formula to the percentage point:
+
+            34.0x cost -> kept 97%     0.803% gold move
+            15.9x      -> kept 94%     1.878% ETH move
+             5.4x      -> kept 82%     0.637% ETH move
+             1.5x      -> kept 34%     0.177% ETH move, Rs38 of fees on Rs58
+
+        The default 2.0 multiple only asks a trade to keep half its gross. At
+        5.0 it keeps 80%, which is where the account's good trades sat and
+        below which the fee starts owning the outcome.
+        """
+        return cls(min_edge_multiple=5.0, min_reward_risk=1.0)
+
     def for_symbol(self, symbol: str) -> ScalpConfig:
         """
         Re-cost this frame for one market.
