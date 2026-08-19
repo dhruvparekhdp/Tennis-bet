@@ -284,6 +284,13 @@ class CryptoStateStore:
     def _recalculate_indicators(self, state: CryptoState) -> None:
         recalculate_indicators(state)
 
+    async def set_funding_rate(self, symbol: str, rate: float) -> None:
+        """Record the venue's funding rate. Feeds confidence, never a trade."""
+        async with self._lock:
+            state = self._states.get(symbol.lower())
+            if state is not None:
+                state.funding_rate_per_8h = rate
+
     async def update_sentiment(self, base_asset: str, score: float, news_count: int) -> None:
         base = base_asset.upper()
         async with self._lock:
