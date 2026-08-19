@@ -23,18 +23,32 @@ _FUTURES_PRICE_URLS = (
 
 def _futures_name_variants(base: str) -> tuple[str, ...]:
     """
-    Plausible spellings of one instrument on the futures venue.
+    Fallback spellings, kept only for instruments whose record omits "mkt".
 
-    CoinDCX prefixes futures instruments (B-XAU_USDT and similar) and the exact
-    family letter is not documented publicly. Rather than guess one and have
-    the symbol silently stay at zero, every reasonable spelling is tried and
-    the one that matches is logged.
+    Matching is now done on the "mkt" field the endpoint provides — the probe
+    showed B-XAU_USDT carries mkt "XAUUSDT", which is exactly the watchlist
+    spelling. Deriving the key from data beats guessing the prefix.
     """
     b = base.upper()
     return (
         f"B-{b}_USDT", f"F-{b}_USDT", f"{b}_USDT", f"{b}USDT",
         f"B-{b}_INR", f"{b}_INR", f"{b}INR",
     )
+
+
+def _num(node: dict, *keys: str) -> float | None:
+    """First key that parses to a finite number, else None."""
+    for k in keys:
+        v = node.get(k)
+        if v is None:
+            continue
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if f == f and abs(f) != float("inf"):
+            return f
+    return None
 
 
 def _extract_price(node) -> float | None:
@@ -82,6 +96,9 @@ class CoinDCXCollector:
         self.store = store
         self._consecutive_failures = 0
         self.last_matched_symbols: set[str] = set()
+        # Symbols served by the futures venue rather than spot — gold and
+        # silver among them. Surfaced so the dashboard can say which is which.
+        self.futures_symbols: set[str] = set()
 
     async def fetch(self) -> None:
         symbols = await self.store.get_symbols()
@@ -173,15 +190,21 @@ class CoinDCXCollector:
         return None
 
     async def _fetch_futures(self, symbols: list[str], now: datetime) -> set[str]:
-        """Fill in symbols the spot ticker does not list. Best effort, never fatal."""
+        """
+        Fill in symbols the spot ticker does not list. Best effort, never fatal.
+
+        The record carries a real 24h high, low, volume, change and funding
+        rate. The first version of this passed high=low=price and volume=0,
+        which is the same flat-candle mistake that collapsed ATR on the REST
+        path — and it silenced the volume family for exactly the instruments
+        that needed the futures feed.
+        """
         matched: set[str] = set()
         got = await self.fetch_futures_raw()
         if not got:
             return matched
-        url, payload = got
+        _url, payload = got
 
-        # The payload has been seen as a bare mapping and as one wrapped in a
-        # "prices" key; accept either rather than depending on which.
         table = payload
         if isinstance(payload, dict):
             for wrapper in ("prices", "data", "result"):
@@ -190,23 +213,52 @@ class CoinDCXCollector:
                     table = inner
                     break
         if not isinstance(table, dict):
-            log.warning("coindcx_futures_unexpected_shape",
-                        url=url, type=type(table).__name__)
             return matched
 
-        upper = {str(k).upper(): v for k, v in table.items()}
+        # Index by the market name the venue itself reports, falling back to
+        # the raw key for records that omit it.
+        by_market: dict[str, dict] = {}
+        for key, rec in table.items():
+            # Real records are dicts. A bare number is normalised rather than
+            # skipped, so a leaner response shape still yields a price instead
+            # of the symbol silently staying dead.
+            if isinstance(rec, (int, float)):
+                rec = {"ls": float(rec)}
+            if not isinstance(rec, dict):
+                continue
+            name = str(rec.get("mkt") or key).upper()
+            by_market.setdefault(name, rec)
+            by_market.setdefault(str(key).upper(), rec)
+
         for sym in symbols:
             base = _base_symbol(sym).upper()
-            for name in _futures_name_variants(base):
-                price = _extract_price(upper.get(name))
-                if price is None:
-                    continue
-                await self.store.update_from_rest(
-                    symbol=sym, price=price, high_24h=price, low_24h=price,
-                    volume_24h=0.0, change_24h_pct=0.0, timestamp=now,
-                )
-                matched.add(sym)
-                log.info("coindcx_futures_matched", symbol=sym,
-                         instrument=name, price=price)
-                break
+            rec = by_market.get(f"{base}USDT") or by_market.get(f"{base}INR")
+            if rec is None:
+                for name in _futures_name_variants(base):
+                    rec = by_market.get(name)
+                    if rec is not None:
+                        break
+            if rec is None:
+                continue
+
+            price = _num(rec, "ls", "last_price", "mp", "price", "c")
+            if price is None or price <= 0:
+                continue
+
+            high = _num(rec, "h", "high") or price
+            low = _num(rec, "l", "low") or price
+            volume = _num(rec, "v", "volume") or 0.0
+            change = _num(rec, "pc", "change_24_hour") or 0.0
+            funding = _num(rec, "fr", "efr", "funding_rate")
+
+            await self.store.update_from_rest(
+                symbol=sym, price=price, high_24h=high, low_24h=low,
+                volume_24h=volume, change_24h_pct=change, timestamp=now,
+            )
+            if funding is not None:
+                await self.store.set_funding_rate(sym, funding)
+            matched.add(sym)
+            self.futures_symbols.add(sym)
+            log.info("coindcx_futures_matched", symbol=sym, price=price,
+                     change_24h=change, funding=funding)
         return matched

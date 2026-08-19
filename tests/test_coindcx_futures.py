@@ -111,6 +111,78 @@ class TestFuturesFallback(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await col._fetch_futures(["xauusdt"], datetime.now(UTC)), set())
 
 
+# The exact record returned by /api/debug/coindcx?symbol=xauusdt on the live
+# server, 19 Aug 2026. Pinned verbatim so a change in the venue's shape shows
+# up as a failing test rather than as a symbol quietly going dead again.
+LIVE_XAU_RECORD = {
+    "fr": 0, "h": 4412.1, "l": 4331.01, "v": 1770379707.11, "ls": 4346.94,
+    "pc": -1.225, "mkt": "XAUUSDT", "btST": 1787117161249, "ctRT": 1787117161957,
+    "skw": 32, "mp": 4346.77110725, "efr": 0, "bmST": 1787117161360,
+    "cmRT": 1787117161809,
+}
+
+
+class TestAgainstTheLivePayload(unittest.IsolatedAsyncioTestCase):
+    async def _run(self, table, symbols=("xauusdt",)):
+        from analysis.crypto_state_store import CryptoStateStore
+        from collectors.coindcx import CoinDCXCollector
+
+        store = CryptoStateStore()
+        col = CoinDCXCollector(store)
+
+        async def fake_raw():
+            return ("http://test", table)
+
+        col.fetch_futures_raw = fake_raw
+        matched = await col._fetch_futures(list(symbols), datetime.now(UTC))
+        return col, store, matched
+
+    async def test_the_real_record_resolves(self):
+        _, store, matched = await self._run({"B-XAU_USDT": LIVE_XAU_RECORD})
+        self.assertEqual(matched, {"xauusdt"})
+        st = await store.get("xauusdt")
+        self.assertAlmostEqual(st.current_price, 4346.94, places=4)
+
+    async def test_high_low_volume_and_change_are_kept(self):
+        """
+        The first version passed high=low=price and volume=0 — the same flat
+        feed that collapsed ATR, and it muted the volume family for exactly
+        the instruments needing this path.
+        """
+        _, store, _ = await self._run({"B-XAU_USDT": LIVE_XAU_RECORD})
+        st = await store.get("xauusdt")
+        self.assertAlmostEqual(st.high_24h, 4412.1, places=4)
+        self.assertAlmostEqual(st.low_24h, 4331.01, places=4)
+        self.assertGreater(st.volume_24h, 0)
+        self.assertNotEqual(st.high_24h, st.low_24h)
+
+    async def test_the_funding_rate_is_captured(self):
+        """0.0 is a real reading — nobody paying anybody — and not the same as None."""
+        _, store, _ = await self._run({"B-XAU_USDT": LIVE_XAU_RECORD})
+        st = await store.get("xauusdt")
+        self.assertIsNotNone(st.funding_rate_per_8h)
+        self.assertEqual(st.funding_rate_per_8h, 0.0)
+
+    async def test_matching_uses_the_mkt_field_not_the_key(self):
+        """A key I never guessed still resolves, because mkt says XAUUSDT."""
+        _, _, matched = await self._run({"SOMETHING-UNGUESSABLE": LIVE_XAU_RECORD})
+        self.assertEqual(matched, {"xauusdt"})
+
+    async def test_the_symbol_is_marked_as_futures_served(self):
+        col, _, _ = await self._run({"B-XAU_USDT": LIVE_XAU_RECORD})
+        self.assertIn("xauusdt", col.futures_symbols)
+
+    async def test_spot_gold_tokens_are_a_different_instrument(self):
+        """
+        Spot carries XAUTUSDT — Tether Gold, a token. It is not the XAU
+        contract being traded, so matching must not fall through to it.
+        """
+        from collectors.coindcx import _base_symbol
+        self.assertEqual(_base_symbol("xauusdt"), "xau")
+        self.assertEqual(_base_symbol("xautusdt"), "xaut")
+        self.assertNotEqual(_base_symbol("xauusdt"), _base_symbol("xautusdt"))
+
+
 class TestSignalTimestampSurface(unittest.TestCase):
     """The card now says when it fired, which also reveals a stale deploy."""
 

@@ -565,7 +565,7 @@ class AppRunner:
                     if st.current_price <= 0:
                         continue
                     for sig in self.crypto_engine.process(st):
-                        sig = self._apply_sentiment(sig)
+                        sig = self._apply_sentiment(sig, st.funding_rate_per_8h)
                         ok, _why = should_open(sig, cfg, cstate, now)
                         if not ok:
                             continue
@@ -600,12 +600,12 @@ class AppRunner:
         except Exception:
             log.exception("paper_trading_job_failed")
 
-    def _apply_sentiment(self, sig):
+    def _apply_sentiment(self, sig, funding: float | None = None):
         """Let sentiment nudge confidence — it never creates or blocks a signal."""
         if not settings.sentiment_feeds_enabled:
             return sig
         adjusted, reasons = adjust_confidence(
-            sig.confidence, sig.direction, self.fear_greed, None)
+            sig.confidence, sig.direction, self.fear_greed, funding)
         if adjusted == sig.confidence:
             return sig
         return replace(sig, confidence=adjusted,

@@ -51,6 +51,11 @@ class CryptoState:
     ema_200: float = 0.0
     atr_14: float = 0.0                                            # Average True Range (volatility)
 
+    # Perpetual funding rate per 8h, from the futures venue. None means the
+    # instrument has no funding or none was reported — distinct from 0.0,
+    # which is a real reading of "nobody is paying anybody".
+    funding_rate_per_8h: float | None = None
+
     # Sentiment (FinBERT / VADER / CryptoPanic)
     sentiment_score: float = 0.0                                   # -1.0 (bearish) to +1.0 (bullish)
     sentiment_news_count: int = 0
