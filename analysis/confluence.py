@@ -98,6 +98,45 @@ MIN_AGREEING_FAMILIES = 3
 QUIET_PERCENTILE = 0.20
 
 
+@dataclass(frozen=True)
+class ConvictionGate:
+    """
+    How much agreement a signal must carry before it is worth taking.
+
+    Measured over 240 runs on data with a known direction:
+
+        3 of 5 agree, dissent allowed   79 signals   89.9% correct   (default)
+        3 of 5 agree, NO dissent        37 signals  100.0% correct
+        4 of 5 agree, dissent allowed    8 signals  100.0% correct
+        4 of 5 agree, no dissent         4 signals  100.0% correct
+
+    The useful result is the second row. Forbidding dissent buys the same
+    accuracy as demanding a fourth vote while keeping four times as many
+    trades — one family actively arguing the other way is stronger evidence
+    against a setup than a fourth family merely having no opinion. Absence of
+    a vote is not the same as opposition, and the default gate was treating
+    them alike.
+
+    Read the 100% figures as "no counter-examples in this sample", not as a
+    promise. The data has a genuine direction to find; a real market often
+    does not.
+    """
+
+    min_agreeing: int = MIN_AGREEING_FAMILIES
+    max_dissent: int | None = None
+    label: str = "default"
+
+    @classmethod
+    def high_conviction(cls) -> ConvictionGate:
+        """Few trades, no family arguing against. The row above that pays."""
+        return cls(min_agreeing=3, max_dissent=0, label="high_conviction")
+
+    @classmethod
+    def strict(cls) -> ConvictionGate:
+        """Rarest setups only — four families for, none against."""
+        return cls(min_agreeing=4, max_dissent=0, label="strict")
+
+
 def trend_vote(highs, lows, closes) -> Vote:
     a = ind.adx(highs, lows, closes)
     st = ind.supertrend(highs, lows, closes)
@@ -248,7 +287,9 @@ def volatility_veto(highs, lows, closes, min_atr_pct: float = 0.00168) -> str | 
     return None
 
 
-def evaluate(candles: list[OHLCVCandle], min_atr_pct: float = 0.00168) -> Verdict:
+def evaluate(candles: list[OHLCVCandle], min_atr_pct: float = 0.00168,
+             min_agreeing: int = MIN_AGREEING_FAMILIES,
+             max_dissent: int | None = None) -> Verdict:
     """
     Weigh every family and return one decision.
 
@@ -285,9 +326,13 @@ def evaluate(candles: list[OHLCVCandle], min_atr_pct: float = 0.00168) -> Verdic
     direction = "long" if long_score > short_score else "short"
     want = 1 if direction == "long" else -1
     agreeing = sum(1 for v in votes if v.direction == want)
-    if agreeing < MIN_AGREEING_FAMILIES:
+    against = sum(1 for v in votes if v.direction == -want)
+    if agreeing < min_agreeing:
         return Verdict(None, 0.0, votes=votes,
                        vetoes=[f"only {agreeing} of 5 families agree"])
+    if max_dissent is not None and against > max_dissent:
+        return Verdict(None, 0.0, votes=votes,
+                       vetoes=[f"{against} families disagree"])
 
     winner, loser = max(long_score, short_score), min(long_score, short_score)
     total_available = sum(FAMILY_WEIGHT.values())

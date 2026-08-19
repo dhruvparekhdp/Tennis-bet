@@ -173,6 +173,10 @@ class Settings(BaseSettings):
     paper_usdt_inr: float = 102.0
     paper_alert_telegram: bool = True
 
+    # Fewer trades, each with room to pay: a 5x edge multiple keeps 80% of
+    # gross instead of 50%, and no indicator family may argue the other way.
+    high_conviction_only: bool = False
+
     # Free, keyless sentiment inputs that adjust confidence (never fire trades).
     sentiment_feeds_enabled: bool = True
     fear_greed_refresh_minutes: int = 60

@@ -6,11 +6,12 @@ import structlog
 
 from analysis import indicators as ind
 from analysis.confluence import MIN_AGREEING_FAMILIES as MIN_AGREEING
-from analysis.confluence import evaluate
+from analysis.confluence import ConvictionGate, evaluate
 from analysis.crypto_signal import CryptoSignal, compute_crypto_stake
 from analysis.crypto_state import CryptoState
 from analysis.patterns import range_breakout
 from analysis.scalp_levels import NoTrade, ScalpConfig, scalp_levels
+from config.settings import settings
 
 log = structlog.get_logger()
 
@@ -18,7 +19,14 @@ log = structlog.get_logger()
 # with no reference to what a round trip costs, which is how the dashboard came
 # to show 0.05% targets against a 0.118% fee. Cost is now the floor and
 # volatility only decides whether a trade exists at all.
-SCALP = ScalpConfig()
+SCALP = (ScalpConfig.high_conviction() if settings.high_conviction_only
+         else ScalpConfig())
+
+# How much agreement a signal needs. High conviction forbids any family from
+# arguing the other way, which measured as accurate as demanding a fourth vote
+# while keeping four times the trades.
+GATE = (ConvictionGate.high_conviction() if settings.high_conviction_only
+        else ConvictionGate())
 
 
 def _emit(
@@ -254,8 +262,10 @@ class ConfluenceAnalyzer:
         if len(state.candles_1m) < 60 or state.current_price <= 0:
             return None
 
-        cost_floor = SCALP.for_symbol(state.symbol).cost_floor_pct
-        verdict = evaluate(state.candles_1m, min_atr_pct=cost_floor)
+        cfg = SCALP.for_symbol(state.symbol)
+        verdict = evaluate(state.candles_1m, min_atr_pct=cfg.cost_floor_pct,
+                           min_agreeing=GATE.min_agreeing,
+                           max_dissent=GATE.max_dissent)
         if verdict.direction is None:
             if verdict.vetoes:
                 log.debug("confluence.no_trade", symbol=state.symbol,
