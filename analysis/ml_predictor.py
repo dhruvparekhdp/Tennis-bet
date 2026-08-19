@@ -6,16 +6,16 @@ Falls back to analytical Markov chain when <MIN_SAMPLES completed matches availa
 """
 from __future__ import annotations
 
-import structlog
-from dataclasses import dataclass, astuple
+from dataclasses import astuple, dataclass
 from pathlib import Path
 
+import joblib
 import numpy as np
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+import structlog
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
-import joblib
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 from analysis.match_state import MatchState
 from analysis.win_probability import compute_win_probability
@@ -146,7 +146,7 @@ class MLPredictor:
 
         log.info("ml_model_trained", accuracy=accuracy, n_samples=len(y))
 
-    async def maybe_retrain(self, repository: "Repository") -> None:  # noqa: F821
+    async def maybe_retrain(self, repository: Repository) -> None:  # noqa: F821
         """Load training samples from DB and retrain if enough samples exist."""
         try:
             X, y = await repository.get_training_data()

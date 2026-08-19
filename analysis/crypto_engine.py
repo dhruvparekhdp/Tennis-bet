@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
 
 from analysis.crypto_signal import CryptoSignal
 from analysis.crypto_signals import (
     BollingerSqueezeAnalyzer,
+    ConfluenceAnalyzer,
     RSIDivergenceAnalyzer,
     SentimentShiftAnalyzer,
     VolumeSpikeAnalyzer,
@@ -21,6 +22,9 @@ class CryptoEngine:
     """Orchestrates all crypto signal detectors with cooldown deduplication and thresholding."""
 
     def __init__(self) -> None:
+        # Listed first because it is the one that requires agreement; the
+        # others each fire on a single observation.
+        self.confluence = ConfluenceAnalyzer()
         self.rsi_divergence = RSIDivergenceAnalyzer()
         self.volume_spike = VolumeSpikeAnalyzer()
         self.bollinger_squeeze = BollingerSqueezeAnalyzer()
@@ -33,6 +37,7 @@ class CryptoEngine:
     def process(self, state: CryptoState) -> list[CryptoSignal]:
         """Evaluate all signal strategies against current crypto market state."""
         candidates: list[CryptoSignal | None] = [
+            self.confluence.analyze(state),
             self.rsi_divergence.analyze(state),
             self.volume_spike.analyze(state),
             self.bollinger_squeeze.analyze(state),
@@ -40,7 +45,7 @@ class CryptoEngine:
         ]
 
         fired: list[CryptoSignal] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         for sig in candidates:
             if sig is None:
@@ -68,11 +73,11 @@ class CryptoEngine:
         if last is None:
             return False
         cooldown = timedelta(minutes=settings.crypto_signal_cooldown_minutes)
-        return (datetime.now(timezone.utc) - last) < cooldown
+        return (datetime.now(UTC) - last) < cooldown
 
     def _set_cooldown(self, symbol: str, signal_type: str, timestamp: datetime) -> None:
         self._cooldowns[(symbol.lower(), signal_type)] = timestamp
 
     def get_recent_signals(self, hours: int = 24) -> list[CryptoSignal]:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
         return [s for s in self._recent_signals if s.timestamp >= cutoff]

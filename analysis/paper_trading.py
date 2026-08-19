@@ -21,6 +21,7 @@ Conventions
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -60,7 +61,6 @@ class FeeModel:
     """
 
     taker_pct: float = 0.0005         # 0.05% base brokerage
-    maker_pct: float = 0.0005         # INR futures charges the same both ways
     gst_pct: float = 0.18             # 18% GST on the brokerage, unavoidable
     maintenance_margin_pct: float = 0.0053   # measured, not the quoted 1.5%
 
@@ -102,6 +102,134 @@ class FeeModel:
         return 2 * self.effective_taker_pct
 
 
+@dataclass(frozen=True)
+class SlippageModel:
+    """
+    Where an order actually fills, versus the price the signal quoted.
+
+    A signal that says "ETH at 1899" almost never fills at 1899. Three separate
+    effects move it, and they do not all point the same way:
+
+      1. The spread. A market buy lifts the ask, a market sell hits the bid.
+         This is always adverse, whichever way you are trading.
+      2. The trend. In a market drifting upward, a buy chases and fills higher
+         while a sell gets lifted into and fills better. This is the one that
+         makes 1899 become 1901 on a rally and 1898.2 on a slide, and it is
+         signed by the drift, not by our direction — so it helps as often as it
+         hurts.
+      3. Stops specifically. A stop is a market order fired during the move
+         that triggered it, so it gaps through the level. Always adverse, and
+         larger than ordinary entry slippage.
+
+    Targets are limit orders and fill at the limit or not at all, so they get
+    no slippage. That is the honest treatment: giving targets a favourable fill
+    would be the simulator flattering itself.
+
+    Deterministic by construction — every term comes from the data, never from
+    a random draw, so a backtest re-run gives the identical answer.
+    """
+
+    # Half-spread crossed on a market order. BTC/ETH perps sit near 1bp.
+    spread_pct: float = 0.0001
+
+    # How much of the recent per-bar drift is carried into the fill. 0.30 means
+    # a bar that moved 1% pushes the fill 0.30% in that direction.
+    trend_impact: float = 0.30
+
+    # Extra adverse move a stop suffers over and above the spread.
+    stop_extra_pct: float = 0.0005
+
+    # A liquidation is the exchange closing you at market during a violent
+    # move; it is the worst fill on the book.
+    liquidation_extra_pct: float = 0.0015
+
+    # Nothing is allowed to move a fill further than this, so one freak bar
+    # cannot dominate a whole backtest.
+    max_slip_pct: float = 0.0060
+
+    def _clamp(self, slip: float) -> float:
+        return max(-self.max_slip_pct, min(self.max_slip_pct, slip))
+
+    def fill(self, ref_price: float, buying: bool, drift_pct: float = 0.0,
+             extra_adverse_pct: float = 0.0) -> float:
+        """
+        Fill price for a market order.
+
+        `buying` is True when we are lifting offers — opening a LONG or closing
+        a SHORT. `drift_pct` is the recent per-bar price change as a fraction;
+        positive means the market is rising.
+        """
+        adverse = self.spread_pct + extra_adverse_pct
+        directional = self.trend_impact * drift_pct
+        # Adverse always pushes against us; directional follows the market.
+        slip = (adverse if buying else -adverse) + directional
+        return ref_price * (1.0 + self._clamp(slip))
+
+    def entry_fill(self, ref_price: float, side: Side, drift_pct: float = 0.0) -> float:
+        return self.fill(ref_price, buying=side is Side.LONG, drift_pct=drift_pct)
+
+    def exit_fill(self, ref_price: float, side: Side, reason: ExitReason,
+                  drift_pct: float = 0.0) -> float:
+        """Closing a LONG means selling; closing a SHORT means buying."""
+        if reason is ExitReason.TARGET:
+            # The only limit order in the set. Everything else is a market
+            # order and pays the spread; a stop or a shock pays more.
+            return ref_price
+        buying = side is Side.SHORT
+        if reason is ExitReason.MARKET_SHOCK:
+            # Fired during a violent bar, so it fills like a stop, not like a
+            # calm market order. Anything less understates the cost of panic.
+            extra = self.stop_extra_pct
+            drift_pct = abs(drift_pct) * (1.0 if buying else -1.0)
+            return self.fill(ref_price, buying=buying, drift_pct=drift_pct,
+                             extra_adverse_pct=extra)
+        if reason in (ExitReason.STOP, ExitReason.LIQUIDATION):
+            extra = (self.stop_extra_pct if reason is ExitReason.STOP
+                     else self.liquidation_extra_pct)
+            # A stop is triggered BY an adverse move, so the local direction is
+            # against us no matter what the preceding bars did. Feeding the raw
+            # drift in here would let a prior uptrend fill a long's stop above
+            # the stop level, which cannot happen — and would quietly flatter
+            # every losing trade in the backtest. Volatility makes the gap
+            # bigger, never favourable, so only its magnitude is used.
+            drift_pct = abs(drift_pct) * (1.0 if buying else -1.0)
+        else:
+            extra = 0.0
+        return self.fill(ref_price, buying=buying,
+                         drift_pct=drift_pct, extra_adverse_pct=extra)
+
+
+NO_SLIPPAGE = SlippageModel(spread_pct=0.0, trend_impact=0.0,
+                            stop_extra_pct=0.0, liquidation_extra_pct=0.0)
+
+
+def sign_of(side: Side) -> float:
+    """+1 for a long, -1 for a short.
+
+    Every price relation in this module is the same formula with one sign
+    flipped. Writing it once with a multiplier keeps the two halves from
+    drifting apart, which is the usual way a short-side bug survives review.
+    """
+    return 1.0 if side is Side.LONG else -1.0
+
+
+def round_to_lot(qty: float, lot_step: float) -> float:
+    """
+    Snap a raw quantity to the instrument's lot step, rounding to nearest.
+
+    CoinDCX rounds to nearest rather than truncating: a Rs533 ETH position at
+    20x with entry 1906.50 works out to 0.054888 raw, and the account shows
+    0.055, which only happens if you round up at the halfway point. A lot_step
+    of 0 means "no rounding" and returns the raw quantity untouched.
+    """
+    if lot_step <= 0:
+        return qty
+    steps = qty / lot_step
+    # round-half-up, because Python's round() is banker's rounding and would
+    # send an exact .5 lot to the even neighbour instead of always upward.
+    return math.floor(steps + 0.5) * lot_step
+
+
 def liquidation_price(entry: float, side: Side, leverage: float, mm_pct: float) -> float:
     """
     Exact liquidation price — where equity falls to the maintenance requirement.
@@ -116,9 +244,8 @@ def liquidation_price(entry: float, side: Side, leverage: float, mm_pct: float) 
     if leverage <= 0:
         raise ValueError("leverage must be positive")
     inv = 1.0 / leverage
-    if side is Side.LONG:
-        return entry * (1.0 - inv) / (1.0 - mm_pct)
-    return entry * (1.0 + inv) / (1.0 + mm_pct)
+    s = sign_of(side)
+    return entry * (1.0 - s * inv) / (1.0 - s * mm_pct)
 
 
 def stop_and_target(
@@ -138,9 +265,8 @@ def stop_and_target(
     """
     stop_move = stop_pct_of_margin / leverage
     target_move = stop_move * reward_risk
-    if side is Side.LONG:
-        return entry * (1.0 - stop_move), entry * (1.0 + target_move)
-    return entry * (1.0 + stop_move), entry * (1.0 - target_move)
+    s = sign_of(side)
+    return entry * (1.0 - s * stop_move), entry * (1.0 + s * target_move)
 
 
 @dataclass
@@ -160,18 +286,212 @@ class Position:
     confidence: float = 0.0
     expires_at: datetime | None = None
 
+    # Quote conversion. Defaults keep prices and margin in the same currency
+    # with no lot rounding, which is what the backtest harness assumes.
+    usdt_inr: float = 1.0
+    lot_step: float = 0.0
+
+    # What the signal quoted, before slippage. entry_price is where we filled.
+    signal_price: float = 0.0
+
+    # Trailing state. initial_stop_price is kept because the stop itself moves,
+    # and 1R has to stay measured from the risk we originally accepted.
+    initial_stop_price: float = 0.0
+    peak_price: float = 0.0        # best price seen in our favour
+    trail_active: bool = False
+
+    # Set once the position has been scaled in or out, because after that the
+    # size no longer follows from margin x leverage / entry.
+    _coin_qty: float | None = None
+
     @property
-    def notional(self) -> float:
+    def target_notional(self) -> float:
+        """What we asked for, before the exchange rounded the quantity to a lot."""
         return self.margin * self.leverage
 
     @property
+    def coin_qty(self) -> float:
+        """
+        Position size in coins, as the exchange actually fills it.
+
+        This is the number the account screen shows (0.055 ETH), and it is not
+        target_notional / entry_price: the price is quoted in USDT while the
+        margin is in INR, so the rate has to divide out first. Then the result
+        is snapped to the instrument's lot step, which is why the filled
+        notional rarely equals margin x leverage exactly.
+        """
+        if self._coin_qty is not None:
+            return self._coin_qty
+        raw = self.target_notional / (self.usdt_inr * self.entry_price)
+        return round_to_lot(raw, self.lot_step)
+
+    @property
+    def notional(self) -> float:
+        """Filled notional in INR — coins x price x rate, after lot rounding."""
+        return self.coin_qty * self.entry_price * self.usdt_inr
+
+    @property
     def quantity(self) -> float:
-        return self.notional / self.entry_price
+        """
+        P&L multiplier: INR earned per 1 USDT of price move.
+
+        Kept as a separate property from coin_qty so that gross_pnl and the
+        fee helpers can stay in INR while prices stay in USDT.
+        """
+        return self.coin_qty * self.usdt_inr
+
+    @property
+    def sign(self) -> float:
+        return sign_of(self.side)
+
+    def favourable_move(self, price: float) -> float:
+        """Price distance in our favour. Negative when the trade is offside."""
+        return self.sign * (price - self.entry_price)
 
     def gross_pnl(self, exit_price: float) -> float:
-        if self.side is Side.LONG:
-            return (exit_price - self.entry_price) * self.quantity
-        return (self.entry_price - exit_price) * self.quantity
+        return self.favourable_move(exit_price) * self.quantity
+
+    def mark_notional(self, mark: float) -> float:
+        """
+        Notional at the current mark, which is the "position size" the CoinDCX
+        screen shows — not the entry notional. On the reconciled ETH trade the
+        two differ by Rs18, which is exactly the open-to-LTP drift.
+        """
+        return self.coin_qty * mark * self.usdt_inr
+
+    @property
+    def risk_per_unit(self) -> float:
+        """Initial stop distance in price terms. This is 1R."""
+        base = self.initial_stop_price or self.stop_price
+        return abs(self.entry_price - base)
+
+    def r_multiple(self, price: float) -> float:
+        """How many R the trade is up at `price`. Negative means offside."""
+        risk = self.risk_per_unit
+        return self.favourable_move(price) / risk if risk > 0 else 0.0
+
+    def update_trail(self, high: float, low: float, trail: TrailingStop,
+                     fees: FeeModel) -> bool:
+        """
+        Ratchet the stop after this bar has already been checked against the
+        existing one. Returns True if the stop moved.
+
+        Call order matters and is not a detail: updating the trail before
+        resolving the bar would let this bar's high drag the stop above this
+        bar's low, and a trade that actually stopped out would survive.
+        """
+        if not trail.enabled or self.leverage <= 0:
+            return False
+
+        s = self.sign
+        extreme = high if self.side is Side.LONG else low
+        # s * best is always the maximum, whichever side we are on.
+        best = s * max(s * (self.peak_price or extreme), s * extreme)
+        self.peak_price = best
+
+        risk = self.risk_per_unit
+        if risk <= 0:
+            return False
+        if not self.trail_active:
+            if self.favourable_move(best) < trail.activate_at_r * risk:
+                return False
+            self.trail_active = True
+            if trail.release_target:
+                # Nothing else closes the trade now, so the trail has to.
+                self.target_price = s * math.inf
+
+        # Distances are % of margin; dividing by leverage puts them in price.
+        trail_move = self.entry_price * trail.trail_pct_of_margin / self.leverage
+        step = self.entry_price * trail.step_pct_of_margin / self.leverage
+        candidate = best - s * trail_move
+
+        if trail.lock_breakeven:
+            # Entry plus the round trip, so the floor is a scratch not a loss.
+            be = self.entry_price * (1 + s * fees.round_trip_pct())
+            candidate = s * max(s * candidate, s * be)
+
+        moved = s * (candidate - self.stop_price) > step
+        if moved:
+            self.stop_price = candidate
+        return moved
+
+    @property
+    def entry_slippage_pct(self) -> float:
+        """How far the fill landed from the quoted price, signed against us."""
+        if not self.signal_price:
+            return 0.0
+        raw = (self.entry_price - self.signal_price) / self.signal_price
+        return raw if self.side is Side.LONG else -raw
+
+    @property
+    def effective_leverage(self) -> float:
+        """Filled notional over margin. Drifts from the nominal leverage once
+        lot rounding or a scale-in has moved the size."""
+        return self.notional / self.margin if self.margin > 0 else 0.0
+
+    def _reprice_levels(self, stop_pct_of_margin: float, reward_risk: float,
+                        fees: FeeModel) -> None:
+        lev = self.effective_leverage
+        self.stop_price, self.target_price = stop_and_target(
+            self.entry_price, self.side, lev, stop_pct_of_margin, reward_risk
+        )
+        self.liq_price = liquidation_price(
+            self.entry_price, self.side, lev, fees.maintenance_margin_pct
+        )
+
+    def increase(self, add_margin: float, price: float, fees: FeeModel,
+                 stop_pct_of_margin: float, reward_risk: float) -> float:
+        """
+        Add margin to an open position (scale in). Returns the fee charged.
+
+        The average entry moves toward the new fill, so the stop, target and
+        liquidation all have to be recomputed off it — leaving them anchored to
+        the original entry is the classic way a scaled-in position ends up with
+        a stop that is already behind price.
+        """
+        if add_margin <= 0:
+            return 0.0
+        add_qty = round_to_lot(add_margin * self.leverage / (self.usdt_inr * price),
+                               self.lot_step)
+        if add_qty <= 0:
+            return 0.0  # too small to buy even one lot
+
+        old_qty = self.coin_qty
+        new_qty = old_qty + add_qty
+        self.entry_price = (old_qty * self.entry_price + add_qty * price) / new_qty
+        self._coin_qty = new_qty
+        self.margin += add_margin
+
+        fee = fees.entry_fee(add_qty * price * self.usdt_inr)
+        self.entry_fee += fee
+        self._reprice_levels(stop_pct_of_margin, reward_risk, fees)
+        return fee
+
+    def reduce(self, close_qty: float, price: float, fees: FeeModel,
+               fee_model_exit: bool = True) -> tuple[float, float, float]:
+        """
+        Close part of a position (scale out).
+
+        Returns (gross P&L realised, exit fee paid, margin freed). The entry
+        price is deliberately left alone: taking profit off the table does not
+        change what the remaining coins cost. Margin is released pro rata, so
+        the effective leverage — and therefore the liquidation price — is
+        unchanged, which is the property the tests below pin.
+        """
+        held = self.coin_qty
+        close_qty = round_to_lot(min(max(close_qty, 0.0), held), self.lot_step)
+        if close_qty <= 0:
+            return 0.0, 0.0, 0.0
+
+        gross = self.favourable_move(price) * close_qty * self.usdt_inr
+        fee = fees.exit_fee(close_qty * price * self.usdt_inr) if fee_model_exit else 0.0
+
+        share = close_qty / held
+        freed = self.margin * share
+        self.margin -= freed
+        self.entry_fee -= self.entry_fee * share  # the closed part's open fee is now spent
+        self._coin_qty = held - close_qty
+        return gross, fee, freed
 
     def unrealised(self, mark: float, fees: FeeModel) -> float:
         """Net P&L if closed right now, including the exit fee not yet paid."""
@@ -190,6 +510,11 @@ class ClosedTrade:
     wallet_after: float
     funding_paid: float = 0.0
     hours_held: float = 0.0
+
+    @property
+    def entry_slippage_pct(self) -> float:
+        """Entry fill versus the quoted signal price, signed against us."""
+        return self.position.entry_slippage_pct
 
     @property
     def return_on_margin(self) -> float:
@@ -214,10 +539,19 @@ def open_position(
     timeframe: str = "",
     confidence: float = 0.0,
     expires_at: datetime | None = None,
+    usdt_inr: float = 1.0,
+    lot_step: float = 0.0,
+    slippage: SlippageModel = NO_SLIPPAGE,
+    drift_pct: float = 0.0,
 ) -> Position:
+    # The signal quotes a price; we fill somewhere near it. Everything after
+    # this point — stop, target, liquidation, size — is measured from where we
+    # actually got in, because that is the position we are actually holding.
+    signal_price = entry_price
+    entry_price = slippage.entry_fill(entry_price, side, drift_pct)
+
     stop, target = stop_and_target(entry_price, side, leverage, stop_pct_of_margin, reward_risk)
-    notional = margin * leverage
-    return Position(
+    pos = Position(
         symbol=symbol,
         side=side,
         entry_price=entry_price,
@@ -227,12 +561,20 @@ def open_position(
         target_price=target,
         liq_price=liquidation_price(entry_price, side, leverage, fees.maintenance_margin_pct),
         opened_at=opened_at,
-        entry_fee=fees.entry_fee(notional),
+        entry_fee=0.0,
         signal_type=signal_type,
         timeframe=timeframe,
         confidence=confidence,
         expires_at=expires_at,
+        usdt_inr=usdt_inr,
+        lot_step=lot_step,
+        signal_price=signal_price,
+        initial_stop_price=stop,
     )
+    # Charged on what actually filled, not on what we asked for. With a coarse
+    # lot step those differ by enough to matter on a small wallet.
+    pos.entry_fee = fees.entry_fee(pos.notional)
+    return pos
 
 
 def resolve_candle(
@@ -241,6 +583,8 @@ def resolve_candle(
     low: float,
     close: float,
     ts: datetime,
+    slippage: SlippageModel = NO_SLIPPAGE,
+    drift_pct: float = 0.0,
 ) -> tuple[ExitReason, float] | None:
     """
     Decide whether a candle closes this position, and at what price.
@@ -254,24 +598,38 @@ def resolve_candle(
 
     Returns None if the position survives the candle.
     """
-    if pos.side is Side.LONG:
-        if low <= pos.liq_price:
-            return ExitReason.LIQUIDATION, pos.liq_price
-        if low <= pos.stop_price:
-            return ExitReason.STOP, pos.stop_price
-        if high >= pos.target_price:
-            return ExitReason.TARGET, pos.target_price
-    else:
-        if high >= pos.liq_price:
-            return ExitReason.LIQUIDATION, pos.liq_price
-        if high >= pos.stop_price:
-            return ExitReason.STOP, pos.stop_price
-        if low <= pos.target_price:
-            return ExitReason.TARGET, pos.target_price
+    # Stop versus liquidation is decided by which level price REACHES first,
+    # not by a fixed precedence. A long falling toward both passes the higher
+    # level first, so a stop above the liquidation price fires before it — and
+    # once the trail has ratcheted the stop up, that is the normal case.
+    # Booking a liquidation there would invent losses that cannot happen.
+    # Stop versus liquidation is decided by which level price REACHES first,
+    # not by a fixed precedence. A long falling toward both passes the higher
+    # level first, so a stop above the liquidation price fires before it — and
+    # once the trail has ratcheted the stop up, that is the normal case.
+    # Booking a liquidation there would invent losses that cannot happen.
+    s = pos.sign
+    adverse = low if pos.side is Side.LONG else high    # the way a loss lies
+    favour = high if pos.side is Side.LONG else low     # the way a win lies
 
-    if pos.expires_at is not None and ts >= pos.expires_at:
-        return ExitReason.EXPIRY, close
-    return None
+    hit: tuple[ExitReason, float] | None = None
+    if s * pos.stop_price > s * pos.liq_price:
+        first, reason = pos.stop_price, ExitReason.STOP
+    else:
+        first, reason = pos.liq_price, ExitReason.LIQUIDATION
+
+    if s * adverse <= s * first:
+        hit = (reason, first)
+    elif s * favour >= s * pos.target_price:
+        hit = (ExitReason.TARGET, pos.target_price)
+
+    if hit is None and pos.expires_at is not None and ts >= pos.expires_at:
+        hit = (ExitReason.EXPIRY, close)
+    if hit is None:
+        return None
+
+    reason, level = hit
+    return reason, slippage.exit_fill(level, pos.side, reason, drift_pct)
 
 
 def close_position(
@@ -315,6 +673,51 @@ def close_position(
         net_pnl=net,
         wallet_after=wallet_before + pos.margin + net,
     )
+
+
+@dataclass(frozen=True)
+class TrailingStop:
+    """
+    Ratchet the stop forward while a trade is working.
+
+    The fixed 20% stop answers "how much am I willing to lose". It says nothing
+    about giving back a gain that already happened. A trade that runs +18% and
+    then reverses closes for a full -20% loss under a fixed stop, even though
+    it was never wrong.
+
+    Distances are expressed as a percentage OF MARGIN, matching how the stop is
+    set, and converted to a price move by dividing by leverage. At 10x, 20% of
+    margin is a 2.0% price move.
+
+    Two invariants the tests pin, because breaking either turns this from a
+    risk control into a way of losing money slowly:
+      * The stop only ever moves in our favour. Never widened, ever.
+      * The trail is updated from a bar only AFTER that bar has been checked
+        against the existing stop. Otherwise this bar's high could drag the
+        stop up past this bar's low, and a losing trade would quietly survive.
+    """
+
+    enabled: bool = False
+
+    # How far the trade must be in profit before trailing starts, in R — where
+    # 1R is the initial stop distance. Trailing from the first tick strangles
+    # trades in ordinary noise before they have room to work.
+    activate_at_r: float = 1.0
+
+    # How far behind the best price the stop rides, as a % of margin.
+    trail_pct_of_margin: float = 0.20
+
+    # Minimum move before the stop is rewritten. Stops the level twitching on
+    # every bar, which in a live account is a stream of order amendments.
+    step_pct_of_margin: float = 0.05
+
+    # On activation, jump the stop to entry plus the round-trip fee, so the
+    # worst case becomes a scratch rather than a small loss.
+    lock_breakeven: bool = True
+
+    # Let a winner run past the fixed target instead of taking it. Only sane
+    # WITH a trail, since otherwise nothing closes the trade.
+    release_target: bool = False
 
 
 @dataclass(frozen=True)
@@ -499,6 +902,26 @@ class CycleConfig:
     # when they "win", so the only correct action is not to take them.
     min_target_to_fee_ratio: float = 1.5
 
+    # Quote conversion for INR-margined futures on a USDT-priced pair.
+    # usdt_inr=1.0 with lot_step=0.0 keeps prices and margin in one currency
+    # with continuous sizing, which is what the historical backtest wants.
+    # For a live CoinDCX cycle set the rate and the instrument's lot step so
+    # the simulated fill size matches what the exchange would actually give.
+    usdt_inr: float = 1.0
+    lot_step: float = 0.0
+
+    # Fills land near the quoted price, not on it. NO_SLIPPAGE reproduces the
+    # old perfect-fill behaviour when you want to isolate its effect.
+    slippage: SlippageModel = field(default_factory=SlippageModel)
+
+    # Off by default. Turning it on changes the exit distribution, so it should
+    # be a measured decision rather than an assumption.
+    trailing: TrailingStop = field(default_factory=TrailingStop)
+
+    # How many closed bars of drift feed the trend term. Three bars is enough
+    # to tell a run from a single spike without lagging into irrelevance.
+    drift_lookback: int = 3
+
     def is_target_viable(self, entry: float, target: float) -> bool:
         """Can this trade pay for itself if it works? If not, don't open it."""
         if entry <= 0 or target <= 0:
@@ -513,9 +936,6 @@ class CycleConfig:
             return self.sizing.margin_for(wallet, confidence, already_committed)
         flat = max(self.min_margin, wallet * self.margin_per_trade_pct)
         return flat if flat <= wallet and flat >= self.min_margin else 0.0
-
-    def margin_for(self, wallet: float) -> float:
-        return max(self.min_margin, wallet * self.margin_per_trade_pct)
 
     def break_even_move_pct(self) -> float:
         return self.fees.round_trip_pct() * 100.0
@@ -542,4 +962,21 @@ class CycleConfig:
             "target_clears_fees": tgt > be,
             "target_to_fee_ratio": round(tgt / be, 2) if be else None,
             "stop_inside_liquidation": self.stop_move_pct() < self.liquidation_move_pct(),
+            "trailing_can_activate": self.trailing_can_activate(),
         }
+
+    def trailing_can_activate(self) -> bool:
+        """
+        Can the trail ever fire under this configuration?
+
+        The target sits at reward_risk R. If the trail only wakes at or beyond
+        that, the position closes at the target first and the trail is dead
+        code — which is exactly what happens on a fixed 20/20 (reward_risk 1.0)
+        with the default activate_at_r of 1.0. Either activate earlier or let
+        the target go.
+        """
+        if not self.trailing.enabled:
+            return False
+        # release_target cannot rescue this: it only takes effect ON
+        # activation, so a threshold that is never reached stays never reached.
+        return self.trailing.activate_at_r < self.reward_risk

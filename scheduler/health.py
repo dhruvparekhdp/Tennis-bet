@@ -2,11 +2,19 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 
 from aiohttp import web
 
+from analysis.scalp_levels import ScalpConfig
+from config.settings import settings as _SETTINGS
+
 _start_time = datetime.utcnow()
+
+# One cost model for the page and the engine. The dashboard used to carry its
+# own copy of the fee arithmetic in JavaScript, which drifted the moment the
+# fees were recalibrated against the real ledger.
+_SCALP = ScalpConfig()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -348,6 +356,117 @@ async def _api_crypto_signals(runner, request: web.Request) -> web.Response:
         for r in rows
     ]
     return web.Response(text=json.dumps(signals), content_type="application/json")
+
+
+async def _api_paper(runner, request: web.Request) -> web.Response:
+    """
+    Live state of the paper-trading cycle: wallet, open positions, trade log.
+
+    Unrealised P&L on open positions is marked against the current price and
+    reported net of the exit fee not yet paid — showing gross there would make
+    every position look better than closing it would actually be.
+    """
+    from analysis.paper_cycle import config_for_cycle, fees_for, summarise
+    from storage.database import AsyncSessionFactory
+    from storage.repository import Repository
+
+    async with AsyncSessionFactory() as session:
+        repo = Repository(session)
+        cycle = await repo.get_running_cycle()
+        if cycle is None:
+            recent = await repo.get_recent_cycles(limit=5)
+            return web.Response(
+                text=json.dumps({
+                    "running": False,
+                    "enabled": _SETTINGS.paper_trading_enabled,
+                    "past_cycles": [_cycle_row(c) for c in recent],
+                }),
+                content_type="application/json")
+
+        rows = await repo.get_open_positions(cycle.id)
+        trades = await repo.get_cycle_trades(cycle.id, limit=200)
+        cfg = config_for_cycle(cycle)
+
+    states = {st.symbol: st for st in await runner.crypto_store.get_all()}
+    positions = []
+    unrealised_total = 0.0
+    for r in rows:
+        st = states.get(r.symbol)
+        mark = st.current_price if st and st.current_price > 0 else r.entry_price
+        sign = 1.0 if r.side == "long" else -1.0
+        gross = sign * (mark - r.entry_price) * r.coin_qty * r.usdt_inr
+        exit_fee = mark * r.coin_qty * r.usdt_inr * fees_for(r.symbol).effective_taker_pct
+        net = gross - exit_fee
+        unrealised_total += net
+        positions.append({
+            "symbol": r.symbol.upper(),
+            "side": r.side,
+            "qty": r.coin_qty,
+            "entry": r.entry_price,
+            "mark": mark,
+            "margin": round(r.margin, 2),
+            "stop": r.stop_price,
+            "target": r.target_price,
+            "liq": r.liq_price,
+            "trailing": r.trail_active,
+            "confidence": round(r.confidence * 100),
+            "signal_type": r.signal_type,
+            "unrealised": round(net, 2),
+            "roe_pct": round(net / r.margin * 100, 2) if r.margin else 0.0,
+            "opened_at": r.opened_at.isoformat(),
+        })
+
+    return web.Response(text=json.dumps({
+        "running": True,
+        "enabled": _SETTINGS.paper_trading_enabled,
+        "cycle": _cycle_row(cycle),
+        "equity": round(cycle.wallet + sum(p["margin"] for p in positions)
+                        + unrealised_total, 2),
+        "unrealised": round(unrealised_total, 2),
+        "positions": positions,
+        "summary": summarise(trades, cycle.wallet, cfg),
+        "trades": [_trade_row(t) for t in trades[:60]],
+    }), content_type="application/json")
+
+
+def _cycle_row(c) -> dict:
+    return {
+        "id": c.id,
+        "status": c.status,
+        "wallet": round(c.wallet, 2),
+        "starting_wallet": round(c.starting_wallet, 2),
+        "target_wallet": round(c.target_wallet, 2),
+        "peak_wallet": round(c.peak_wallet, 2),
+        "leverage": c.leverage,
+        "stop_pct_of_margin": c.stop_pct_of_margin,
+        "reward_risk": c.reward_risk,
+        "min_confidence": c.min_confidence,
+        "trailing_enabled": c.trailing_enabled,
+        "scaled_sizing": c.scaled_sizing,
+        "started_at": c.started_at.isoformat(),
+        "ended_at": c.ended_at.isoformat() if c.ended_at else None,
+    }
+
+
+def _trade_row(t) -> dict:
+    return {
+        "symbol": t.symbol.upper(),
+        "side": t.side,
+        "entry": t.entry_price,
+        "exit": t.exit_price,
+        "margin": round(t.margin, 2),
+        "reason": t.exit_reason,
+        "gross": round(t.gross_pnl, 2),
+        "fees": round(t.trading_fees, 2),
+        "funding": round(t.funding_paid, 2),
+        "net": round(t.net_pnl, 2),
+        "roe_pct": round(t.return_on_margin * 100, 2),
+        "wallet_after": round(t.wallet_after, 2),
+        "confidence": round(t.confidence * 100),
+        "signal_type": t.signal_type,
+        "hours_held": round(t.hours_held, 2),
+        "closed_at": t.closed_at.isoformat(),
+    }
 
 
 async def _api_crypto_forecasts(runner, request: web.Request) -> web.Response:
@@ -982,6 +1101,26 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   <div class="card"><div class="card-title">Uptime</div><div class="card-value" id="stat-uptime-sports">&mdash;</div><div class="card-sub">since restart</div></div>
 </div>
 
+
+<div id="tab-paper" class="tab-content">
+  <section>
+    <h2>📒 Paper Trading Cycle</h2>
+    <div class="cr-note">
+      Simulated only — this never places a real order. A cycle ends when the wallet
+      reaches its target or runs out, then a fresh one starts. Every cost is charged:
+      brokerage, GST, funding and slippage.
+    </div>
+    <div id="paper-banner"></div>
+    <div class="cards" id="paper-cards"></div>
+    <h3 style="margin-top:22px">Open positions</h3>
+    <div id="paper-positions"><div class="empty">Loading…</div></div>
+    <h3 style="margin-top:22px">Scorecard</h3>
+    <div id="paper-scorecard"><div class="empty">Loading…</div></div>
+    <h3 style="margin-top:22px">Trade history</h3>
+    <div id="paper-trades"><div class="empty">Loading…</div></div>
+  </section>
+</div>
+
 <div class="tab-bar" id="tabbar-sports" style="display:none">
   <button class="tab-btn active" data-tab="tennis" onclick="switchTab('tennis')">🎾 Tennis</button>
   <button class="tab-btn" data-tab="scalping" onclick="switchTab('scalping')">🎯 Scalping <span id="scalp-count-badge" class="tab-badge" style="display:none">0</span></button>
@@ -1028,6 +1167,11 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
     <h2>Football Signals (last 24h)</h2>
     <div id="fb-signals"><div class="empty">No football signals fired yet</div></div>
   </section>
+</div>
+
+<div class="tab-bar" id="tabbar-crypto">
+  <button class="tab-btn active" data-tab="crypto" onclick="switchTab('crypto')">🪙 Market</button>
+  <button class="tab-btn" data-tab="paper" onclick="switchTab('paper')">📒 Paper Trading</button>
 </div>
 
 <div id="tab-crypto" class="tab-content active">
@@ -1504,9 +1648,117 @@ function esc(s){
 }
 
 // ── TAB SWITCHING ─────────────────────────────────────────────────────────────
+
+// ── PAPER TRADING ─────────────────────────────────────────────────────────────
+const PAPER_REASON = {
+  target:'hit target', stop:'stopped out', liquidation:'LIQUIDATED',
+  expiry:'time expired', cycle_end:'cycle closed', signal_flip:'setup reversed',
+  conviction_lost:'conviction faded', market_shock:'market shock'
+};
+function money(v){
+  const sign = v < 0 ? '-' : '';
+  return sign + '₹' + Math.abs(v).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function signed(v){ return (v>=0?'+':'') + money(v).replace('-',''); }
+function pnlClass(v){ return v>0?'pos':(v<0?'neg':''); }
+
+async function loadPaper(){
+  let d;
+  try { d = await (await fetch('/api/paper')).json(); }
+  catch(e){ document.getElementById('paper-banner').innerHTML =
+    '<div class="cr-sig-warn">Could not reach /api/paper.</div>'; return; }
+
+  const banner = document.getElementById('paper-banner');
+  if(!d.enabled){
+    banner.innerHTML = '<div class="cr-sig-warn">Paper trading is switched off. '
+      + 'Set <code>PAPER_TRADING_ENABLED=true</code> to start a cycle.</div>';
+  } else if(!d.running){
+    banner.innerHTML = '<div class="cr-note">No cycle running — one starts on the next tick.</div>';
+  } else { banner.innerHTML = ''; }
+
+  if(!d.running){
+    document.getElementById('paper-cards').innerHTML = '';
+    document.getElementById('paper-positions').innerHTML = '<div class="empty">No open positions</div>';
+    document.getElementById('paper-scorecard').innerHTML = '<div class="empty">No cycle yet</div>';
+    document.getElementById('paper-trades').innerHTML = '<div class="empty">No trades yet</div>';
+    return;
+  }
+
+  const c = d.cycle, s = d.summary;
+  const progress = (d.equity - c.starting_wallet) / (c.target_wallet - c.starting_wallet) * 100;
+  document.getElementById('paper-cards').innerHTML = `
+    <div class="card"><div class="card-title">Equity</div>
+      <div class="card-value ${pnlClass(d.equity-c.starting_wallet)}">${money(d.equity)}</div>
+      <div class="card-sub">from ${money(c.starting_wallet)} · ${progress.toFixed(1)}% to target</div></div>
+    <div class="card"><div class="card-title">Free wallet</div>
+      <div class="card-value">${money(c.wallet)}</div>
+      <div class="card-sub">unrealised ${signed(d.unrealised)}</div></div>
+    <div class="card"><div class="card-title">Trades</div>
+      <div class="card-value">${s.trades}</div>
+      <div class="card-sub">${s.win_rate_pct}% won · streak ${s.longest_losing_streak}</div></div>
+    <div class="card"><div class="card-title">Net P&amp;L</div>
+      <div class="card-value ${pnlClass(s.net_pnl)}">${signed(s.net_pnl)}</div>
+      <div class="card-sub">costs ${money(s.trading_fees + s.funding_paid)}${
+        s.costs_as_pct_of_gross!=null ? ' · '+s.costs_as_pct_of_gross+'% of gross' : ''}</div></div>`;
+
+  document.getElementById('paper-positions').innerHTML = d.positions.length ? `
+    <div class="scroll"><table class="tbl"><thead><tr>
+      <th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th>
+      <th>Stop</th><th>Target</th><th>Liq</th><th>Margin</th><th>Unrealised</th>
+    </tr></thead><tbody>` + d.positions.map(p=>`<tr>
+      <td><b>${esc(p.symbol)}</b><div class="sub">${esc(p.signal_type)} · ${p.confidence}%</div></td>
+      <td class="${p.side==='long'?'pos':'neg'}">${p.side.toUpperCase()}</td>
+      <td>${p.qty}</td><td>${fmtPrice(p.entry)}</td><td>${fmtPrice(p.mark)}</td>
+      <td>${fmtPrice(p.stop)}${p.trailing?' ↑':''}</td>
+      <td>${fmtPrice(p.target)}</td><td>${fmtPrice(p.liq)}</td>
+      <td>${money(p.margin)}</td>
+      <td class="${pnlClass(p.unrealised)}">${signed(p.unrealised)}<div class="sub">${p.roe_pct}%</div></td>
+    </tr>`).join('') + '</tbody></table></div>'
+    : '<div class="empty">No open positions</div>';
+
+  // Costs are shown beside gross on purpose: a run of small "wins" that are net
+  // losses is exactly what this page exists to make visible.
+  document.getElementById('paper-scorecard').innerHTML = `
+    <div class="scroll"><table class="tbl"><tbody>
+      <tr><td>Gross P&amp;L</td><td class="${pnlClass(s.gross_pnl)}">${signed(s.gross_pnl)}</td></tr>
+      <tr><td>Trading fees</td><td class="neg">-${money(s.trading_fees)}</td></tr>
+      <tr><td>Funding</td><td class="neg">-${money(s.funding_paid)}</td></tr>
+      <tr><td><b>Net P&amp;L</b></td><td class="${pnlClass(s.net_pnl)}"><b>${signed(s.net_pnl)}</b></td></tr>
+      <tr><td>Average win / loss</td><td>${signed(s.avg_win)} / ${signed(s.avg_loss)}</td></tr>
+      <tr><td>Realised reward:risk</td><td>${s.realised_reward_risk ?? '—'}</td></tr>
+      <tr><td>Expectancy per trade</td><td class="${pnlClass(s.expectancy_per_trade)}">${signed(s.expectancy_per_trade)}</td></tr>
+      <tr><td>Break-even move</td><td>${s.break_even_move_pct}%</td></tr>
+      <tr><td>Exits</td><td>${Object.entries(s.exits_by_reason||{}).map(
+        ([k,v])=>`${PAPER_REASON[k]||k} ×${v}`).join(', ') || '—'}</td></tr>
+    </tbody></table></div>
+    <div class="cr-note" style="margin-top:8px">Running at ${c.leverage}×,
+      risking ${(c.stop_pct_of_margin*100).toFixed(0)}% of margin per trade,
+      target ${(c.stop_pct_of_margin*c.reward_risk*100).toFixed(0)}%,
+      minimum confidence ${(c.min_confidence*100).toFixed(0)}%${
+      c.trailing_enabled?', trailing on':''}${c.scaled_sizing?', size scaled by confidence':''}.</div>`;
+
+  document.getElementById('paper-trades').innerHTML = d.trades.length ? `
+    <div class="scroll"><table class="tbl"><thead><tr>
+      <th>Closed</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th>
+      <th>Why</th><th>Gross</th><th>Fees</th><th>Net</th><th>Wallet</th>
+    </tr></thead><tbody>` + d.trades.map(t=>`<tr>
+      <td class="sub">${new Date(t.closed_at).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
+      <td><b>${esc(t.symbol)}</b></td>
+      <td class="${t.side==='long'?'pos':'neg'}">${t.side.toUpperCase()}</td>
+      <td>${fmtPrice(t.entry)}</td><td>${fmtPrice(t.exit)}</td>
+      <td>${esc(PAPER_REASON[t.reason]||t.reason)}</td>
+      <td class="${pnlClass(t.gross)}">${signed(t.gross)}</td>
+      <td class="neg">-${money(t.fees + t.funding)}</td>
+      <td class="${pnlClass(t.net)}"><b>${signed(t.net)}</b><div class="sub">${t.roe_pct}%</div></td>
+      <td>${money(t.wallet_after)}</td>
+    </tr>`).join('') + '</tbody></table></div>'
+    : '<div class="empty">No trades closed yet</div>';
+}
+
 function switchTab(tab){
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.toggle('active',c.id==='tab-'+tab));
+  if(tab==='paper') loadPaper();
 }
 
 // ── VIEW ROUTING ──────────────────────────────────────────────────────────────
@@ -1777,9 +2029,11 @@ function fmtPrice(p){
   if(p>=1) return p.toFixed(4);
   return p.toFixed(6);
 }
-// Round-trip cost on CoinDCX INR futures: 0.05% each way + 18% GST.
-// A target closer than this cannot pay for the trade even when it is reached.
-const BREAK_EVEN_PCT = 2*0.0005*1.18*100;
+// Injected from the Python cost model at render time — see _COST_SNIPPET.
+// Hardcoding these here is how the page and the engine drifted apart: the
+// dashboard called a signal viable that the engine would have refused.
+const BREAK_EVEN_PCT = __BREAK_EVEN_PCT__;
+const MIN_TARGET_PCT = __MIN_TARGET_PCT__;
 function renderCryptoCoins(coins){
   const el=document.getElementById('cr-coins');
   if(!coins.length){el.innerHTML='<div class="empty">Watchlist is empty — add a symbol above</div>';return;}
@@ -1861,10 +2115,13 @@ function renderCryptoSignalCard(s){
   // Distance to target, and whether it can survive the round-trip cost.
   const move = (s.target_price && s.current_price)
     ? Math.abs(s.target_price - s.current_price) / s.current_price * 100 : 0;
-  const viable = move >= BREAK_EVEN_PCT;
+  // Break-even is not the bar. A target merely equal to cost is a coin flip
+  // you pay to enter; MIN_TARGET_PCT is what the engine will actually take.
+  const viable = move >= MIN_TARGET_PCT;
   const warn = viable ? '' :
-    `<div class="cr-sig-warn">Target is only ${move.toFixed(3)}% away — below the
-     ${BREAK_EVEN_PCT.toFixed(3)}% round-trip cost, so this trade loses money even if it wins.</div>`;
+    `<div class="cr-sig-warn">Target is only ${move.toFixed(3)}% away. It costs
+     ${BREAK_EVEN_PCT.toFixed(3)}% to open and close, and the bot needs
+     ${MIN_TARGET_PCT.toFixed(3)}% before a trade is worth taking.</div>`;
   return `<div class="cr-sig-card${viable?'':' unviable'}">
     <div class="cr-sig-top"><span class="cr-sig-dir ${s.direction}">${s.direction.toUpperCase()}</span>
       <span class="cr-sig-sym">${esc(s.symbol)}</span>
@@ -1944,6 +2201,13 @@ async function refresh(){
       renderCryptoCoins(crCoins);
       renderCryptoSignals(crSignals);
       renderCommodities(crCommodities);
+    }
+
+    // Only when the tab is actually visible — polling a hidden panel is
+    // wasted work on a free instance with one shared CPU tenth.
+    if(!IS_SPORTS && document.getElementById('tab-paper')
+       && document.getElementById('tab-paper').classList.contains('active')){
+      await loadPaper();
     }
 
     document.getElementById('last-updated').textContent='Updated: '+new Date().toLocaleTimeString('en-IN',_IST)+' IST';
@@ -2069,13 +2333,12 @@ async def _api_collectors_debug(runner, request: web.Request) -> web.Response:
     GET /api/debug/collectors
     """
     import traceback
-    from datetime import timezone
 
     from config.settings import settings
 
     out: dict = {
         "generated_at_ist": (
-            datetime.utcnow().replace(tzinfo=timezone.utc)
+            datetime.utcnow().replace(tzinfo=UTC)
             .astimezone(__import__("zoneinfo").ZoneInfo("Asia/Kolkata"))
             .strftime("%Y-%m-%d %H:%M:%S IST")
         ),
@@ -2097,8 +2360,8 @@ async def _api_collectors_debug(runner, request: web.Request) -> web.Response:
                                  if "tennis" in s.get("key","") and s.get("active")]
 
                 # Fetch odds for active keys + Grand Slam fallbacks
-                from datetime import timedelta, timezone as _tz
-                _now = datetime.now(_tz.utc)
+                from datetime import timedelta
+                _now = datetime.now(UTC)
                 _from = (_now - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 _to = (_now + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 sample_events: list[dict] = []
@@ -2831,6 +3094,14 @@ function setSiteTheme(t){
 </script>
 """
 
+# The browser must never re-derive the cost model. These come straight from
+# the same ScalpConfig the analyzers use, so recalibrating fees updates the
+# page and the engine together.
+_HTML = (
+    _HTML
+    .replace("__BREAK_EVEN_PCT__", f"{_SCALP.round_trip_fee_pct * 100:.4f}")
+    .replace("__MIN_TARGET_PCT__", f"{_SCALP.min_target_pct * 100:.4f}")
+)
 _HTML = _HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _DATA_HTML = _DATA_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _SETTINGS_HTML = _SETTINGS_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
@@ -2861,6 +3132,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/crypto/coins", lambda req: _api_crypto_coins(runner, req))
     app.router.add_get("/api/crypto/signals", lambda req: _api_crypto_signals(runner, req))
     app.router.add_get("/api/crypto/forecasts", lambda req: _api_crypto_forecasts(runner, req))
+    app.router.add_get("/api/paper", lambda req: _api_paper(runner, req))
     app.router.add_post("/api/crypto/watchlist/add", lambda req: _api_crypto_watchlist_add(runner, req))
     app.router.add_post("/api/crypto/watchlist/remove", lambda req: _api_crypto_watchlist_remove(runner, req))
     app.router.add_get("/api/commodities", lambda req: _api_commodities(runner, req))

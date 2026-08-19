@@ -14,7 +14,7 @@ from analysis.odds_value import OddsValueAnalyzer
 from analysis.second_set import SecondSetFadeAnalyzer
 from analysis.server_performance import ServerPerformanceAnalyzer
 from analysis.set_patterns import SetPatternAnalyzer
-from analysis.signal import Signal, compute_stake
+from analysis.signal import Signal
 from analysis.win_probability import model_fair_odds
 from config.settings import is_tier1, settings
 from storage.models import PlayerStats

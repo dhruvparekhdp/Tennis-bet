@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timezone
 
 from analysis.crypto_state import CryptoState, OHLCVCandle
+from analysis.crypto_state_store import recalculate_indicators
 from analysis.crypto_signals import (
     RSIDivergenceAnalyzer,
     VolumeSpikeAnalyzer,
@@ -22,6 +23,9 @@ class TestCryptoSignals(unittest.TestCase):
         now = datetime.now(timezone.utc)
         for _ in range(20):
             state.candles_1m.append(OHLCVCandle(2990.0, 3010.0, 2985.0, 3000.0, 50.0, now))
+        # Levels now come from real volatility, so the fixture has to produce a
+        # real ATR rather than relying on a fabricated fallback.
+        recalculate_indicators(state)
 
         sig = analyzer.analyze(state)
         self.assertIsNotNone(sig)
@@ -43,6 +47,11 @@ class TestCryptoSignals(unittest.TestCase):
         state.sentiment_score = 0.65
         state.sentiment_news_count = 12
         state.rsi_14 = 48.0
+        now = datetime.now(timezone.utc)
+        for _ in range(20):
+            state.candles_1m.append(OHLCVCandle(149.0, 151.0, 148.5, 150.0, 40.0, now))
+        recalculate_indicators(state)
+        state.rsi_14 = 48.0   # recompute overwrites it; the analyzer gates on this
 
         sig = analyzer.analyze(state)
         self.assertIsNotNone(sig)
@@ -58,6 +67,7 @@ class TestCryptoSignals(unittest.TestCase):
         now = datetime.now(timezone.utc)
         for _ in range(20):
             state.candles_1m.append(OHLCVCandle(64900.0, 65100.0, 64850.0, 65000.0, 100.0, now))
+        recalculate_indicators(state)
 
         signals_1 = engine.process(state)
         self.assertGreater(len(signals_1), 0)

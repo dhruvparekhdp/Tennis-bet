@@ -5,7 +5,6 @@ from datetime import datetime
 
 from analysis.football_state import FootballMatchState
 
-
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
 def _win_prob(minute: int, goal_diff: int, red_card_adv: int = 0) -> float:

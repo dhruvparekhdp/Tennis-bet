@@ -13,6 +13,7 @@ onward. The engine never sees a bar before it would have existed.
 """
 from __future__ import annotations
 
+import statistics
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -25,12 +26,7 @@ from analysis.crypto_signals import (
     VolumeSpikeAnalyzer,
 )
 from analysis.crypto_state import CryptoState, OHLCVCandle
-from analysis.crypto_state_store import (
-    _compute_atr,
-    _compute_bollinger,
-    _compute_ema,
-    _compute_rsi,
-)
+from analysis.crypto_state_store import append_candle, recalculate_indicators
 from analysis.paper_trading import (
     ClosedTrade,
     CycleConfig,
@@ -47,7 +43,23 @@ from collectors.historical_klines import Candle
 
 log = structlog.get_logger()
 
-CANDLE_WINDOW = 120   # matches the live store's rolling window
+
+def _drift_pct(candles: list, i: int, lookback: int) -> float:
+    """
+    Average per-bar price change over the `lookback` bars ending before `i`.
+
+    Bar `i` is excluded deliberately. Its own move is the thing we are trying
+    to trade; letting it set our fill price would be look-ahead of the most
+    flattering kind.
+    """
+    if lookback <= 0 or i <= 0:
+        return 0.0
+    start = max(0, i - lookback)
+    first, last = candles[start].close, candles[i - 1].close
+    bars = i - start
+    if first <= 0 or bars <= 0:
+        return 0.0
+    return ((last - first) / first) / bars
 
 
 @dataclass
@@ -64,6 +76,7 @@ class BacktestResult:
     signals_rejected_capital: int = 0
     early_exits: int = 0
     signals_rejected_unviable: int = 0
+    trail_moves: int = 0
     contradictions_seen: int = 0
     shocks_detected: int = 0
     ended_reason: str = "data_exhausted"
@@ -145,8 +158,7 @@ class BacktestResult:
     def median_target_distance_pct(self) -> float:
         if not self.target_distances_pct:
             return 0.0
-        s = sorted(self.target_distances_pct)
-        return s[len(s) // 2]
+        return statistics.median(self.target_distances_pct)
 
     def by_signal_type(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -202,6 +214,7 @@ class BacktestResult:
                 "rejected_no_capital": self.signals_rejected_capital,
                 "median_target_distance_pct": round(self.median_target_distance_pct, 4),
                 "rejected_target_too_small": self.signals_rejected_unviable,
+                "trail_moves": self.trail_moves,
                 "contradictory_readings": self.contradictions_seen,
                 "early_exits": self.early_exits,
                 "market_shocks": self.shocks_detected,
@@ -227,23 +240,6 @@ class BacktestEngine:
             self.analyzers.append(SentimentShiftAnalyzer())
         self._last_review: dict[int, object] = {}
         self._fast_mode_until = None
-
-    def _recompute(self, state: CryptoState) -> None:
-        """Same indicator maths as the live store, over real OHLC this time."""
-        closes = [c.close for c in state.candles_1m]
-        if len(closes) < 14:
-            return
-        state.rsi_14_prev = state.rsi_14
-        state.rsi_14 = _compute_rsi(closes, 14)
-        state.macd_line = _compute_ema(closes, 12) - _compute_ema(closes, 26)
-        state.ema_9 = _compute_ema(closes, 9)
-        state.ema_20 = _compute_ema(closes, 20)
-        state.ema_50 = _compute_ema(closes, 50)
-        state.ema_200 = _compute_ema(closes, 200)
-        up, mid, low, bw = _compute_bollinger(closes, 20, 2.0)
-        state.bollinger_upper, state.bollinger_mid = up, mid
-        state.bollinger_lower, state.bollinger_bandwidth = low, bw
-        state.atr_14 = _compute_atr(state.candles_1m, 14)
 
     def _review_position(self, pos: Position, state: CryptoState, candle,
                          shock: bool, cfg: CycleConfig) -> ExitReason | None:
@@ -322,13 +318,24 @@ class BacktestEngine:
         for i, c in enumerate(candles):
             res.candles_processed += 1
 
+            # Recent per-bar drift, from CLOSED bars only. This drives the
+            # trend term in the fill price, so it must never peek at the bar
+            # we are about to trade on.
+            drift = _drift_pct(candles, i, cfg.drift_lookback)
+
             # 1. Resolve existing positions against THIS candle before anything new
             #    is opened, so a position can never be opened and closed on the
             #    same bar using the same information.
             still_open: list[Position] = []
             for pos in open_positions:
-                hit = resolve_candle(pos, c.high, c.low, c.close, c.ts)
+                hit = resolve_candle(pos, c.high, c.low, c.close, c.ts,
+                                     slippage=cfg.slippage, drift_pct=drift)
                 if hit is None:
+                    # Only now, once this bar could not close the position at
+                    # the stop it actually had. Trailing first would let this
+                    # bar's high pull the stop above this bar's low.
+                    if pos.update_trail(c.high, c.low, cfg.trailing, cfg.fees):
+                        res.trail_moves += 1
                     still_open.append(pos)
                     continue
                 reason, price = hit
@@ -349,14 +356,12 @@ class BacktestEngine:
             state.timestamp = c.ts
             state.high_24h = max(state.high_24h, c.high)
             state.low_24h = min(state.low_24h, c.low) if state.low_24h else c.low
-            state.candles_1m.append(OHLCVCandle(
+            append_candle(state, OHLCVCandle(
                 open=c.open, high=c.high, low=c.low, close=c.close,
                 volume=c.volume, timestamp=c.ts, is_closed=True))
-            if len(state.candles_1m) > CANDLE_WINDOW:
-                state.candles_1m = state.candles_1m[-CANDLE_WINDOW:]
             if len(state.candles_1m) < 30:
                 continue
-            self._recompute(state)
+            recalculate_indicators(state)
 
             # rolling 24h volume baseline for the volume analyzer
             recent = state.candles_1m[-60:]
@@ -367,7 +372,7 @@ class BacktestEngine:
             #     A stop answers "did price move against me"; this answers
             #     "is the reason I opened this still true".
             if open_positions and cfg.review.enabled:
-                avg_vol = sum(x.volume for x in recent) / len(recent) if recent else 0.0
+                avg_vol = state.volume_24h / len(recent) if recent else 0.0
                 shock = is_market_shock(c.high - c.low, state.atr_14,
                                         c.volume, avg_vol, cfg.review)
                 if shock:
@@ -381,7 +386,10 @@ class BacktestEngine:
                     if verdict is None:
                         survivors.append(pos)
                         continue
-                    trade = close_position(pos, c.close, verdict, c.ts, cfg.fees, wallet)
+                    # A review exit is a market order like a stop, not a limit
+                    # order like a target, so it pays the same fill penalty.
+                    fill = cfg.slippage.exit_fill(c.close, pos.side, verdict, drift)
+                    trade = close_position(pos, fill, verdict, c.ts, cfg.fees, wallet)
                     wallet = trade.wallet_after
                     res.trades.append(trade)
                     res.early_exits += 1
@@ -437,7 +445,14 @@ class BacktestEngine:
                 signal_type=sig.signal_type, timeframe=sig.timeframe,
                 confidence=sig.confidence,
                 expires_at=c.ts + timedelta(minutes=cfg.max_hold_minutes),
+                usdt_inr=cfg.usdt_inr, lot_step=cfg.lot_step,
+                slippage=cfg.slippage, drift_pct=drift,
             )
+
+            # Lot rounding can refuse a size outright on a small wallet.
+            if pos.coin_qty <= 0:
+                res.signals_rejected_unviable += 1
+                continue
 
             # Refuse targets that cannot pay for the round trip. This is the
             # filter that would have rejected every signal in the live dashboard.
@@ -453,9 +468,11 @@ class BacktestEngine:
 
         # 4. Close anything still open at the final price
         if open_positions:
-            last = candles[min(res.candles_processed, len(candles)) - 1]
+            last = candles[res.candles_processed - 1]
             for pos in open_positions:
-                trade = close_position(pos, last.close, ExitReason.CYCLE_END,
+                fill = cfg.slippage.exit_fill(last.close, pos.side,
+                                              ExitReason.CYCLE_END, 0.0)
+                trade = close_position(pos, fill, ExitReason.CYCLE_END,
                                        last.ts, cfg.fees, wallet)
                 wallet = trade.wallet_after
                 res.trades.append(trade)

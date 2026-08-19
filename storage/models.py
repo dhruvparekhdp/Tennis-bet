@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from storage.database import Base
@@ -335,3 +335,117 @@ class CryptoWatchlistEntry(Base):
 
     symbol: Mapped[str] = mapped_column(String, primary_key=True)   # e.g. "btcusdt"
     added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PaperCycle(Base):
+    """
+    One run of the paper-trading simulator, start to finish.
+
+    A cycle ends when the wallet reaches the target or is exhausted, and then
+    a fresh one starts. Keeping cycles as rows rather than a single running
+    balance is what makes "restart and compare with tighter logic" possible —
+    each cycle carries the configuration it ran under.
+    """
+
+    __tablename__ = "paper_cycles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    starting_wallet: Mapped[float] = mapped_column(Float)
+    target_wallet: Mapped[float] = mapped_column(Float)
+    wallet: Mapped[float] = mapped_column(Float)
+    peak_wallet: Mapped[float] = mapped_column(Float)
+
+    leverage: Mapped[float] = mapped_column(Float)
+    stop_pct_of_margin: Mapped[float] = mapped_column(Float)
+    reward_risk: Mapped[float] = mapped_column(Float)
+    min_confidence: Mapped[float] = mapped_column(Float)
+    trailing_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    scaled_sizing: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # running | hit_target | busted | stopped
+    status: Mapped[str] = mapped_column(String, default="running", index=True)
+    note: Mapped[str] = mapped_column(String, default="")
+
+
+class PaperPosition(Base):
+    """
+    An open paper position. Deleted on close — the record lives on as a
+    PaperTrade. Persisted rather than held in memory so a redeploy does not
+    silently abandon open positions mid-cycle.
+    """
+
+    __tablename__ = "paper_positions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cycle_id: Mapped[int] = mapped_column(Integer, index=True)
+    symbol: Mapped[str] = mapped_column(String, index=True)
+    side: Mapped[str] = mapped_column(String)                # long | short
+
+    signal_price: Mapped[float] = mapped_column(Float)       # quoted
+    entry_price: Mapped[float] = mapped_column(Float)        # filled
+    margin: Mapped[float] = mapped_column(Float)
+    leverage: Mapped[float] = mapped_column(Float)
+    coin_qty: Mapped[float] = mapped_column(Float)
+    usdt_inr: Mapped[float] = mapped_column(Float)
+
+    stop_price: Mapped[float] = mapped_column(Float)
+    initial_stop_price: Mapped[float] = mapped_column(Float)
+    target_price: Mapped[float] = mapped_column(Float)
+    liq_price: Mapped[float] = mapped_column(Float)
+    peak_price: Mapped[float] = mapped_column(Float, default=0.0)
+    trail_active: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    entry_fee: Mapped[float] = mapped_column(Float)
+    signal_type: Mapped[str] = mapped_column(String, default="")
+    timeframe: Mapped[str] = mapped_column(String, default="")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+
+    opened_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PaperTrade(Base):
+    """
+    A closed paper trade, with every cost broken out.
+
+    Fees and funding are stored separately from gross rather than netted, so
+    the question "did the strategy work, or did the costs eat it" can still be
+    answered after the fact.
+    """
+
+    __tablename__ = "paper_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cycle_id: Mapped[int] = mapped_column(Integer, index=True)
+    symbol: Mapped[str] = mapped_column(String, index=True)
+    side: Mapped[str] = mapped_column(String)
+
+    signal_price: Mapped[float] = mapped_column(Float, default=0.0)
+    entry_price: Mapped[float] = mapped_column(Float)
+    exit_price: Mapped[float] = mapped_column(Float)
+    coin_qty: Mapped[float] = mapped_column(Float, default=0.0)
+    margin: Mapped[float] = mapped_column(Float)
+    leverage: Mapped[float] = mapped_column(Float)
+
+    stop_price: Mapped[float] = mapped_column(Float, default=0.0)
+    target_price: Mapped[float] = mapped_column(Float, default=0.0)
+    exit_reason: Mapped[str] = mapped_column(String, index=True)
+
+    gross_pnl: Mapped[float] = mapped_column(Float)
+    trading_fees: Mapped[float] = mapped_column(Float, default=0.0)
+    funding_paid: Mapped[float] = mapped_column(Float, default=0.0)
+    net_pnl: Mapped[float] = mapped_column(Float)
+    return_on_margin: Mapped[float] = mapped_column(Float, default=0.0)
+    wallet_after: Mapped[float] = mapped_column(Float)
+
+    signal_type: Mapped[str] = mapped_column(String, default="")
+    timeframe: Mapped[str] = mapped_column(String, default="")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    entry_slippage_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    hours_held: Mapped[float] = mapped_column(Float, default=0.0)
+
+    opened_at: Mapped[datetime] = mapped_column(DateTime)
+    closed_at: Mapped[datetime] = mapped_column(DateTime, index=True)

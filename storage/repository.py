@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from storage.models import (
     CommoditySnapshot, CryptoSignalLog, CryptoSnapshot, CryptoWatchlistEntry,
     Match, MatchCompletion, MatchResult, MatchSnapshot,
-    OddsSnapshot, PlayerStats, SignalLog,
+    OddsSnapshot, PaperCycle, PaperPosition, PaperTrade, PlayerStats, SignalLog,
 )
 
 
@@ -545,3 +545,165 @@ class Repository:
             self.session.add(CryptoWatchlistEntry(symbol=sym, added_at=datetime.utcnow()))
         await self.session.commit()
         return symbols
+
+    # ── Paper trading ─────────────────────────────────────────────────────
+
+    async def get_running_cycle(self) -> PaperCycle | None:
+        res = await self.session.execute(
+            select(PaperCycle).where(PaperCycle.status == "running")
+            .order_by(PaperCycle.id.desc()).limit(1)
+        )
+        return res.scalar_one_or_none()
+
+    async def start_cycle(
+        self,
+        starting_wallet: float,
+        target_wallet: float,
+        leverage: float,
+        stop_pct_of_margin: float,
+        reward_risk: float,
+        min_confidence: float,
+        trailing_enabled: bool,
+        scaled_sizing: bool,
+    ) -> PaperCycle:
+        """
+        Begin a cycle, recording the configuration it runs under.
+
+        Storing the settings on the row rather than reading them from the
+        environment is what makes cycles comparable: a cycle you re-read next
+        month still knows the leverage and risk it was actually run with.
+        """
+        cycle = PaperCycle(
+            started_at=datetime.utcnow(),
+            starting_wallet=starting_wallet,
+            target_wallet=target_wallet,
+            wallet=starting_wallet,
+            peak_wallet=starting_wallet,
+            leverage=leverage,
+            stop_pct_of_margin=stop_pct_of_margin,
+            reward_risk=reward_risk,
+            min_confidence=min_confidence,
+            trailing_enabled=trailing_enabled,
+            scaled_sizing=scaled_sizing,
+            status="running",
+        )
+        self.session.add(cycle)
+        await self.session.commit()
+        await self.session.refresh(cycle)
+        return cycle
+
+    async def update_cycle_wallet(self, cycle_id: int, wallet: float) -> None:
+        cycle = await self.session.get(PaperCycle, cycle_id)
+        if cycle is None:
+            return
+        cycle.wallet = wallet
+        cycle.peak_wallet = max(cycle.peak_wallet, wallet)
+        await self.session.commit()
+
+    async def end_cycle(self, cycle_id: int, status: str, note: str = "") -> None:
+        cycle = await self.session.get(PaperCycle, cycle_id)
+        if cycle is None:
+            return
+        cycle.status = status
+        cycle.note = note
+        cycle.ended_at = datetime.utcnow()
+        await self.session.commit()
+
+    async def get_open_positions(self, cycle_id: int) -> list[PaperPosition]:
+        res = await self.session.execute(
+            select(PaperPosition).where(PaperPosition.cycle_id == cycle_id)
+            .order_by(PaperPosition.id)
+        )
+        return list(res.scalars().all())
+
+    async def save_position(self, cycle_id: int, pos) -> PaperPosition:
+        row = PaperPosition(
+            cycle_id=cycle_id,
+            symbol=pos.symbol,
+            side=pos.side.value,
+            signal_price=pos.signal_price,
+            entry_price=pos.entry_price,
+            margin=pos.margin,
+            leverage=pos.leverage,
+            coin_qty=pos.coin_qty,
+            usdt_inr=pos.usdt_inr,
+            stop_price=pos.stop_price,
+            initial_stop_price=pos.initial_stop_price,
+            target_price=pos.target_price,
+            liq_price=pos.liq_price,
+            peak_price=pos.peak_price,
+            trail_active=pos.trail_active,
+            entry_fee=pos.entry_fee,
+            signal_type=pos.signal_type,
+            timeframe=pos.timeframe,
+            confidence=pos.confidence,
+            opened_at=pos.opened_at.replace(tzinfo=None),
+            expires_at=pos.expires_at.replace(tzinfo=None) if pos.expires_at else None,
+        )
+        self.session.add(row)
+        await self.session.commit()
+        await self.session.refresh(row)
+        return row
+
+    async def sync_position(self, row_id: int, pos) -> None:
+        """Persist trail movement. Called every tick, so it writes only what moves."""
+        row = await self.session.get(PaperPosition, row_id)
+        if row is None:
+            return
+        row.stop_price = pos.stop_price
+        row.target_price = pos.target_price
+        row.peak_price = pos.peak_price
+        row.trail_active = pos.trail_active
+        await self.session.commit()
+
+    async def delete_position(self, row_id: int) -> None:
+        row = await self.session.get(PaperPosition, row_id)
+        if row is not None:
+            await self.session.delete(row)
+            await self.session.commit()
+
+    async def record_trade(self, cycle_id: int, trade) -> None:
+        pos = trade.position
+        self.session.add(PaperTrade(
+            cycle_id=cycle_id,
+            symbol=pos.symbol,
+            side=pos.side.value,
+            signal_price=pos.signal_price,
+            entry_price=pos.entry_price,
+            exit_price=trade.exit_price,
+            coin_qty=pos.coin_qty,
+            margin=pos.margin,
+            leverage=pos.leverage,
+            stop_price=pos.stop_price,
+            target_price=pos.target_price,
+            exit_reason=trade.reason.value,
+            gross_pnl=trade.gross_pnl,
+            # Fees and funding stay separate so "was it the strategy or the
+            # costs" is still answerable after the fact.
+            trading_fees=trade.fees_paid - trade.funding_paid,
+            funding_paid=trade.funding_paid,
+            net_pnl=trade.net_pnl,
+            return_on_margin=trade.return_on_margin,
+            wallet_after=trade.wallet_after,
+            signal_type=pos.signal_type,
+            timeframe=pos.timeframe,
+            confidence=pos.confidence,
+            entry_slippage_pct=trade.entry_slippage_pct,
+            hours_held=trade.hours_held,
+            opened_at=pos.opened_at.replace(tzinfo=None),
+            closed_at=trade.closed_at.replace(tzinfo=None),
+        ))
+        await self.session.commit()
+
+    async def get_cycle_trades(self, cycle_id: int, limit: int = 500) -> list[PaperTrade]:
+        res = await self.session.execute(
+            select(PaperTrade).where(PaperTrade.cycle_id == cycle_id)
+            .order_by(PaperTrade.closed_at.desc()).limit(limit)
+        )
+        return list(res.scalars().all())
+
+    async def get_recent_cycles(self, limit: int = 20) -> list[PaperCycle]:
+        res = await self.session.execute(
+            select(PaperCycle).order_by(PaperCycle.id.desc()).limit(limit)
+        )
+        return list(res.scalars().all())

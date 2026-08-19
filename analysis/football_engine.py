@@ -8,8 +8,8 @@ from analysis.football_signals import (
     CleanSheetLikely,
     FootballSignal,
     HeavyFavoriteDominating,
-    LateLead,
     LateDrawFade,
+    LateLead,
     RedCardAdvantage,
 )
 from analysis.football_state import FootballMatchState

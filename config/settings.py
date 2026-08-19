@@ -153,6 +153,29 @@ class Settings(BaseSettings):
     crypto_signal_cooldown_minutes: int = 15
     crypto_snapshot_interval_seconds: int = 120   # 2 minutes snapshot cycle for training
     crypto_alert_telegram: bool = True
+
+    # ── Paper trading simulator ───────────────────────────────────────────
+    # Off by default. It places no real orders, but it does write to the
+    # database and send alerts, so it should be an explicit choice.
+    paper_trading_enabled: bool = False
+    paper_starting_wallet: float = 3000.0
+    paper_target_wallet: float = 20000.0
+    paper_leverage: float = 10.0
+    paper_stop_pct_of_margin: float = 0.20      # your fixed 20% risk
+    paper_reward_risk: float = 1.0              # your fixed 20% target
+    paper_min_confidence: float = 0.70
+    paper_max_concurrent: int = 3
+    paper_max_hold_minutes: int = 240
+    paper_scaled_sizing: bool = True            # Rs500 / Rs1,000 / Rs1,500 ladder
+    paper_trailing_enabled: bool = False        # measure on real data before enabling
+    paper_tick_interval_seconds: int = 30
+    # CoinDCX INR futures trade at a premium to spot; refresh this if it drifts.
+    paper_usdt_inr: float = 102.0
+    paper_alert_telegram: bool = True
+
+    # Free, keyless sentiment inputs that adjust confidence (never fire trades).
+    sentiment_feeds_enabled: bool = True
+    fear_greed_refresh_minutes: int = 60
     crypto_max_stake_pct: float = 0.02           # 2% max per trade (Kelly capped)
 
     # NLP Sentiment & Execution toggles

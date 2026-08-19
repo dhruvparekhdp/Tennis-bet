@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import structlog
 
 from analysis.crypto_state import CryptoState
