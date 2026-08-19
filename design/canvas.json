@@ -1,0 +1,19 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html",     "x": 0,    "y": 0,    "w": 1280, "h": 900, "title": "1 · Dashboard" },
+    { "file": "Explorer.dc.html", "x": 1360, "y": 0,    "w": 1280, "h": 900, "title": "2 · Signal Explorer" },
+    { "file": "Accuracy.dc.html", "x": 0,    "y": 980,  "w": 1280, "h": 900, "title": "3 · Accuracy & Analytics" },
+    { "file": "Historic.dc.html", "x": 1360, "y": 980,  "w": 1280, "h": 900, "title": "4 · Historic Data" }
+  ],
+  "annotations": [
+    { "id": "note-sidebar", "x": -330, "y": 40, "w": 290,
+      "text": "Sidebar replaces the current top tab bar.\n\nLive: Dashboard · Signals · Paper Trading\nAnalysis: Accuracy · Historic · Watchlist · Diagnostics · Settings\n\nFooter carries cycle state and feed health, so it is visible on every screen." },
+    { "id": "note-rollover", "x": -330, "y": 300, "w": 290,
+      "text": "7-day rollover: the Dashboard shows the live window, anything older moves to Historic Data. Same rows, one archive." },
+    { "id": "note-blocked", "x": -330, "y": 1020, "w": 290,
+      "text": "BLOCKED: every chart here needs a signal-outcome resolver. Crypto signals are stored as pending and never resolved — only tennis has that job today. Numbers shown are illustrative." },
+    { "id": "note-small", "x": -330, "y": 1290, "w": 290,
+      "text": "The small-move question you asked about: the histogram buckets every archived signal by target distance, with the 0.118% break-even marked. Red bars are signals that could not have paid for themselves." }
+  ],
+  "launch": { "view": "canvas" }
+}
