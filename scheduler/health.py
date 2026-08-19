@@ -1295,6 +1295,19 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .fb-sig-red_card_advantage{background:#7f1d1d;color:#fca5a5}
 .fb-sig-clean_sheet_likely{background:#134e4a;color:#99f6e4}
 .fb-sig-time{font-size:11px;color:#475569;margin-left:auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+
+/* ── Tables ────────────────────────────────────────────────────────────── */
+.scroll{overflow-x:auto;border:1px solid #334155;border-radius:8px;background:#1e293b;
+  -webkit-overflow-scrolling:touch}
+.tbl{border-collapse:collapse;width:100%;font-size:12px}
+.tbl th{font-size:9px;color:#475569;text-transform:uppercase;letter-spacing:.07em;
+  text-align:left;padding:9px 11px;background:#16202f;white-space:nowrap;font-weight:600}
+.tbl td{padding:9px 11px;border-top:1px solid #0f172a;color:#cbd5e1;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.tbl td.sub{color:#64748b;font-size:11px}
+.tbl tbody tr:hover{background:#16202f}
+
 /* ── Sidebar shell ─────────────────────────────────────────────────────── */
 .app{display:flex;min-height:100vh}
 .sidebar{width:212px;flex:none;background:#0f172a;border-right:1px solid #334155;
@@ -1335,10 +1348,73 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   .main-head{padding:12px 14px}
 }
 
+/* ── Phone ─────────────────────────────────────────────────────────────── */
+/* A 9-column table inside a horizontal scroller is technically readable and
+   practically useless on a 390px screen — you cannot see the symbol and the
+   number at the same time. Below 640px each row becomes its own card with the
+   column name beside every value, so nothing needs sideways scrolling. */
+@media(max-width:640px){
+  html{-webkit-text-size-adjust:100%}
+  .main-body{padding:12px 11px 20px}
+  footer{padding-bottom:76px}
+  .main-head{padding:11px 12px}
+  .main-head h1{font-size:15px}
+  section h2{font-size:11px}
+
+  .cards{grid-template-columns:1fr 1fr !important;gap:9px}
+  .card{padding:11px}
+  .card-value{font-size:18px}
+  .card-title{font-size:10px}
+  .card-sub{font-size:9px}
+
+  .scroll{border:none;background:none;overflow-x:visible}
+  .tbl,.tbl tbody,.tbl tr,.tbl td{display:block;width:100%}
+  .tbl thead{display:none}
+  .tbl tr{background:#1e293b;border:1px solid #334155;border-radius:8px;
+    padding:9px 11px;margin-bottom:8px}
+  .tbl tr:hover{background:#1e293b}
+  .tbl td{border:none;padding:3px 0;white-space:normal;font-size:12px;
+    display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+  .tbl td::before{content:attr(data-label);color:#64748b;font-size:10px;
+    text-transform:uppercase;letter-spacing:.05em;flex:none}
+  .tbl td:first-child{padding-bottom:6px;margin-bottom:4px;
+    border-bottom:1px solid #0f172a;font-weight:600;color:#f1f5f9}
+  .tbl td:empty{display:none}
+
+  /* Anything tapped needs a real target, not a 9px label. */
+  .side-item{min-height:46px;justify-content:center}
+  .cr-add-btn,.cr-page-btn,button{min-height:40px}
+  .cr-input{min-height:40px;font-size:16px}   /* 16px stops iOS zooming on focus */
+  .cr-sig-tab{min-height:34px;font-size:12px}
+  .cr-coin-remove{min-width:32px;min-height:32px}
+
+  .cr-grid{grid-template-columns:1fr 1fr !important}
+  .cr-sig-card{padding:11px}
+  .cr-note{font-size:11px}
+}
+/* Ten destinations do not fit a phone bar, and a sideways scroller with no
+   affordance hides half of them. Five live on the bar; the rest open in a
+   sheet. */
+@media(max-width:640px){
+  .sidebar{overflow-x:visible;justify-content:space-around}
+  .side-secondary{display:none}
+  .side-more{display:flex}
+  .sidebar.more-open .side-secondary{display:flex}
+  .sidebar.more-open{flex-wrap:wrap;padding-bottom:4px}
+  .more-scrim{position:fixed;inset:0;background:rgba(2,6,23,.6);z-index:40;display:none}
+  .more-scrim.on{display:block}
+}
+.side-more{display:none}
+
+@media(max-width:380px){
+  .cards,.cr-grid{grid-template-columns:1fr !important}
+}
+
 </style>
 </head>
 <body>
 <div class="app">
+<div class="more-scrim" id="more-scrim" onclick="toggleMore()"></div>
 <nav class="sidebar" id="sidebar">
   <div class="side-brand">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0ea5e9" stroke-width="2"><path d="M3 17l6-6 4 4 8-8"/><path d="M17 7h4v4"/></svg>
@@ -1351,12 +1427,16 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
   <div class="side-item" data-tab="guard" onclick="switchTab('guard')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V7z"/></svg><span>Session Guard</span></div>
   <div class="side-group">Analysis</div>
   <div class="side-item" data-tab="accuracy" onclick="switchTab('accuracy')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V10M18 20V4M6 20v-4"/></svg><span>Accuracy</span></div>
-  <div class="side-item" data-tab="historic" onclick="switchTab('historic')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5a9 3 0 1018 0 9 3 0 10-18 0M3 5v14a9 3 0 0018 0V5"/></svg><span>Historic Data</span></div>
-  <div class="side-item" data-tab="watchlist" onclick="switchTab('watchlist')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.2l5.9-.9z"/></svg><span>Watchlist</span></div>
+  <div class="side-item side-secondary" data-tab="historic" onclick="switchTab('historic')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5a9 3 0 1018 0 9 3 0 10-18 0M3 5v14a9 3 0 0018 0V5"/></svg><span>Historic Data</span></div>
+  <div class="side-item side-secondary" data-tab="watchlist" onclick="switchTab('watchlist')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.2l5.9-.9z"/></svg><span>Watchlist</span></div>
   <div class="side-group">Other</div>
-  <a class="side-item" data-tab="sports" href="/sports"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18M3 12h18"/></svg><span>Sports</span></a>
-  <a class="side-item" data-tab="diag" href="/api/debug/collectors"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4"/></svg><span>Diagnostics</span></a>
-  <a class="side-item" data-tab="settings" href="/settings"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 00-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 00-1.7-1L14.5 3h-4l-.4 2.6a7 7 0 00-1.7 1l-2.4-1-2 3.4L6 11a7 7 0 000 2l-2 1.6 2 3.4 2.4-1a7 7 0 001.7 1l.4 2.6h4l.4-2.6a7 7 0 001.7-1l2.4 1 2-3.4-2-1.6a7 7 0 00.1-1z"/></svg><span>Settings</span></a>
+  <a class="side-item side-secondary" data-tab="sports" href="/sports"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18M3 12h18"/></svg><span>Sports</span></a>
+  <a class="side-item side-secondary" data-tab="diag" href="/api/debug/collectors"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4"/></svg><span>Diagnostics</span></a>
+  <a class="side-item side-secondary" data-tab="settings" href="/settings"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 00-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 00-1.7-1L14.5 3h-4l-.4 2.6a7 7 0 00-1.7 1l-2.4-1-2 3.4L6 11a7 7 0 000 2l-2 1.6 2 3.4 2.4-1a7 7 0 001.7 1l.4 2.6h4l.4-2.6a7 7 0 001.7-1l2.4 1 2-3.4-2-1.6a7 7 0 00.1-1z"/></svg><span>Settings</span></a>
+  <div class="side-item side-more" onclick="toggleMore()">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+    <span>More</span>
+  </div>
   <div class="side-foot">
     <div style="display:flex;align-items:center;gap:6px">
       <span class="side-dot" id="side-status-dot"></span>
@@ -1510,7 +1590,7 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 </div>
 
 
-<div id="tab-crypto" class="tab-content active">
+<div id="tab-crypto" class="tab-content">
   <section>
     <h2>🪙 Live Crypto Watchlist</h2>
     <div class="cr-note">Prices update every 30-60s from CoinDCX and CoinGecko. Add or remove symbols here — changes apply immediately, no redeploy needed.</div>
@@ -2095,6 +2175,26 @@ async function loadPaper(){
 }
 
 
+// Copy each table's column names onto its cells so the phone layout can show
+// them beside the values. Cheap, idempotent, and keeps every table builder
+// free of presentation concerns.
+function labelTables(root){
+  (root||document).querySelectorAll('table.tbl').forEach(t=>{
+    const heads=[...t.querySelectorAll('thead th')].map(th=>th.textContent.trim());
+    if(!heads.length) return;
+    t.querySelectorAll('tbody tr').forEach(tr=>{
+      [...tr.children].forEach((td,i)=>{
+        if(heads[i] && !td.hasAttribute('data-label')) td.setAttribute('data-label',heads[i]);
+      });
+    });
+  });
+}
+// One observer instead of a call at the end of every render function — the
+// tables are built in a dozen places and one missed call is an unlabelled
+// table on a phone with no other symptom.
+new MutationObserver(()=>labelTables()).observe(document.documentElement,
+  {childList:true,subtree:true});
+
 // ── SIDEBAR VIEWS ─────────────────────────────────────────────────────────
 // Everything below computes from endpoints that already exist. Where a number
 // genuinely cannot be produced yet it says so rather than showing a zero.
@@ -2355,6 +2455,20 @@ function switchTab(tab){
   if(tab==='watchlist') loadWatchlist();
   if(tab==='dashboard') loadDashboard();
 }
+
+function toggleMore(){
+  const bar=document.getElementById('sidebar');
+  const on=bar.classList.toggle('more-open');
+  document.getElementById('more-scrim').classList.toggle('on',on);
+}
+// Picking a destination closes the sheet — leaving it open over the screen you
+// just navigated to is the classic version of this bug.
+document.addEventListener('click',e=>{
+  const item=e.target.closest('.side-item');
+  if(item && !item.classList.contains('side-more'))
+    document.getElementById('sidebar').classList.remove('more-open'),
+    document.getElementById('more-scrim').classList.remove('on');
+});
 
 function addCryptoSymbol2(){
   const el=document.getElementById('cr-add-input2');
@@ -2894,6 +3008,16 @@ td.null{color:#475569;font-style:italic}
 .err{color:#f87171;font-size:12px;padding:8px 0}
 .note{color:#64748b;font-size:12px;padding:0 20px}
 #status{color:#94a3b8;font-size:12px}
+
+@media(max-width:640px){
+  html{-webkit-text-size-adjust:100%}
+  body{padding:12px}
+  table{font-size:12px}
+  th,td{padding:7px 8px}
+  input,select,textarea,button{min-height:40px;font-size:16px}
+  .grid,.cards{grid-template-columns:1fr !important}
+  pre{font-size:11px;overflow-x:auto}
+}
 </style>
 </head>
 <body>
@@ -3398,6 +3522,16 @@ input:checked+.slider:before{transform:translateX(20px)}
 .toast{position:fixed;bottom:24px;right:24px;background:#238636;color:#fff;padding:12px 20px;border-radius:8px;font-size:14px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:999}
 .toast.show{opacity:1}
 .toast.err{background:#f85149}
+
+@media(max-width:640px){
+  html{-webkit-text-size-adjust:100%}
+  body{padding:12px}
+  table{font-size:12px}
+  th,td{padding:7px 8px}
+  input,select,textarea,button{min-height:40px;font-size:16px}
+  .grid,.cards{grid-template-columns:1fr !important}
+  pre{font-size:11px;overflow-x:auto}
+}
 </style>
 </head>
 <body>
