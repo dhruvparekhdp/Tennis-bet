@@ -358,6 +358,71 @@ async def _api_crypto_signals(runner, request: web.Request) -> web.Response:
     return web.Response(text=json.dumps(signals), content_type="application/json")
 
 
+async def _api_debug_coindcx(runner, request: web.Request) -> web.Response:
+    """
+    Show exactly what CoinDCX returns for a symbol, spot and futures.
+
+    The futures response shape is not publicly documented and could not be
+    reached from the environment the collector was written in, so this exists
+    to close that loop from the running server rather than by guessing.
+    Add ?symbol=xauusdt to target one.
+    """
+    import httpx
+
+    from collectors.coindcx import _base_symbol, _extract_price, _futures_name_variants
+
+    symbol = (request.query.get("symbol") or "xauusdt").strip().lower()
+    base = _base_symbol(symbol).upper()
+    out: dict = {"symbol": symbol, "base": base}
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(runner.coindcx.TICKER_URL)
+        out["spot"] = {"status": r.status_code}
+        if r.status_code == 200:
+            rows = r.json()
+            markets = {str(x.get("market", "")).upper() for x in rows}
+            out["spot"]["total_markets"] = len(markets)
+            out["spot"]["matching"] = sorted(m for m in markets if base in m)[:20]
+    except Exception as exc:
+        out["spot"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        got = await runner.coindcx.fetch_futures_raw()
+        if not got:
+            out["futures"] = {"error": "no futures endpoint answered"}
+        else:
+            url, payload = got
+            table = payload
+            if isinstance(payload, dict):
+                for wrapper in ("prices", "data", "result"):
+                    if isinstance(payload.get(wrapper), dict):
+                        table = payload[wrapper]
+                        break
+            out["futures"] = {"url": url, "shape": type(table).__name__}
+            if isinstance(table, dict):
+                keys = [str(k) for k in table]
+                out["futures"]["total_instruments"] = len(keys)
+                hits = [k for k in keys if base in k.upper()][:20]
+                out["futures"]["matching"] = hits
+                # One full sample so the price field can be identified.
+                if hits:
+                    out["futures"]["sample"] = {hits[0]: table[hits[0]]}
+                elif keys:
+                    out["futures"]["sample_any"] = {keys[0]: table[keys[0]]}
+                out["futures"]["variants_tried"] = list(_futures_name_variants(base))
+                out["futures"]["resolved_price"] = next(
+                    (_extract_price(table.get(v)) for v in _futures_name_variants(base)
+                     if _extract_price(table.get(v)) is not None), None)
+            else:
+                out["futures"]["raw"] = str(payload)[:1000]
+    except Exception as exc:
+        out["futures"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+    return web.Response(text=json.dumps(out, indent=2, default=str),
+                        content_type="application/json")
+
+
 async def _api_paper(runner, request: web.Request) -> web.Response:
     """
     Live state of the paper-trading cycle: wallet, open positions, trade log.
@@ -958,6 +1023,9 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .cr-sig-sym{font-size:13px;font-weight:800;color:#f1f5f9}
 .cr-sig-name{font-size:10px;font-weight:700;color:#7dd3fc;background:#0c2140;padding:2px 7px;border-radius:4px}
 .cr-sig-tf{font-size:10px;color:#64748b;margin-left:auto}
+.cr-sig-when{font-size:10px;color:#64748b;margin-top:2px;font-variant-numeric:tabular-nums}
+.cr-coin-nodata{opacity:.75;border-style:dashed}
+.cr-nodata{font-size:14px;color:#94a3b8;font-weight:500}
 .cr-sig-desc{font-size:12px;color:#94a3b8;margin-bottom:6px}
 .cr-sig-row{display:flex;gap:14px;font-size:11px;color:#64748b;flex-wrap:wrap}
 .cr-sig-row b{color:#e2e8f0}
@@ -2039,6 +2107,19 @@ function renderCryptoCoins(coins){
   if(!coins.length){el.innerHTML='<div class="empty">Watchlist is empty — add a symbol above</div>';return;}
   el.innerHTML='<div class="cr-grid">'+coins.map(c=>{
     const up=c.change_24h_pct>=0;
+    // A price of zero is missing data, not a price. Rendering $0.000000 the
+    // same way as a real quote is how XAUUSDT looked live for hours.
+    const hasData = c.price > 0;
+    if(!hasData){
+      return `<div class="cr-coin cr-coin-nodata">
+        <div class="cr-coin-top"><span class="cr-coin-sym">${esc(c.symbol)}</span>
+          <button class="cr-coin-remove" onclick="removeCryptoSymbol('${esc(c.symbol.toLowerCase())}')" title="Remove from watchlist">✕</button></div>
+        <div class="cr-coin-price cr-nodata">no price feed</div>
+        <div class="cr-coin-chg">Not carried by the spot ticker. Futures-only
+          instruments like gold are fetched separately — check
+          <span class="mono">/api/debug/coindcx?symbol=${esc(c.symbol.toLowerCase())}</span></div>
+      </div>`;
+    }
     return `<div class="cr-coin">
       <div class="cr-coin-top"><span class="cr-coin-sym">${esc(c.symbol)}</span>
         <button class="cr-coin-remove" onclick="removeCryptoSymbol('${esc(c.symbol.toLowerCase())}')" title="Remove from watchlist">✕</button></div>
@@ -2110,6 +2191,21 @@ function renderCryptoSignalsPage(){
   }
 }
 
+function fmtSignalTime(iso){
+  if(!iso) return 'time unknown';
+  const t = new Date(iso);
+  if(isNaN(t)) return 'time unknown';
+  const mins = Math.floor((Date.now() - t.getTime())/60000);
+  let ago;
+  if(mins < 1) ago = 'just now';
+  else if(mins < 60) ago = mins + 'm ago';
+  else if(mins < 1440) ago = Math.floor(mins/60) + 'h ' + (mins%60) + 'm ago';
+  else ago = Math.floor(mins/1440) + 'd ago';
+  const stamp = t.toLocaleString('en-IN',
+    {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:true});
+  return stamp + ' IST · ' + ago;
+}
+
 function renderCryptoSignalCard(s){
   const name=CR_SIG_NAME[s.signal_type]||s.signal_type.replace(/_/g,' ');
   // Distance to target, and whether it can survive the round-trip cost.
@@ -2127,6 +2223,7 @@ function renderCryptoSignalCard(s){
       <span class="cr-sig-sym">${esc(s.symbol)}</span>
       <span class="cr-sig-name">${esc(name)}</span>
       <span class="cr-sig-tf">${esc(s.timeframe)} · ${s.confidence}% confidence</span></div>
+    <div class="cr-sig-when" title="${esc(s.timestamp)}">${fmtSignalTime(s.timestamp)}</div>
     <div class="cr-sig-desc">${esc(s.trigger)}</div>
     <div class="cr-sig-row">
       <span>Entry <b>$${fmtPrice(s.current_price)}</b></span>
@@ -3133,6 +3230,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/crypto/signals", lambda req: _api_crypto_signals(runner, req))
     app.router.add_get("/api/crypto/forecasts", lambda req: _api_crypto_forecasts(runner, req))
     app.router.add_get("/api/paper", lambda req: _api_paper(runner, req))
+    app.router.add_get("/api/debug/coindcx", lambda req: _api_debug_coindcx(runner, req))
     app.router.add_post("/api/crypto/watchlist/add", lambda req: _api_crypto_watchlist_add(runner, req))
     app.router.add_post("/api/crypto/watchlist/remove", lambda req: _api_crypto_watchlist_remove(runner, req))
     app.router.add_get("/api/commodities", lambda req: _api_commodities(runner, req))
