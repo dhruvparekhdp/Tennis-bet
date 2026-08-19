@@ -184,6 +184,10 @@ class Settings(BaseSettings):
     # Render injects RENDER_EXTERNAL_URL itself; this is the manual override.
     self_ping_url: str = ""
 
+    # Shared secret for POST /api/sentiment/ingest. Empty disables the
+    # endpoint outright rather than leaving it open.
+    sentiment_ingest_token: str = ""
+
     # Free, keyless sentiment inputs that adjust confidence (never fire trades).
     sentiment_feeds_enabled: bool = True
     fear_greed_refresh_minutes: int = 60

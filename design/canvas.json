@@ -1,19 +1,84 @@
 {
   "artboards": [
-    { "file": "Main.dc.html",     "x": 0,    "y": 0,    "w": 1280, "h": 900, "title": "1 · Dashboard" },
-    { "file": "Explorer.dc.html", "x": 1360, "y": 0,    "w": 1280, "h": 900, "title": "2 · Signal Explorer" },
-    { "file": "Accuracy.dc.html", "x": 0,    "y": 980,  "w": 1280, "h": 900, "title": "3 · Accuracy & Analytics" },
-    { "file": "Historic.dc.html", "x": 1360, "y": 980,  "w": 1280, "h": 900, "title": "4 · Historic Data" }
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 900,
+      "title": "1 \u00b7 Dashboard"
+    },
+    {
+      "file": "Explorer.dc.html",
+      "x": 1360,
+      "y": 0,
+      "w": 1280,
+      "h": 900,
+      "title": "2 \u00b7 Signal Explorer"
+    },
+    {
+      "file": "Accuracy.dc.html",
+      "x": 0,
+      "y": 980,
+      "w": 1280,
+      "h": 900,
+      "title": "3 \u00b7 Accuracy & Analytics"
+    },
+    {
+      "file": "Historic.dc.html",
+      "x": 1360,
+      "y": 980,
+      "w": 1280,
+      "h": 900,
+      "title": "4 \u00b7 Historic Data"
+    },
+    {
+      "file": "Guard.dc.html",
+      "x": 2720,
+      "y": 0,
+      "w": 1280,
+      "h": 900,
+      "title": "5 \u00b7 Session Guard"
+    }
   ],
   "annotations": [
-    { "id": "note-sidebar", "x": -330, "y": 40, "w": 290,
-      "text": "Sidebar replaces the current top tab bar.\n\nLive: Dashboard · Signals · Paper Trading\nAnalysis: Accuracy · Historic · Watchlist · Diagnostics · Settings\n\nFooter carries cycle state and feed health, so it is visible on every screen." },
-    { "id": "note-rollover", "x": -330, "y": 300, "w": 290,
-      "text": "7-day rollover: the Dashboard shows the live window, anything older moves to Historic Data. Same rows, one archive." },
-    { "id": "note-blocked", "x": -330, "y": 1020, "w": 290,
-      "text": "BLOCKED: every chart here needs a signal-outcome resolver. Crypto signals are stored as pending and never resolved — only tennis has that job today. Numbers shown are illustrative." },
-    { "id": "note-small", "x": -330, "y": 1290, "w": 290,
-      "text": "The small-move question you asked about: the histogram buckets every archived signal by target distance, with the 0.118% break-even marked. Red bars are signals that could not have paid for themselves." }
+    {
+      "id": "note-sidebar",
+      "x": -330,
+      "y": 40,
+      "w": 290,
+      "text": "Sidebar replaces the current top tab bar.\n\nLive: Dashboard \u00b7 Signals \u00b7 Paper Trading\nAnalysis: Accuracy \u00b7 Historic \u00b7 Watchlist \u00b7 Diagnostics \u00b7 Settings\n\nFooter carries cycle state and feed health, so it is visible on every screen."
+    },
+    {
+      "id": "note-rollover",
+      "x": -330,
+      "y": 300,
+      "w": 290,
+      "text": "7-day rollover: the Dashboard shows the live window, anything older moves to Historic Data. Same rows, one archive."
+    },
+    {
+      "id": "note-blocked",
+      "x": -330,
+      "y": 1020,
+      "w": 290,
+      "text": "BLOCKED: every chart here needs a signal-outcome resolver. Crypto signals are stored as pending and never resolved \u2014 only tennis has that job today. Numbers shown are illustrative."
+    },
+    {
+      "id": "note-small",
+      "x": -330,
+      "y": 1290,
+      "w": 290,
+      "text": "The small-move question you asked about: the histogram buckets every archived signal by target distance, with the 0.118% break-even marked. Red bars are signals that could not have paid for themselves."
+    },
+    {
+      "id": "note-guard",
+      "x": 2720,
+      "y": -190,
+      "w": 420,
+      "text": "NEW \u2014 built from your own trade history, not invented.\n\nEvery flag here is a pattern already visible in the ledger: size escalating after wins, hold time collapsing, a fixed ROE target falling under the cost floor, a winning short reversed into a losing long 19 minutes later.\n\nThe green flag matters as much as the red ones \u2014 tightening the stop three times while winning is what produced the best trade of the session."
+    }
   ],
-  "launch": { "view": "canvas" }
+  "launch": {
+    "view": "canvas"
+  }
 }

@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from storage.models import (
     CommoditySnapshot, CryptoSignalLog, CryptoSnapshot, CryptoWatchlistEntry,
     Match, MatchCompletion, MatchResult, MatchSnapshot,
-    OddsSnapshot, PaperCycle, PaperPosition, PaperTrade, PlayerStats, SignalLog,
+    NewsSentiment, OddsSnapshot, PaperCycle, PaperPosition, PaperTrade,
+    PlayerStats, SignalLog,
 )
 
 
@@ -709,3 +710,61 @@ class Repository:
             select(PaperCycle).order_by(PaperCycle.id.desc()).limit(limit)
         )
         return list(res.scalars().all())
+
+    # ── External news sentiment ───────────────────────────────────────────
+
+    async def ingest_news_sentiment(self, items: list[dict]) -> tuple[int, int]:
+        """
+        Store scored headlines. Returns (accepted, duplicates).
+
+        Deduplicated on external_id rather than on content, so the sender can
+        retry a failed batch freely — a news pipeline that double-counts one
+        story on a retry produces a sentiment spike that never happened.
+        """
+        accepted = duplicates = 0
+        for item in items:
+            ext = str(item.get("external_id") or "").strip()
+            if not ext:
+                continue
+            existing = await self.session.execute(
+                select(NewsSentiment).where(NewsSentiment.external_id == ext).limit(1))
+            if existing.scalar_one_or_none() is not None:
+                duplicates += 1
+                continue
+            self.session.add(NewsSentiment(
+                external_id=ext,
+                symbol=str(item.get("symbol") or "ALL").lower(),
+                headline=str(item.get("headline") or "")[:2000],
+                source=str(item.get("source") or "")[:200],
+                url=str(item.get("url") or "")[:500],
+                score=max(-1.0, min(1.0, float(item.get("score") or 0.0))),
+                confidence=max(0.0, min(1.0, float(item.get("confidence") or 0.5))),
+                event_type=str(item.get("event_type") or "other")[:40],
+                model=str(item.get("model") or "")[:80],
+                published_at=_parse_dt(item.get("published_at")),
+            ))
+            accepted += 1
+        if accepted:
+            await self.session.commit()
+        return accepted, duplicates
+
+    async def recent_news_sentiment(self, symbol: str, hours: int = 6) -> list[NewsSentiment]:
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        res = await self.session.execute(
+            select(NewsSentiment)
+            .where(NewsSentiment.published_at >= cutoff)
+            .where(NewsSentiment.symbol.in_([symbol.lower(), "all"]))
+            .order_by(NewsSentiment.published_at.desc()).limit(200))
+        return list(res.scalars().all())
+
+
+def _parse_dt(value) -> datetime:
+    """Accept an ISO string or a datetime; fall back to now rather than fail."""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            pass
+    return datetime.utcnow()
