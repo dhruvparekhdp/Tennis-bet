@@ -168,6 +168,9 @@ class Settings(BaseSettings):
     paper_max_hold_minutes: int = 240
     paper_scaled_sizing: bool = True            # Rs500 / Rs1,000 / Rs1,500 ladder
     paper_trailing_enabled: bool = False        # measure on real data before enabling
+    # Leverage rises with confidence, capped so liquidation stays 3 ATR away.
+    paper_scaled_leverage: bool = False
+    paper_max_leverage: float = 25.0
     paper_tick_interval_seconds: int = 30
     # CoinDCX INR futures trade at a premium to spot; refresh this if it drifts.
     paper_usdt_inr: float = 102.0

@@ -461,12 +461,14 @@ class AppRunner:
         cycle = await repo.start_cycle(
             starting_wallet=settings.paper_starting_wallet,
             target_wallet=settings.paper_target_wallet,
-            leverage=settings.paper_leverage,
+            leverage=(settings.paper_max_leverage if settings.paper_scaled_leverage
+                      else settings.paper_leverage),
             stop_pct_of_margin=settings.paper_stop_pct_of_margin,
             reward_risk=settings.paper_reward_risk,
             min_confidence=settings.paper_min_confidence,
             trailing_enabled=settings.paper_trailing_enabled,
             scaled_sizing=settings.paper_scaled_sizing,
+            scaled_leverage=settings.paper_scaled_leverage,
         )
         log.info("paper_cycle_started", cycle_id=cycle.id,
                  wallet=cycle.starting_wallet, leverage=cycle.leverage)
@@ -569,8 +571,10 @@ class AppRunner:
                         ok, _why = should_open(sig, cfg, cstate, now)
                         if not ok:
                             continue
+                        atr_pct = (st.atr_14 / st.current_price
+                                   if st.current_price > 0 and st.atr_14 > 0 else None)
                         pos = open_from_signal(sig, cfg, cstate, now,
-                                               settings.paper_usdt_inr)
+                                               settings.paper_usdt_inr, atr_pct)
                         if pos is None:
                             continue
                         cstate.wallet -= pos.margin

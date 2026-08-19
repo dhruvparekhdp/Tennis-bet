@@ -721,6 +721,76 @@ class TrailingStop:
 
 
 @dataclass(frozen=True)
+class LeverageConfig:
+    """
+    Leverage scaled by confidence, bounded by what the market can gap through.
+
+    Leverage does NOT change the break-even move, and it does not change where
+    the stop sits relative to liquidation — at a 20% margin stop the stop is
+    20% of the way to liquidation at every leverage. What it changes is the
+    ABSOLUTE distance, and therefore whether an ordinary session covers it:
+
+        10x  -> liquidation 9.52% away = 9.5 gold ATR, 4.8 ETH ATR
+        25x  ->             3.49%      = 3.5           1.7
+        50x  ->             1.48%      = 1.5           0.7
+       100x  ->             0.47%      = 0.5           0.2
+
+    The distance is (1/L - mm) / (1 - mm), not 1/L: the maintenance margin is
+    subtracted, which bites hard at high leverage and sends the distance to
+    zero at L = 1/mm, about 189x. At 100x on ether, liquidation is a fifth of
+    an average day away. So the ceiling here
+    is set by volatility rather than by a fixed number: liquidation must stay
+    at least `min_liquidation_atr` average moves away, which lets gold carry
+    more leverage than ether for exactly the reason it should.
+
+    One caution the code enforces rather than assumes. Margin already scales
+    with confidence, so scaling leverage too makes exposure grow QUADRATICALLY
+    — 65% confidence gives Rs501 at 10x = Rs5,010 of notional, while 85% gives
+    Rs1,500 at 25x = Rs37,500. That is seven and a half times the exposure for
+    twenty points of confidence. max_notional_pct_of_wallet caps it.
+    """
+
+    floor_leverage: float = 10.0        # never lower — your stated floor
+    ceiling_leverage: float = 25.0
+    floor_confidence: float = 0.65
+    ceiling_confidence: float = 0.85
+
+    # Liquidation must survive this many average moves. Three means an
+    # ordinary day cannot reach it, and a violent one still might.
+    min_liquidation_atr: float = 3.0
+
+    # Ceiling on margin x leverage, as a multiple of the wallet. Without it,
+    # confidence compounds through both terms at once.
+    max_notional_pct_of_wallet: float = 12.0
+
+    def leverage_for(self, confidence: float, atr_pct: float | None = None,
+                     maintenance_margin_pct: float = 0.0053) -> float:
+        """
+        Leverage for this confidence, reduced if volatility cannot support it.
+
+        Returns the floor rather than zero when volatility is hostile: the
+        decision to skip the trade belongs to the signal gate, not here.
+        """
+        span = self.ceiling_confidence - self.floor_confidence
+        frac = 0.0 if span <= 0 else (confidence - self.floor_confidence) / span
+        frac = max(0.0, min(1.0, frac))
+        lev = self.floor_leverage + frac * (self.ceiling_leverage - self.floor_leverage)
+
+        if atr_pct and atr_pct > 0:
+            # Solve (1/L - mm)/(1 - mm) >= k*atr for L:
+            #   L <= 1 / (k*atr*(1 - mm) + mm)
+            # Dropping the mm term overstates the safe leverage badly — at
+            # 100x it claims 1.01% of room where there is 0.47%.
+            denom = self.min_liquidation_atr * atr_pct * (1 - maintenance_margin_pct)
+            denom += maintenance_margin_pct
+            lev = min(lev, 1.0 / denom) if denom > 0 else lev
+        return max(self.floor_leverage, lev)
+
+    def notional_cap(self, wallet: float) -> float:
+        return wallet * self.max_notional_pct_of_wallet
+
+
+@dataclass(frozen=True)
 class SizingConfig:
     """
     Position size scales with conviction, so a strong setup gets more capital
@@ -896,6 +966,10 @@ class CycleConfig:
     review: ReviewConfig = field(default_factory=ReviewConfig)
     sizing: SizingConfig | None = None   # None = flat margin_per_trade_pct
 
+    # None = the fixed `leverage` above. Set it to scale leverage with
+    # confidence, bounded by volatility.
+    leverage_scaling: LeverageConfig | None = None
+
     # How many times the round-trip cost a target must clear.
     #
     # Raised from 1.5 to 3.0 after a real trade landed exactly on the old
@@ -932,6 +1006,28 @@ class CycleConfig:
             return False
         move = abs(target - entry) / entry
         return move >= self.fees.round_trip_pct() * self.min_target_to_fee_ratio
+
+    def leverage_for_signal(self, confidence: float,
+                            atr_pct: float | None = None) -> float:
+        """Confidence-scaled leverage when configured, else the fixed value."""
+        if self.leverage_scaling is None:
+            return self.leverage
+        return self.leverage_scaling.leverage_for(
+            confidence, atr_pct, self.fees.maintenance_margin_pct)
+
+    def cap_margin_to_notional(self, margin: float, leverage: float,
+                               wallet: float) -> float:
+        """
+        Hold total exposure under the cap.
+
+        Margin and leverage both rise with confidence, so notional grows with
+        the product. Without this a twenty-point confidence increase multiplies
+        exposure sevenfold rather than doubling it.
+        """
+        if self.leverage_scaling is None or leverage <= 0:
+            return margin
+        cap = self.leverage_scaling.notional_cap(wallet)
+        return min(margin, cap / leverage)
 
     def margin_for_signal(self, wallet: float, confidence: float,
                           already_committed: float = 0.0) -> float:
@@ -981,7 +1077,8 @@ class CycleConfig:
         certain point a fixed ROE target asks for less movement than the round
         trip costs — so hitting it loses money.
         """
-        return self.target_move_pct() / 100.0 >= self.fees.round_trip_pct() * self.min_target_to_fee_ratio
+        floor = self.fees.round_trip_pct() * self.min_target_to_fee_ratio
+        return self.target_move_pct() / 100.0 >= floor
 
     def max_leverage_for_roe(self) -> float:
         """Leverage ceiling before this ROE target drops beneath its own costs."""
