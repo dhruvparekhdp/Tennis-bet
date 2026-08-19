@@ -358,6 +358,67 @@ async def _api_crypto_signals(runner, request: web.Request) -> web.Response:
     return web.Response(text=json.dumps(signals), content_type="application/json")
 
 
+async def _api_sentiment_ingest(runner, request: web.Request) -> web.Response:
+    """
+    Accept scored headlines from an external analyser (Hermes on a laptop).
+
+    Push rather than pull, because the analyser runs behind a home NAT that
+    this server cannot reach. Authenticated with a shared secret compared in
+    constant time — a plain == leaks the secret one character at a time to
+    anyone willing to measure.
+
+    Body: {"items": [{external_id, symbol, headline, score, confidence,
+                      event_type, source, url, published_at, model}, ...]}
+    """
+    import hmac
+
+    from storage.database import AsyncSessionFactory
+    from storage.repository import Repository
+
+    secret = _SETTINGS.sentiment_ingest_token
+    if not secret:
+        return web.json_response(
+            {"error": "ingest disabled", "hint": "set SENTIMENT_INGEST_TOKEN"}, status=503)
+
+    supplied = (request.headers.get("X-Ingest-Token")
+                or request.query.get("token") or "")
+    if not hmac.compare_digest(supplied, secret):
+        return web.json_response({"error": "unauthorised"}, status=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "body must be JSON"}, status=400)
+
+    items = body.get("items")
+    if not isinstance(items, list):
+        return web.json_response({"error": "expected an 'items' list"}, status=400)
+    if len(items) > 500:
+        return web.json_response({"error": "at most 500 items per batch"}, status=413)
+
+    async with AsyncSessionFactory() as session:
+        accepted, duplicates = await Repository(session).ingest_news_sentiment(items)
+    return web.json_response({"accepted": accepted, "duplicates": duplicates,
+                              "received": len(items)})
+
+
+async def _api_sentiment_recent(runner, request: web.Request) -> web.Response:
+    """What the analyser has sent lately, so a score can be traced to a headline."""
+    from storage.database import AsyncSessionFactory
+    from storage.repository import Repository
+
+    symbol = (request.query.get("symbol") or "all").lower()
+    hours = max(1, min(72, int(request.query.get("hours") or 6)))
+    async with AsyncSessionFactory() as session:
+        rows = await Repository(session).recent_news_sentiment(symbol, hours)
+    return web.json_response([{
+        "symbol": r.symbol.upper(), "headline": r.headline, "source": r.source,
+        "score": round(r.score, 3), "confidence": round(r.confidence, 3),
+        "event_type": r.event_type, "model": r.model, "url": r.url,
+        "published_at": r.published_at.isoformat(),
+    } for r in rows])
+
+
 async def _api_debug_coindcx(runner, request: web.Request) -> web.Response:
     """
     Show exactly what CoinDCX returns for a symbol, spot and futures.
@@ -3231,6 +3292,8 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/crypto/forecasts", lambda req: _api_crypto_forecasts(runner, req))
     app.router.add_get("/api/paper", lambda req: _api_paper(runner, req))
     app.router.add_get("/api/debug/coindcx", lambda req: _api_debug_coindcx(runner, req))
+    app.router.add_post("/api/sentiment/ingest", lambda req: _api_sentiment_ingest(runner, req))
+    app.router.add_get("/api/sentiment/recent", lambda req: _api_sentiment_recent(runner, req))
     app.router.add_post("/api/crypto/watchlist/add", lambda req: _api_crypto_watchlist_add(runner, req))
     app.router.add_post("/api/crypto/watchlist/remove", lambda req: _api_crypto_watchlist_remove(runner, req))
     app.router.add_get("/api/commodities", lambda req: _api_commodities(runner, req))

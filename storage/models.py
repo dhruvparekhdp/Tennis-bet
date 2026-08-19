@@ -452,3 +452,35 @@ class PaperTrade(Base):
 
     opened_at: Mapped[datetime] = mapped_column(DateTime)
     closed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class NewsSentiment(Base):
+    """
+    One scored news item, pushed in by an external analyser.
+
+    Kept as rows rather than a single per-symbol score so a reading can be
+    audited back to what produced it — a score with no headline behind it is
+    impossible to argue with when it turns out to be wrong.
+    """
+
+    __tablename__ = "news_sentiment"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Idempotency key from the sender, so a retry cannot double-count a story.
+    external_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    symbol: Mapped[str] = mapped_column(String, index=True)      # "xauusdt", or "ALL"
+
+    headline: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String, default="")
+    url: Mapped[str] = mapped_column(String, default="")
+
+    score: Mapped[float] = mapped_column(Float)                  # -1 bearish .. +1 bullish
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    # "cpi" | "fed" | "geopolitical" | "earnings" | "regulation" | "other".
+    # More useful than sentiment for gold: a scheduled event is a reason to
+    # stand aside, which has no direction at all.
+    event_type: Mapped[str] = mapped_column(String, default="other", index=True)
+    model: Mapped[str] = mapped_column(String, default="")       # what scored it
+
+    published_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

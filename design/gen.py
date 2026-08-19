@@ -319,3 +319,78 @@ open("Explorer.dc.html","w").write(shell("Signals","Signal Explorer",
   f'<div style="display:flex;gap:16px;flex-grow:1;min-height:0">{filters}{results}</div>',
   btn("Reset")+btn("Save as preset",True)))
 print("Explorer.dc.html")
+
+# ─────────────────────────── 5. Session Guard ───────────────────────────────
+def flag(level, title, detail, evidence):
+    col = {"red":"#f87171","amber":"#fbbf24","ok":"#4ade80"}[level]
+    bg  = {"red":"#3f1d1d","amber":"#3a2f14","ok":"#14532d"}[level]
+    return (f'<div style="border:1px solid {col};background:{bg};border-radius:8px;padding:11px 13px;display:flex;gap:10px">'
+      f'<div style="width:3px;background:{col};border-radius:2px;flex:none"></div>'
+      f'<div style="min-width:0"><div style="font-size:11px;font-weight:600;color:#f1f5f9">{title}</div>'
+      f'<div style="font-size:10px;color:#cbd5e1;margin-top:3px">{detail}</div>'
+      f'<div style="font-size:9px;color:#94a3b8;margin-top:5px;font-variant-numeric:tabular-nums">{evidence}</div></div></div>')
+
+def trend(label, vals, unit, good_dir):
+    n=len(vals); w=150; h=34
+    mx=max(vals) or 1
+    pts=" ".join(f"{i/(n-1)*w:.0f},{h-(v/mx*h):.0f}" for i,v in enumerate(vals))
+    col = "#f87171" if good_dir=="down" else "#4ade80"
+    return (f'<div style="display:flex;align-items:center;gap:12px">'
+      f'<div style="width:118px"><div style="font-size:10px;color:#94a3b8">{label}</div>'
+      f'<div style="font-size:9px;color:#475569">{vals[0]}{unit} → {vals[-1]}{unit}</div></div>'
+      f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}"><polyline fill="none" stroke="{col}" stroke-width="1.5" points="{pts}"/></svg></div>')
+
+guard_body = f'''      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">
+        {kpi("Trades today","3","2 in the last 12 min","#fbbf24")}
+        {kpi("Size trend","+60%","₹20.3k → ₹32.4k","#f87171")}
+        {kpi("Median hold","3m 43s","was 1h 53m","#f87171")}
+        {kpi("Kept of gross","34%","was 94% on trade 1","#f87171")}
+      </div>
+
+      <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:16px;flex-grow:1;min-height:0">
+        <div style="display:flex;flex-direction:column;gap:14px;min-height:0">
+          {card("Live flags",
+            '<div style="display:flex;flex-direction:column;gap:9px">'
+            + flag("red","Escalating size after wins",
+                   "Each trade this session has been larger than the last while the captured move shrank. Fees scale with size; the edge did not.",
+                   "₹20,322 → ₹28,915 → ₹32,441 · move 1.878% → 0.637% → 0.177%")
+            + flag("red","Target has fallen under the cost floor",
+                   "At this leverage a 20% ROE exit asks for a 0.18% move. The round trip costs 0.118%, so this trade keeps a third of what it earns.",
+                   "0.177% captured · ₹38.24 fees on ₹57.53 gross · kept ₹19.29")
+            + flag("amber","Direction reversed inside 20 minutes",
+                   "A profitable short in XAUUSDT was closed and a long opened at the same price 19 minutes later.",
+                   "closed 4363.41 at 20:49 · opened 4365.91 at 21:08")
+            + flag("ok","Stop tightened three times while winning",
+                   "Risk was reduced as the position recovered, never widened. This is the pattern that produced the best trade.",
+                   "₹197.72 → ₹164.77 → ₹131.83")
+            + '</div>')}
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:14px;min-height:0">
+          {card("Session drift",
+            '<div style="display:flex;flex-direction:column;gap:11px">'
+            + trend("Position size", [20,29,32], "k", "down")
+            + trend("Hold time", [113,1,4], "m", "down")
+            + trend("× cost floor", [16,5,2], "×", "down")
+            + trend("Kept of gross", [94,82,34], "%", "down")
+            + '</div>', "all four moving the wrong way")}
+          {card("What a 20% ROE target asks for",
+            table(["Leverage","Price move","Verdict"],
+              [("10×","2.000%",("fine","#4ade80")),
+               ("25×","0.800%",("fine","#4ade80")),
+               ("50×","0.400%",("thin","#fbbf24")),
+               ("100×","0.200%",("under floor","#f87171"))],
+              ["1fr","88px","84px"])
+            + '<div style="font-size:10px;color:#64748b">The target is a share of margin; the fee is a share of price. They diverge as leverage rises.</div>')}
+          {card("Cheaper venue for the same setup",
+            table(["","Gold","Ether"],
+              [("Round trip","0.024%","0.118%"),
+               ("Min viable move",("0.147%","#4ade80"),("0.336%","#94a3b8")),
+               ("Your win rate","3 of 3","4 of 4")],
+              ["1fr","72px","72px"]))}
+        </div>
+      </div>'''
+open("Guard.dc.html","w").write(shell("Paper Trading","Session Guard",
+  "Behavioural flags from your own trade history · live",
+  guard_body, btn("Mute for 1h")+btn("Rules",True)))
+print("Guard.dc.html")
