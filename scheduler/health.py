@@ -1297,6 +1297,12 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .fb-sig-time{font-size:11px;color:#475569;margin-left:auto}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
 
+.side-themes{display:flex;gap:7px;padding:10px 16px;flex-wrap:wrap}
+.side-themes .dot{width:15px;height:15px;border-radius:50%;cursor:pointer;
+  border:2px solid transparent;box-shadow:0 0 0 1px var(--line);transition:transform .12s}
+.side-themes .dot:hover{transform:scale(1.18)}
+.side-themes .dot.on{border-color:var(--text-strong);box-shadow:0 0 0 1px var(--text-strong)}
+
 /* ── Signal cards ──────────────────────────────────────────────────────── */
 /* The page was one flat slate blue end to end, which made a losing setup and
    a good one look identical at a glance. Direction now tints the card edge,
@@ -1309,100 +1315,100 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 #cr-signals .sig,#dash-signals .sig{margin-bottom:0}
 @media(max-width:900px){#cr-signals,#dash-signals{grid-template-columns:1fr}}
 
-.sig{background:linear-gradient(180deg,#1c2736 0%,#1a2431 100%);
-  border:1px solid #334155;border-left:3px solid #475569;border-radius:12px;
+.sig{background:linear-gradient(180deg,var(--panel2) 0%,var(--panel) 100%);
+  border:1px solid var(--line);border-left:3px solid var(--muted2);border-radius:12px;
   padding:14px 15px;display:flex;flex-direction:column;gap:11px;margin-bottom:12px}
-.sig.long{border-left-color:#22c55e;box-shadow:inset 0 1px 0 rgba(34,197,94,.08)}
-.sig.short{border-left-color:#ef4444;box-shadow:inset 0 1px 0 rgba(239,68,68,.08)}
-.sig.unviable{border-left-color:#64748b;opacity:.72}
+.sig.long{border-left-color:var(--pos-strong);box-shadow:inset 0 1px 0 var(--pos-t)}
+.sig.short{border-left-color:var(--neg-strong);box-shadow:inset 0 1px 0 var(--neg-t)}
+.sig.unviable{border-left-color:var(--muted2);opacity:.72}
 
 .sig-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
-.sig-sym{font-size:15px;font-weight:700;color:#f8fafc;letter-spacing:-.01em}
+.sig-sym{font-size:15px;font-weight:700;color:var(--text-strong);letter-spacing:-.01em}
 .sig-dir{font-size:10px;font-weight:600;padding:3px 9px;border-radius:20px}
-.sig-dir.long{background:rgba(34,197,94,.14);color:#4ade80;border:1px solid rgba(34,197,94,.35)}
-.sig-dir.short{background:rgba(239,68,68,.14);color:#f87171;border:1px solid rgba(239,68,68,.35)}
-.sig-profit{text-align:right;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);
+.sig-dir.long{background:var(--pos-t);color:var(--pos);border:1px solid var(--pos-t2)}
+.sig-dir.short{background:var(--neg-t);color:var(--neg);border:1px solid var(--neg-t2)}
+.sig-profit{text-align:right;background:var(--pos-t);border:1px solid var(--pos-t2);
   border-radius:9px;padding:5px 11px;line-height:1.15}
-.sig-profit b{display:block;font-size:15px;color:#4ade80;font-variant-numeric:tabular-nums}
-.sig-profit span{font-size:9px;color:#86efac;text-transform:uppercase;letter-spacing:.05em}
-.sig-profit.muted{background:rgba(100,116,139,.12);border-color:#475569}
-.sig-profit.muted b{color:#94a3b8}.sig-profit.muted span{color:#64748b}
+.sig-profit b{display:block;font-size:15px;color:var(--pos);font-variant-numeric:tabular-nums}
+.sig-profit span{font-size:9px;color:var(--pos);text-transform:uppercase;letter-spacing:.05em}
+.sig-profit.muted{background:var(--mut-t);border-color:var(--muted2)}
+.sig-profit.muted b{color:var(--muted)}.sig-profit.muted span{color:var(--muted2)}
 
-.sig-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:10px;color:#64748b}
-.sig-setup{background:rgba(14,165,233,.14);color:#7dd3fc;border:1px solid rgba(14,165,233,.3);
+.sig-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:10px;color:var(--muted2)}
+.sig-setup{background:var(--acc-t);color:var(--accent-soft);border:1px solid var(--acc-t2);
   padding:2px 8px;border-radius:20px;font-weight:600}
-.sig-when{color:#475569;font-variant-numeric:tabular-nums}
+.sig-when{color:var(--muted2);font-variant-numeric:tabular-nums}
 
 .sig-levels{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .sig-levels>div{display:flex;flex-direction:column;gap:1px}
 .sig-levels .mid{align-items:center;text-align:center}
 .sig-levels .right{align-items:flex-end;text-align:right}
-.sig-levels label{font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.05em}
-.sig-levels b{font-size:14px;color:#e2e8f0;font-variant-numeric:tabular-nums}
-.sig-levels b.pos{color:#4ade80}.sig-levels b.neg{color:#f87171}
-.sig-levels span{font-size:9px;color:#475569;font-variant-numeric:tabular-nums}
+.sig-levels label{font-size:9px;color:var(--muted2);text-transform:uppercase;letter-spacing:.05em}
+.sig-levels b{font-size:14px;color:var(--text);font-variant-numeric:tabular-nums}
+.sig-levels b.pos{color:var(--pos)}.sig-levels b.neg{color:var(--neg)}
+.sig-levels span{font-size:9px;color:var(--muted2);font-variant-numeric:tabular-nums}
 
-.sig-track{position:relative;height:6px;background:#0b1220;border-radius:3px;margin:2px 0 6px}
+.sig-track{position:relative;height:6px;background:var(--sunk);border-radius:3px;margin:2px 0 6px}
 .sig-track .cap{position:absolute;top:-2px;width:4px;height:10px;border-radius:2px}
-.sig-track .cap.sl{left:0;background:#ef4444}
-.sig-track .cap.tp{right:0;background:#22c55e}
+.sig-track .cap.sl{left:0;background:var(--neg-strong)}
+.sig-track .cap.tp{right:0;background:var(--pos-strong)}
 .sig-track .fill{position:absolute;left:0;top:0;height:6px;border-radius:3px;
-  background:linear-gradient(90deg,rgba(239,68,68,.5),rgba(56,189,248,.55))}
+  background:linear-gradient(90deg,var(--neg-t2),var(--acc-t2))}
 .sig-track .now{position:absolute;top:-5px;width:0;height:0;margin-left:-5px;
   border-left:5px solid transparent;border-right:5px solid transparent;
-  border-top:7px solid #38bdf8}
+  border-top:7px solid var(--accent2)}
 
 .sig-foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.pill{font-size:9px;color:#94a3b8;border:1px solid #334155;background:#111c2b;
+.pill{font-size:9px;color:var(--muted);border:1px solid var(--line);background:var(--sunk);
   padding:3px 8px;border-radius:20px;font-variant-numeric:tabular-nums}
-.pill.ok{color:#4ade80;border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.1)}
-.pill.bad{color:#f87171;border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.1)}
+.pill.ok{color:var(--pos);border-color:var(--pos-t2);background:var(--pos-t)}
+.pill.bad{color:var(--neg);border-color:var(--neg-t2);background:var(--neg-t)}
 .sig-act{font-size:11px;font-weight:600;padding:6px 14px;border-radius:8px}
-.sig-act.long{background:#16a34a;color:#f0fdf4}
-.sig-act.short{background:#dc2626;color:#fef2f2}
-.sig-act.off{background:#1e293b;color:#64748b;border:1px solid #334155}
-.sig-warn{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);
-  border-radius:8px;padding:9px 11px;font-size:10px;color:#fca5a5;line-height:1.5}
+.sig-act.long{background:var(--pos-btn);color:var(--text-strong)}
+.sig-act.short{background:var(--neg-btn);color:var(--text-strong)}
+.sig-act.off{background:var(--panel);color:var(--muted2);border:1px solid var(--line)}
+.sig-warn{background:var(--neg-t);border:1px solid var(--neg-t2);
+  border-radius:8px;padding:9px 11px;font-size:10px;color:var(--neg);line-height:1.5}
 
 /* A little colour elsewhere, so the page is not one flat field of slate. */
-.card{background:linear-gradient(180deg,#1e293b 0%,#1b2534 100%)}
-.card-value.pos{color:#4ade80}.card-value.neg{color:#f87171}
-section h2{color:#7dd3fc}
+.card{background:linear-gradient(180deg,var(--panel) 0%,var(--panel2) 100%)}
+.card-value.pos{color:var(--pos)}.card-value.neg{color:var(--neg)}
+section h2{color:var(--accent-soft)}
 
 /* ── Tables ────────────────────────────────────────────────────────────── */
-.scroll{overflow-x:auto;border:1px solid #334155;border-radius:8px;background:#1e293b;
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel);
   -webkit-overflow-scrolling:touch}
 .tbl{border-collapse:collapse;width:100%;font-size:12px}
-.tbl th{font-size:9px;color:#475569;text-transform:uppercase;letter-spacing:.07em;
-  text-align:left;padding:9px 11px;background:#16202f;white-space:nowrap;font-weight:600}
-.tbl td{padding:9px 11px;border-top:1px solid #0f172a;color:#cbd5e1;
+.tbl th{font-size:9px;color:var(--muted2);text-transform:uppercase;letter-spacing:.07em;
+  text-align:left;padding:9px 11px;background:var(--line2);white-space:nowrap;font-weight:600}
+.tbl td{padding:9px 11px;border-top:1px solid var(--bg);color:var(--text);
   font-variant-numeric:tabular-nums;white-space:nowrap}
-.tbl td.sub{color:#64748b;font-size:11px}
-.tbl tbody tr:hover{background:#16202f}
+.tbl td.sub{color:var(--muted2);font-size:11px}
+.tbl tbody tr:hover{background:var(--line2)}
 
 /* ── Sidebar shell ─────────────────────────────────────────────────────── */
 .app{display:flex;min-height:100vh}
-.sidebar{width:212px;flex:none;background:#0f172a;border-right:1px solid #334155;
+.sidebar{width:212px;flex:none;background:var(--bg);border-right:1px solid var(--line);
   padding:16px 0;display:flex;flex-direction:column;gap:2px;position:sticky;top:0;height:100vh}
 .side-brand{padding:0 16px 16px;display:flex;align-items:center;gap:9px}
-.side-brand b{color:#f1f5f9;font-size:13px;font-weight:600;letter-spacing:-.01em}
-.side-group{padding:12px 16px 6px;font-size:9px;font-weight:600;color:#475569;
+.side-brand b{color:var(--text-strong);font-size:13px;font-weight:600;letter-spacing:-.01em}
+.side-group{padding:12px 16px 6px;font-size:9px;font-weight:600;color:var(--muted2);
   text-transform:uppercase;letter-spacing:.09em}
 .side-item{padding:7px 16px;display:flex;align-items:center;gap:9px;cursor:pointer;
-  border-left:2px solid transparent;color:#94a3b8;font-size:12px;text-decoration:none;
+  border-left:2px solid transparent;color:var(--muted);font-size:12px;text-decoration:none;
   transition:background .12s,color .12s}
-.side-item:hover{background:#16202f;color:#cbd5e1}
-.side-item.active{background:#1e293b;border-left-color:#0ea5e9;color:#f1f5f9;font-weight:600}
-.side-item svg{flex:none;stroke:#64748b}
-.side-item.active svg{stroke:#0ea5e9}
-.side-foot{margin-top:auto;padding:12px 16px;border-top:1px solid #1e293b;
+.side-item:hover{background:var(--line2);color:var(--text)}
+.side-item.active{background:var(--panel);border-left-color:var(--accent);color:var(--text-strong);font-weight:600}
+.side-item svg{flex:none;stroke:var(--muted2)}
+.side-item.active svg{stroke:var(--accent)}
+.side-foot{margin-top:auto;padding:12px 16px;border-top:1px solid var(--panel);
   display:flex;flex-direction:column;gap:5px}
-.side-dot{width:6px;height:6px;border-radius:50%;background:#4ade80;display:inline-block}
+.side-dot{width:6px;height:6px;border-radius:50%;background:var(--pos);display:inline-block}
 .main{flex-grow:1;min-width:0;display:flex;flex-direction:column}
-.main-head{padding:16px 24px;border-bottom:1px solid #334155;display:flex;
+.main-head{padding:16px 24px;border-bottom:1px solid var(--line);display:flex;
   align-items:center;gap:16px;flex-wrap:wrap}
-.main-head h1{font-size:17px;font-weight:600;color:#f1f5f9;letter-spacing:-.01em;margin:0}
-.main-head .sub{font-size:11px;color:#64748b;margin-top:2px}
+.main-head h1{font-size:17px;font-weight:600;color:var(--text-strong);letter-spacing:-.01em;margin:0}
+.main-head .sub{font-size:11px;color:var(--muted2);margin-top:2px}
 .main-body{padding:20px 24px;display:flex;flex-direction:column;gap:16px}
 .side-toggle{display:none}
 /* Phone: the sidebar becomes a bottom bar. Icons-only in a rail would put the
@@ -1410,12 +1416,12 @@ section h2{color:#7dd3fc}
 @media(max-width:820px){
   .app{flex-direction:column}
   .sidebar{position:fixed;bottom:0;left:0;right:0;top:auto;width:auto;height:auto;
-    flex-direction:row;border-right:none;border-top:1px solid #334155;padding:0;
+    flex-direction:row;border-right:none;border-top:1px solid var(--line);padding:0;
     overflow-x:auto;z-index:50;gap:0}
   .side-brand,.side-group,.side-foot{display:none}
   .side-item{flex-direction:column;gap:3px;padding:8px 14px;border-left:none;
     border-top:2px solid transparent;font-size:9px;white-space:nowrap}
-  .side-item.active{border-left:none;border-top-color:#0ea5e9}
+  .side-item.active{border-left:none;border-top-color:var(--accent)}
   .main-body{padding:14px 12px 76px}
   .main-head{padding:12px 14px}
 }
@@ -1442,15 +1448,15 @@ section h2{color:#7dd3fc}
   .scroll{border:none;background:none;overflow-x:visible}
   .tbl,.tbl tbody,.tbl tr,.tbl td{display:block;width:100%}
   .tbl thead{display:none}
-  .tbl tr{background:#1e293b;border:1px solid #334155;border-radius:8px;
+  .tbl tr{background:var(--panel);border:1px solid var(--line);border-radius:8px;
     padding:9px 11px;margin-bottom:8px}
-  .tbl tr:hover{background:#1e293b}
+  .tbl tr:hover{background:var(--panel)}
   .tbl td{border:none;padding:3px 0;white-space:normal;font-size:12px;
     display:flex;justify-content:space-between;align-items:baseline;gap:12px}
-  .tbl td::before{content:attr(data-label);color:#64748b;font-size:10px;
+  .tbl td::before{content:attr(data-label);color:var(--muted2);font-size:10px;
     text-transform:uppercase;letter-spacing:.05em;flex:none}
   .tbl td:first-child{padding-bottom:6px;margin-bottom:4px;
-    border-bottom:1px solid #0f172a;font-weight:600;color:#f1f5f9}
+    border-bottom:1px solid var(--bg);font-weight:600;color:var(--text-strong)}
   .tbl td:empty{display:none}
 
   /* Anything tapped needs a real target, not a 9px label. */
@@ -1477,7 +1483,7 @@ section h2{color:#7dd3fc}
   .side-more{display:flex}
   .sidebar.more-open .side-secondary{display:flex}
   .sidebar.more-open{flex-wrap:wrap;padding-bottom:4px}
-  .more-scrim{position:fixed;inset:0;background:rgba(2,6,23,.6);z-index:40;display:none}
+  .more-scrim{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:40;display:none}
   .more-scrim.on{display:block}
 }
 .side-more{display:none}
@@ -1512,6 +1518,15 @@ section h2{color:#7dd3fc}
   <div class="side-item side-more" onclick="toggleMore()">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
     <span>More</span>
+  </div>
+  <div class="side-themes" id="side-themes">
+    <span class="dot" data-t="amber"   style="background:#f59e0b" onclick="setSiteTheme('amber')"   title="Amber Terminal"></span>
+    <span class="dot" data-t="carbon"  style="background:#a3e635" onclick="setSiteTheme('carbon')"  title="Carbon Lime"></span>
+    <span class="dot" data-t="crimson" style="background:#fb7185" onclick="setSiteTheme('crimson')" title="Crimson"></span>
+    <span class="dot" data-t="violet"  style="background:#a78bfa" onclick="setSiteTheme('violet')"  title="Violet Night"></span>
+    <span class="dot" data-t="emerald" style="background:#34d399" onclick="setSiteTheme('emerald')" title="Emerald Court"></span>
+    <span class="dot" data-t="navy"    style="background:#0ea5e9" onclick="setSiteTheme('navy')"    title="Deep Navy"></span>
+    <span class="dot" data-t="light"   style="background:#f4f1ea" onclick="setSiteTheme('light')"   title="Polar White"></span>
   </div>
   <div class="side-foot">
     <div style="display:flex;align-items:center;gap:6px">
@@ -3661,12 +3676,15 @@ input:checked+.slider:before{transform:translateX(20px)}
   <h2>🎨 Site Theme</h2>
   <p class="subtitle">Applies instantly across all pages — saved in this browser.</p>
   <div class="theme-row">
-    <button class="theme-sw" data-t="navy" onclick="setSiteTheme('navy')"><span class="sw" style="background:#0f172a"></span>Deep Navy</button>
+    <button class="theme-sw" data-t="amber" onclick="setSiteTheme('amber')"><span class="sw" style="background:#f59e0b"></span>Amber Terminal</button>
+    <button class="theme-sw" data-t="carbon" onclick="setSiteTheme('carbon')"><span class="sw" style="background:#a3e635"></span>Carbon Lime</button>
+    <button class="theme-sw" data-t="crimson" onclick="setSiteTheme('crimson')"><span class="sw" style="background:#fb7185"></span>Crimson</button>
+    <button class="theme-sw" data-t="navy" onclick="setSiteTheme('navy')"><span class="sw" style="background:#0ea5e9"></span>Deep Navy</button>
     <button class="theme-sw" data-t="light" onclick="setSiteTheme('light')"><span class="sw" style="background:#eef2f7"></span>Polar White</button>
     <button class="theme-sw" data-t="violet" onclick="setSiteTheme('violet')"><span class="sw" style="background:#6d28d9"></span>Violet Night</button>
     <button class="theme-sw" data-t="emerald" onclick="setSiteTheme('emerald')"><span class="sw" style="background:#15803d"></span>Emerald Court</button>
   </div>
-  <script>setSiteTheme(localStorage.getItem('site_theme')||'navy');</script>
+  <script>setSiteTheme(localStorage.getItem('site_theme')||'amber');</script>
 
   <h2>Data Source Controls</h2>
   <p class="subtitle">Toggle collectors on/off to manage API quota. Changes take effect immediately — no redeploy needed.</p>
@@ -3930,9 +3948,74 @@ setInterval(load, 30000);
 _THEME_SNIPPET = """
 <style>
 /* Theme palettes */
-html[data-theme="light"]{--bg:#eef2f7;--panel:#ffffff;--panel2:#f8fafc;--line:#dbe3ee;--line2:#e8edf5;--text:#0f172a;--text-strong:#0f172a;--muted:#64748b;--accent:#2563eb;--score:#dc2626;--p1:#2563eb;--p2:#f97316;--barbg:#e2e8f0;--bestbg:#dcfce7;--best:#15803d;--favbg:#f0fdf4;--favline:#86efac;--fav:#16a34a}
-html[data-theme="violet"]{--bg:#13111c;--panel:#1c1729;--panel2:#181226;--line:#322b4d;--line2:#241f38;--text:#e9e4f5;--text-strong:#f5f3fa;--muted:#8b81a8;--accent:#a78bfa;--score:#f472b6;--p1:#a78bfa;--p2:#fbbf24;--barbg:#241f38;--bestbg:#2e1065;--best:#c4b5fd;--favbg:#21163a;--favline:#6d28d9;--fav:#c4b5fd}
-html[data-theme="emerald"]{--bg:#0a1410;--panel:#102219;--panel2:#0c1b13;--line:#1d3b2d;--line2:#12281d;--text:#dcefe6;--text-strong:#f0fdf4;--muted:#6b9080;--accent:#34d399;--score:#fbbf24;--p1:#34d399;--p2:#60a5fa;--barbg:#12281d;--bestbg:#14532d;--best:#86efac;--favbg:#0c2415;--favline:#15803d;--fav:#4ade80}
+/* ── Palette ───────────────────────────────────────────────────────────────
+   One variable set drives the sidebar, tables and signal cards. The older
+   components are still reskinned by the !important block in the theme
+   snippet; these are done properly so a theme actually changes them rather
+   than leaving the shell blue while the cards move. */
+:root{
+  --bg:#15120e; --panel:#201b15; --panel2:#1a1611; --sunk:#0f0c09;
+  --line:#3a3128; --line2:#241e18;
+  --text:#e8e0d4; --text-strong:#fdf8f0; --muted:#9a8b78; --muted2:#6d6154;
+  --accent:#f59e0b; --accent2:#fbbf24; --accent-soft:#fcd34d;
+  --pos:#4ade80; --pos-strong:#22c55e; --pos-btn:#16a34a;
+  --neg:#f87171; --neg-strong:#ef4444; --neg-btn:#dc2626;
+
+  --pos-t:  color-mix(in srgb, var(--pos-strong) 14%, transparent);
+  --pos-t2: color-mix(in srgb, var(--pos-strong) 34%, transparent);
+  --neg-t:  color-mix(in srgb, var(--neg-strong) 14%, transparent);
+  --neg-t2: color-mix(in srgb, var(--neg-strong) 34%, transparent);
+  --acc-t:  color-mix(in srgb, var(--accent) 16%, transparent);
+  --acc-t2: color-mix(in srgb, var(--accent) 36%, transparent);
+  --mut-t:  color-mix(in srgb, var(--muted) 14%, transparent);
+}
+html[data-theme="amber"]{
+  --bg:#15120e; --panel:#201b15; --panel2:#1a1611; --sunk:#0f0c09;
+  --line:#3a3128; --line2:#241e18;
+  --text:#e8e0d4; --text-strong:#fdf8f0; --muted:#9a8b78; --muted2:#6d6154;
+  --accent:#f59e0b; --accent2:#fbbf24; --accent-soft:#fcd34d;
+}
+html[data-theme="navy"]{
+  --bg:#0f172a; --panel:#1e293b; --panel2:#1b2534; --sunk:#0b1220;
+  --line:#334155; --line2:#16202f;
+  --text:#e2e8f0; --text-strong:#f1f5f9; --muted:#94a3b8; --muted2:#64748b;
+  --accent:#0ea5e9; --accent2:#38bdf8; --accent-soft:#7dd3fc;
+}
+html[data-theme="carbon"]{
+  --bg:#0b0b0c; --panel:#151517; --panel2:#121213; --sunk:#070708;
+  --line:#2b2b2f; --line2:#1b1b1e;
+  --text:#e4e4e7; --text-strong:#fafafa; --muted:#8b8b93; --muted2:#5f5f66;
+  --accent:#a3e635; --accent2:#bef264; --accent-soft:#d9f99d;
+}
+html[data-theme="crimson"]{
+  --bg:#160f11; --panel:#211619; --panel2:#1b1214; --sunk:#0f0a0b;
+  --line:#3d2830; --line2:#261a1e;
+  --text:#f0dfe3; --text-strong:#fff5f6; --muted:#a8858f; --muted2:#755c64;
+  --accent:#fb7185; --accent2:#fda4af; --accent-soft:#fecdd3;
+  --pos:#5eead4; --pos-strong:#2dd4bf; --pos-btn:#0d9488;
+}
+html[data-theme="violet"]{
+  --bg:#13111c; --panel:#1c1729; --panel2:#181226; --sunk:#0d0b14;
+  --line:#322b4d; --line2:#241f38;
+  --text:#e9e4f5; --text-strong:#f5f3fa; --muted:#8b81a8; --muted2:#665d80;
+  --accent:#a78bfa; --accent2:#c4b5fd; --accent-soft:#ddd6fe;
+}
+html[data-theme="emerald"]{
+  --bg:#0a1410; --panel:#102219; --panel2:#0c1b13; --sunk:#06100b;
+  --line:#1d3b2d; --line2:#12281d;
+  --text:#dcefe6; --text-strong:#f0fdf4; --muted:#6b9080; --muted2:#4d6b5d;
+  --accent:#34d399; --accent2:#6ee7b7; --accent-soft:#a7f3d0;
+}
+html[data-theme="light"]{
+  --bg:#f4f1ea; --panel:#ffffff; --panel2:#faf8f4; --sunk:#ece7dd;
+  --line:#ded7c9; --line2:#eee9df;
+  --text:#2c2620; --text-strong:#1a1611; --muted:#7a6f61; --muted2:#9c9285;
+  --accent:#b45309; --accent2:#d97706; --accent-soft:#92400e;
+  --pos:#15803d; --pos-strong:#16a34a; --pos-btn:#15803d;
+  --neg:#b91c1c; --neg-strong:#dc2626; --neg-btn:#b91c1c;
+}
+
+
 /* Overrides applied only when a non-default theme is active */
 html[data-theme] body{background:var(--bg)!important;color:var(--text)!important}
 html[data-theme] header,html[data-theme] .topbar,html[data-theme] .tab-bar{background:var(--panel)!important;border-color:var(--line)!important}
@@ -3964,14 +4047,19 @@ html[data-theme="light"] .src,html[data-theme="light"] .source-tag{background:#d
 </style>
 <script>
 (function(){
-  var t=localStorage.getItem('site_theme')||'navy';
-  if(t!=='navy') document.documentElement.setAttribute('data-theme',t);
+  var t=localStorage.getItem('site_theme')||'amber';
+  document.documentElement.setAttribute('data-theme',t);
+  // The dots render after this runs, so mark the active one once they exist.
+  document.addEventListener('DOMContentLoaded',function(){
+    document.querySelectorAll('.side-themes .dot').forEach(function(d){
+      d.classList.toggle('on',d.dataset.t===t);});
+  });
 })();
 function setSiteTheme(t){
   localStorage.setItem('site_theme',t);
-  if(t==='navy') document.documentElement.removeAttribute('data-theme');
-  else document.documentElement.setAttribute('data-theme',t);
+  document.documentElement.setAttribute('data-theme',t);
   document.querySelectorAll('.theme-sw').forEach(function(b){b.classList.toggle('on',b.dataset.t===t);});
+  document.querySelectorAll('.side-themes .dot').forEach(function(d){d.classList.toggle('on',d.dataset.t===t);});
 }
 </script>
 """

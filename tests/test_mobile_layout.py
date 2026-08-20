@@ -168,10 +168,61 @@ class TestSignalCards(unittest.TestCase):
         self.assertIn("costs more to open and close", self.html)
 
     def test_direction_colours_the_card(self):
-        """The page was one flat slate; a good and a bad setup looked alike."""
-        self.assertIn(".sig.long{border-left-color:#22c55e", self.html)
-        self.assertIn(".sig.short{border-left-color:#ef4444", self.html)
+        """
+        The page was one flat slate; a good and a bad setup looked alike.
+        Now expressed as palette variables so every theme reskins it.
+        """
+        self.assertIn(".sig.long{border-left-color:var(--pos-strong)", self.html)
+        self.assertIn(".sig.short{border-left-color:var(--neg-strong)", self.html)
 
     def test_cards_go_two_up_when_there_is_room(self):
         self.assertIn("#cr-signals,#dash-signals{display:grid", self.html)
         self.assertIn("@media(max-width:900px){#cr-signals,#dash-signals", self.html)
+
+
+class TestTheming(unittest.TestCase):
+    """
+    Themes previously reskinned only the older components through !important
+    overrides, so switching left the sidebar and the signal cards blue while
+    everything around them changed.
+    """
+
+    def setUp(self):
+        self.html = health._HTML
+        self.snippet = health._THEME_SNIPPET
+
+    def test_the_new_components_carry_no_hardcoded_colour(self):
+        block = self.html[self.html.index("/* ── Signal cards ─"):
+                          self.html.index("</style>")]
+        self.assertEqual(re.findall(r"#[0-9a-fA-F]{6}", block), [])
+
+    def test_every_theme_defines_the_whole_variable_set(self):
+        keys = ("--bg", "--panel", "--line", "--text", "--muted", "--accent")
+        for theme in ("amber", "carbon", "crimson", "violet", "emerald", "light", "navy"):
+            block = self.html[self.html.index(f'html[data-theme="{theme}"]'):]
+            block = block[:block.index("}")]
+            for k in keys:
+                with self.subTest(theme=theme, key=k):
+                    self.assertIn(k, block)
+
+    def test_the_default_is_no_longer_blue(self):
+        self.assertIn("||'amber'", self.snippet)
+
+    def test_the_default_is_a_named_theme_so_overrides_apply(self):
+        """
+        With no data-theme the older components kept their original colours,
+        because every override is scoped to html[data-theme].
+        """
+        self.assertNotIn("removeAttribute('data-theme')", self.snippet)
+
+    def test_navy_survives_as_a_choice(self):
+        self.assertIn('html[data-theme="navy"]', self.html)
+        self.assertIn("setSiteTheme('navy')", self.html)
+
+    def test_themes_are_switchable_without_leaving_the_page(self):
+        self.assertIn('class="side-themes"', self.html)
+        self.assertIn("setSiteTheme('crimson')", self.html)
+
+    def test_the_active_theme_is_marked_once_the_dots_exist(self):
+        """The bootstrap runs before the markup, so it waits for the DOM."""
+        self.assertIn("DOMContentLoaded", self.snippet)
