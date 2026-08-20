@@ -34,8 +34,9 @@ class TestKeptFraction(unittest.TestCase):
             with self.subTest(move=move):
                 self.assertAlmostEqual(self.kept(move / rt), observed, delta=0.02)
 
-    def test_the_default_multiple_only_keeps_half(self):
-        self.assertAlmostEqual(self.kept(ScalpConfig().min_edge_multiple), 0.50, places=6)
+    def test_the_default_multiple_keeps_two_thirds(self):
+        """Raised from 2.0 after the ledger showed 1.5x keeping only a third."""
+        self.assertAlmostEqual(self.kept(ScalpConfig().min_edge_multiple), 2/3, places=6)
 
     def test_high_conviction_keeps_four_fifths(self):
         self.assertAlmostEqual(
