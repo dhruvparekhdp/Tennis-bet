@@ -1297,6 +1297,78 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .fb-sig-time{font-size:11px;color:#475569;margin-left:auto}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
 
+/* ── Signal cards ──────────────────────────────────────────────────────── */
+/* The page was one flat slate blue end to end, which made a losing setup and
+   a good one look identical at a glance. Direction now tints the card edge,
+   the levels carry their own colours, and the track shows where price sits
+   between stop and target without reading a single number. */
+/* Two columns once there is room. One card stretched across 1140px puts the
+   stop and the target so far apart they stop reading as one setup. */
+#cr-signals,#dash-signals{display:grid;gap:12px;
+  grid-template-columns:repeat(auto-fill,minmax(430px,1fr))}
+#cr-signals .sig,#dash-signals .sig{margin-bottom:0}
+@media(max-width:900px){#cr-signals,#dash-signals{grid-template-columns:1fr}}
+
+.sig{background:linear-gradient(180deg,#1c2736 0%,#1a2431 100%);
+  border:1px solid #334155;border-left:3px solid #475569;border-radius:12px;
+  padding:14px 15px;display:flex;flex-direction:column;gap:11px;margin-bottom:12px}
+.sig.long{border-left-color:#22c55e;box-shadow:inset 0 1px 0 rgba(34,197,94,.08)}
+.sig.short{border-left-color:#ef4444;box-shadow:inset 0 1px 0 rgba(239,68,68,.08)}
+.sig.unviable{border-left-color:#64748b;opacity:.72}
+
+.sig-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.sig-sym{font-size:15px;font-weight:700;color:#f8fafc;letter-spacing:-.01em}
+.sig-dir{font-size:10px;font-weight:600;padding:3px 9px;border-radius:20px}
+.sig-dir.long{background:rgba(34,197,94,.14);color:#4ade80;border:1px solid rgba(34,197,94,.35)}
+.sig-dir.short{background:rgba(239,68,68,.14);color:#f87171;border:1px solid rgba(239,68,68,.35)}
+.sig-profit{text-align:right;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);
+  border-radius:9px;padding:5px 11px;line-height:1.15}
+.sig-profit b{display:block;font-size:15px;color:#4ade80;font-variant-numeric:tabular-nums}
+.sig-profit span{font-size:9px;color:#86efac;text-transform:uppercase;letter-spacing:.05em}
+.sig-profit.muted{background:rgba(100,116,139,.12);border-color:#475569}
+.sig-profit.muted b{color:#94a3b8}.sig-profit.muted span{color:#64748b}
+
+.sig-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:10px;color:#64748b}
+.sig-setup{background:rgba(14,165,233,.14);color:#7dd3fc;border:1px solid rgba(14,165,233,.3);
+  padding:2px 8px;border-radius:20px;font-weight:600}
+.sig-when{color:#475569;font-variant-numeric:tabular-nums}
+
+.sig-levels{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.sig-levels>div{display:flex;flex-direction:column;gap:1px}
+.sig-levels .mid{align-items:center;text-align:center}
+.sig-levels .right{align-items:flex-end;text-align:right}
+.sig-levels label{font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.05em}
+.sig-levels b{font-size:14px;color:#e2e8f0;font-variant-numeric:tabular-nums}
+.sig-levels b.pos{color:#4ade80}.sig-levels b.neg{color:#f87171}
+.sig-levels span{font-size:9px;color:#475569;font-variant-numeric:tabular-nums}
+
+.sig-track{position:relative;height:6px;background:#0b1220;border-radius:3px;margin:2px 0 6px}
+.sig-track .cap{position:absolute;top:-2px;width:4px;height:10px;border-radius:2px}
+.sig-track .cap.sl{left:0;background:#ef4444}
+.sig-track .cap.tp{right:0;background:#22c55e}
+.sig-track .fill{position:absolute;left:0;top:0;height:6px;border-radius:3px;
+  background:linear-gradient(90deg,rgba(239,68,68,.5),rgba(56,189,248,.55))}
+.sig-track .now{position:absolute;top:-5px;width:0;height:0;margin-left:-5px;
+  border-left:5px solid transparent;border-right:5px solid transparent;
+  border-top:7px solid #38bdf8}
+
+.sig-foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pill{font-size:9px;color:#94a3b8;border:1px solid #334155;background:#111c2b;
+  padding:3px 8px;border-radius:20px;font-variant-numeric:tabular-nums}
+.pill.ok{color:#4ade80;border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.1)}
+.pill.bad{color:#f87171;border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.1)}
+.sig-act{font-size:11px;font-weight:600;padding:6px 14px;border-radius:8px}
+.sig-act.long{background:#16a34a;color:#f0fdf4}
+.sig-act.short{background:#dc2626;color:#fef2f2}
+.sig-act.off{background:#1e293b;color:#64748b;border:1px solid #334155}
+.sig-warn{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);
+  border-radius:8px;padding:9px 11px;font-size:10px;color:#fca5a5;line-height:1.5}
+
+/* A little colour elsewhere, so the page is not one flat field of slate. */
+.card{background:linear-gradient(180deg,#1e293b 0%,#1b2534 100%)}
+.card-value.pos{color:#4ade80}.card-value.neg{color:#f87171}
+section h2{color:#7dd3fc}
+
 /* ── Tables ────────────────────────────────────────────────────────────── */
 .scroll{overflow-x:auto;border:1px solid #334155;border-radius:8px;background:#1e293b;
   -webkit-overflow-scrolling:touch}
@@ -1390,6 +1462,10 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 
   .cr-grid{grid-template-columns:1fr 1fr !important}
   .cr-sig-card{padding:11px}
+  .sig{padding:12px}
+  .sig-sym{font-size:14px}
+  .sig-levels b{font-size:13px}
+  .sig-act{padding:8px 14px;min-height:38px;display:flex;align-items:center}
   .cr-note{font-size:11px}
 }
 /* Ten destinations do not fit a phone bar, and a sideways scroller with no
@@ -2751,6 +2827,7 @@ function fmtPrice(p){
 // dashboard called a signal viable that the engine would have refused.
 const BREAK_EVEN_PCT = __BREAK_EVEN_PCT__;
 const MIN_TARGET_PCT = __MIN_TARGET_PCT__;
+const PAPER_LEVERAGE = __PAPER_LEVERAGE__;
 function renderCryptoCoins(coins){
   const el=document.getElementById('cr-coins');
   if(!coins.length){el.innerHTML='<div class="empty">Watchlist is empty — add a symbol above</div>';return;}
@@ -2856,33 +2933,71 @@ function fmtSignalTime(iso){
 }
 
 function renderCryptoSignalCard(s){
-  const name=CR_SIG_NAME[s.signal_type]||s.signal_type.replace(/_/g,' ');
-  // Distance to target, and whether it can survive the round-trip cost.
-  const move = (s.target_price && s.current_price)
-    ? Math.abs(s.target_price - s.current_price) / s.current_price * 100 : 0;
-  // Break-even is not the bar. A target merely equal to cost is a coin flip
-  // you pay to enter; MIN_TARGET_PCT is what the engine will actually take.
+  const name = CR_SIG_NAME[s.signal_type] || s.signal_type.replace(/_/g,' ');
+  const long = s.direction === 'long';
+  const entry = s.current_price, tp = s.target_price, sl = s.stop_loss;
+  const move  = (tp && entry) ? Math.abs(tp - entry) / entry * 100 : 0;
+  const risk  = (sl && entry) ? Math.abs(entry - sl) / entry * 100 : 0;
+  const xcost = move / BREAK_EVEN_PCT;
   const viable = move >= MIN_TARGET_PCT;
-  const warn = viable ? '' :
-    `<div class="cr-sig-warn">Target is only ${move.toFixed(3)}% away. It costs
-     ${BREAK_EVEN_PCT.toFixed(3)}% to open and close, and the bot needs
-     ${MIN_TARGET_PCT.toFixed(3)}% before a trade is worth taking.</div>`;
-  return `<div class="cr-sig-card${viable?'':' unviable'}">
-    <div class="cr-sig-top"><span class="cr-sig-dir ${s.direction}">${s.direction.toUpperCase()}</span>
-      <span class="cr-sig-sym">${esc(s.symbol)}</span>
-      <span class="cr-sig-name">${esc(name)}</span>
-      <span class="cr-sig-tf">${esc(s.timeframe)} · ${s.confidence}% confidence</span></div>
-    <div class="cr-sig-when" title="${esc(s.timestamp)}">${fmtSignalTime(s.timestamp)}</div>
-    <div class="cr-sig-desc">${esc(s.trigger)}</div>
-    <div class="cr-sig-row">
-      <span>Entry <b>$${fmtPrice(s.current_price)}</b></span>
-      ${s.target_price?`<span>Target <b>$${fmtPrice(s.target_price)}</b></span>`:''}
-      ${s.stop_loss?`<span>Stop <b>$${fmtPrice(s.stop_loss)}</b></span>`:''}
-      <span>Move <b>${move.toFixed(3)}%</b></span>
+  const roe = move * PAPER_LEVERAGE;
+
+  // The track runs stop -> target, so it reads left-to-right the same way for
+  // a long and a short even though price moves the opposite way.
+  const pos = p => (tp === sl) ? 50
+    : Math.max(0, Math.min(100, (p - sl) / (tp - sl) * 100));
+  const at = pos(entry);
+
+  const rr = risk > 0 ? (move / risk) : null;
+  const cls = viable ? (long ? 'long' : 'short') : 'unviable';
+
+  return `<div class="sig ${cls}">
+    <div class="sig-head">
+      <span class="sig-sym">${esc(s.symbol)}</span>
+      <span class="sig-dir ${long?'long':'short'}">${long?'Long':'Short'} ${PAPER_LEVERAGE}x</span>
+      <div style="flex-grow:1"></div>
+      <div class="sig-profit ${viable?'':'muted'}">
+        <b>${viable?'+':''}${roe.toFixed(1)}%</b><span>expected</span></div>
     </div>
-    ${warn}
+
+    <div class="sig-meta">
+      <span class="sig-setup">${esc(name)}</span>
+      <span>&middot;</span><span>${esc(s.timeframe)}</span>
+      <span>&middot;</span><span>${s.confidence}% confidence</span>
+      <div style="flex-grow:1"></div>
+      <span class="sig-when">${fmtSignalTime(s.timestamp)}</span>
+    </div>
+
+    <div class="sig-levels">
+      <div><label>Stop loss</label><b class="neg">${fmtPrice(sl)}</b><span>−${risk.toFixed(2)}%</span></div>
+      <div class="mid"><label>Entry</label><b>${fmtPrice(entry)}</b><span>LTP</span></div>
+      <div class="right"><label>Take profit</label><b class="pos">${fmtPrice(tp)}</b><span>+${move.toFixed(2)}%</span></div>
+    </div>
+
+    <div class="sig-track">
+      <span class="cap sl"></span>
+      <span class="cap tp"></span>
+      <span class="fill" style="width:${at}%"></span>
+      <span class="now" style="left:${at}%"></span>
+    </div>
+
+    <div class="sig-foot">
+      <span class="pill ${viable?'ok':'bad'}">${xcost.toFixed(1)}× cost</span>
+      ${rr?`<span class="pill">${rr.toFixed(2)} reward:risk</span>`:''}
+      <span class="pill">${move.toFixed(3)}% move</span>
+      <div style="flex-grow:1"></div>
+      <span class="sig-act ${viable?(long?'long':'short'):'off'}">${
+        viable ? (long?'Buy / Long':'Sell / Short') : 'Refused'}</span>
+    </div>
+
+    ${viable?'':`<div class="sig-warn">Target is ${move.toFixed(3)}% away against a
+      ${BREAK_EVEN_PCT.toFixed(3)}% round trip. ${xcost <= 1
+        ? 'It costs more to open and close than the move can win, so this loses money when it succeeds.'
+        : `It would keep only ${(100-100/xcost).toFixed(0)}% of what it earns.`}
+      The bot will not take a trade under ${MIN_TARGET_PCT.toFixed(3)}%.</div>`}
   </div>`;
 }
+
 function renderCommodities(rows){
   const sec=document.getElementById('cr-commodities-section');
   const el=document.getElementById('cr-commodities');
@@ -3868,6 +3983,7 @@ _HTML = (
     _HTML
     .replace("__BREAK_EVEN_PCT__", f"{_SCALP.round_trip_fee_pct * 100:.4f}")
     .replace("__MIN_TARGET_PCT__", f"{_SCALP.min_target_pct * 100:.4f}")
+    .replace("__PAPER_LEVERAGE__", f"{_SETTINGS.paper_leverage:g}")
 )
 _HTML = _HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _DATA_HTML = _DATA_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
