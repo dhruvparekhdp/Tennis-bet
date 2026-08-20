@@ -170,6 +170,10 @@ class Settings(BaseSettings):
     paper_trailing_enabled: bool = False        # measure on real data before enabling
     # Leverage rises with confidence, capped so liquidation stays 3 ATR away.
     paper_scaled_leverage: bool = False
+    # Ratchet the stop as return-on-margin crosses rungs, the way a stop gets
+    # moved up by hand on a trade that is working.
+    paper_ladder_enabled: bool = False
+    paper_ladder_tight: bool = False
     paper_max_leverage: float = 25.0
     paper_tick_interval_seconds: int = 30
     # CoinDCX INR futures trade at a premium to spot; refresh this if it drifts.

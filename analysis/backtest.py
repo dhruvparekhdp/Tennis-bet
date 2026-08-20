@@ -334,6 +334,9 @@ class BacktestEngine:
                     # Only now, once this bar could not close the position at
                     # the stop it actually had. Trailing first would let this
                     # bar's high pull the stop above this bar's low.
+                    fav = c.high if pos.side is Side.LONG else c.low
+                    if pos.apply_ladder(fav, cfg.ladder, cfg.fees):
+                        res.trail_moves += 1
                     if pos.update_trail(c.high, c.low, cfg.trailing, cfg.fees):
                         res.trail_moves += 1
                     still_open.append(pos)

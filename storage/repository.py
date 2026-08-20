@@ -567,6 +567,8 @@ class Repository:
         trailing_enabled: bool,
         scaled_sizing: bool,
         scaled_leverage: bool = False,
+        ladder_enabled: bool = False,
+        ladder_tight: bool = False,
     ) -> PaperCycle:
         """
         Begin a cycle, recording the configuration it runs under.
@@ -588,6 +590,8 @@ class Repository:
             trailing_enabled=trailing_enabled,
             scaled_sizing=scaled_sizing,
             scaled_leverage=scaled_leverage,
+            ladder_enabled=ladder_enabled,
+            ladder_tight=ladder_tight,
             status="running",
         )
         self.session.add(cycle)
