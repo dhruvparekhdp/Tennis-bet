@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script src="./support.js"></script></head>
+<body><x-dc>
+<helmet><style>
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    background:#15120e;color:#e8e0d4}
+  a{color:#fbbf24} a:hover{color:#fcd34d}
+</style></helmet>
+<div style="padding:26px 28px;display:flex;flex-direction:column;gap:26px;width:1180px">
+  <div>
+    <div style="font-family:ui-monospace,monospace;font-size:10px;letter-spacing:.12em;
+      text-transform:uppercase;color:#8a8073">Colour directions · desktop and phone</div>
+    <h1 style="margin:5px 0 0;font-size:22px;font-weight:600;color:#fdf8f0">Pick a direction</h1>
+    <p style="margin:6px 0 0;font-size:12px;color:#9a8b78;max-width:74ch">Rendered from the live
+      page, not mocked. All three are already installed — the dots in the sidebar switch between
+      them instantly, so this is about which becomes the default rather than which gets built.</p>
+  </div>
+  
+  <div style="display:flex;flex-direction:column;gap:9px">
+    <div style="display:flex;align-items:baseline;gap:9px">
+      <span style="width:13px;height:13px;border-radius:50%;background:#f59e0b;flex:none"></span>
+      <b style="font-size:15px;color:#f5f2ec">Amber Terminal</b>
+      <span style="font-family:ui-monospace,monospace;font-size:10px;color:#8a8073">amber</span>
+    </div>
+    <p style="margin:0;font-size:12px;color:#c9c0b3;max-width:62ch">Warm charcoal, amber accent. A trading-terminal look — the least blue of the set, and easiest on the eyes at night.</p>
+    <p style="margin:0;font-size:11px;color:#8a8073;max-width:62ch"><b style="color:#a99c8b">Trade-off —</b> Amber reads as caution rather than profit, so it never competes with the green/red that carries meaning.</p>
+    <div style="display:grid;grid-template-columns:1fr 300px;gap:12px;align-items:start">
+      <img src="./d-amber.png" style="width:100%;border:1px solid #3a3128;border-radius:8px;display:block">
+      <img src="./m-amber.png" style="width:100%;border:1px solid #3a3128;border-radius:8px;display:block">
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:9px">
+    <div style="display:flex;align-items:baseline;gap:9px">
+      <span style="width:13px;height:13px;border-radius:50%;background:#a3e635;flex:none"></span>
+      <b style="font-size:15px;color:#f5f2ec">Carbon Lime</b>
+      <span style="font-family:ui-monospace,monospace;font-size:10px;color:#8a8073">carbon</span>
+    </div>
+    <p style="margin:0;font-size:12px;color:#c9c0b3;max-width:62ch">Near-black neutral with a lime accent. The highest contrast option and the most modern.</p>
+    <p style="margin:0;font-size:11px;color:#8a8073;max-width:62ch"><b style="color:#a99c8b">Trade-off —</b> Pure neutral greys mean nothing tints your P&L colours. Lime is bright — it may be too loud in a dark room.</p>
+    <div style="display:grid;grid-template-columns:1fr 300px;gap:12px;align-items:start">
+      <img src="./d-carbon.png" style="width:100%;border:1px solid #3a3128;border-radius:8px;display:block">
+      <img src="./m-carbon.png" style="width:100%;border:1px solid #3a3128;border-radius:8px;display:block">
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:9px">
+    <div style="display:flex;align-items:baseline;gap:9px">
+      <span style="width:13px;height:13px;border-radius:50%;background:#fb7185;flex:none"></span>
+      <b style="font-size:15px;color:#f5f2ec">Crimson</b>
+      <span style="font-family:ui-monospace,monospace;font-size:10px;color:#8a8073">crimson</span>
+    </div>
+    <p style="margin:0;font-size:12px;color:#c9c0b3;max-width:62ch">Dark warm plum with rose. Profit switches to teal so it stays distinct from the rose chrome.</p>
+    <p style="margin:0;font-size:11px;color:#8a8073;max-width:62ch"><b style="color:#a99c8b">Trade-off —</b> The one direction that changes what green means — worth checking you do not misread a teal profit badge.</p>
+    <div style="display:grid;grid-template-columns:1fr 300px;gap:12px;align-items:start">
+      <img src="./d-crimson.png" style="width:100%;border:1px solid #3a3128;border-radius:8px;display:block">
+      <img src="./m-crimson.png" style="width:100%;border:1px solid #3a3128;border-radius:8px;display:block">
+    </div>
+  </div>
+  <div style="border-top:1px solid #3a3128;padding-top:14px;font-size:11px;color:#8a8073">
+    Also installed and switchable: Violet Night, Emerald Court, Deep Navy, Polar White.
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body></html>

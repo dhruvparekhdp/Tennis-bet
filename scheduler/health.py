@@ -1418,7 +1418,9 @@ section h2{color:var(--accent-soft)}
   .sidebar{position:fixed;bottom:0;left:0;right:0;top:auto;width:auto;height:auto;
     flex-direction:row;border-right:none;border-top:1px solid var(--line);padding:0;
     overflow-x:auto;z-index:50;gap:0}
-  .side-brand,.side-group,.side-foot{display:none}
+  .side-brand,.side-group,.side-foot,.side-themes{display:none}
+  .sidebar.more-open .side-themes{display:flex;width:100%;justify-content:center;
+    border-top:1px solid var(--line2);padding:9px 0}
   .side-item{flex-direction:column;gap:3px;padding:8px 14px;border-left:none;
     border-top:2px solid transparent;font-size:9px;white-space:nowrap}
   .side-item.active{border-left:none;border-top-color:var(--accent)}
