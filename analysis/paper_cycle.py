@@ -56,7 +56,12 @@ class CycleState:
 
 def config_for_cycle(row) -> CycleConfig:
     """Rebuild the exact configuration a cycle was started under."""
-    from analysis.paper_trading import LeverageConfig, SizingConfig, TrailingStop
+    from analysis.paper_trading import (
+        LeverageConfig,
+        ProfitLadder,
+        SizingConfig,
+        TrailingStop,
+    )
 
     return CycleConfig(
         starting_wallet=row.starting_wallet,
@@ -69,6 +74,8 @@ def config_for_cycle(row) -> CycleConfig:
         leverage_scaling=(LeverageConfig(ceiling_leverage=row.leverage)
                           if getattr(row, "scaled_leverage", False) else None),
         trailing=TrailingStop(enabled=row.trailing_enabled, activate_at_r=0.75),
+        ladder=(ProfitLadder.tight() if getattr(row, "ladder_tight", False)
+                else ProfitLadder(enabled=getattr(row, "ladder_enabled", False))),
     )
 
 
@@ -177,7 +184,11 @@ def resolve_at_price(
     hit = resolve_candle(pos, high=price, low=price, close=price, ts=now,
                          slippage=cfg.slippage)
     if hit is None:
-        pos.update_trail(price, price, cfg.trailing, fees_for(pos.symbol))
+        fees = fees_for(pos.symbol)
+        # Ladder first: it can only raise the stop, and a rung crossed on this
+        # tick should protect the position from the next one onward.
+        pos.apply_ladder(price, cfg.ladder, fees)
+        pos.update_trail(price, price, cfg.trailing, fees)
         return None
     reason, fill = hit
     return close_position(pos, fill, reason, now, fees_for(pos.symbol), wallet)

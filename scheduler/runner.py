@@ -469,6 +469,8 @@ class AppRunner:
             trailing_enabled=settings.paper_trailing_enabled,
             scaled_sizing=settings.paper_scaled_sizing,
             scaled_leverage=settings.paper_scaled_leverage,
+            ladder_enabled=settings.paper_ladder_enabled,
+            ladder_tight=settings.paper_ladder_tight,
         )
         log.info("paper_cycle_started", cycle_id=cycle.id,
                  wallet=cycle.starting_wallet, leverage=cycle.leverage)

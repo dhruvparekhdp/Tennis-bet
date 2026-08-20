@@ -299,6 +299,8 @@ class Position:
     initial_stop_price: float = 0.0
     peak_price: float = 0.0        # best price seen in our favour
     trail_active: bool = False
+    # Highest rung the ladder has locked, so it can never step back down.
+    locked_roe: float | None = None
 
     # Set once the position has been scaled in or out, because after that the
     # size no longer follows from margin x leverage / entry.
@@ -369,6 +371,48 @@ class Position:
         """How many R the trade is up at `price`. Negative means offside."""
         risk = self.risk_per_unit
         return self.favourable_move(price) / risk if risk > 0 else 0.0
+
+    def peak_roe(self, mark: float) -> float:
+        """Best return-on-margin this position has been worth, as a fraction."""
+        best = self.peak_price or mark
+        best = max(best, mark) if self.side is Side.LONG else min(best, mark)
+        if self.margin <= 0:
+            return 0.0
+        return self.favourable_move(best) * self.quantity / self.margin
+
+    def apply_ladder(self, mark: float, ladder: ProfitLadder,
+                     fees: FeeModel) -> bool:
+        """
+        Move the stop up a rung if the trade has earned it. Returns True if it moved.
+
+        Ratchets only: `locked_roe` never decreases, so a pullback after a rung
+        is reached cannot give the lock back.
+        """
+        if not ladder.enabled or self.margin <= 0 or self.leverage <= 0:
+            return False
+
+        s = self.sign
+        seen = self.peak_price or mark
+        extreme = max(seen, mark) if s > 0 else min(seen, mark)
+        self.peak_price = extreme
+
+        target = ladder.locked_roe(self.peak_roe(mark))
+        if target is None:
+            return False
+        if self.locked_roe is not None and target <= self.locked_roe:
+            return False
+
+        # ROE back to price: a locked ROE of x needs x/leverage of price move.
+        move = target / self.leverage
+        if ladder.cover_costs_at_breakeven:
+            move += fees.round_trip_pct()
+        candidate = self.entry_price * (1 + s * move)
+
+        if s * (candidate - self.stop_price) <= 0:
+            return False
+        self.stop_price = candidate
+        self.locked_roe = target
+        return True
 
     def update_trail(self, high: float, low: float, trail: TrailingStop,
                      fees: FeeModel) -> bool:
@@ -673,6 +717,73 @@ def close_position(
         net_pnl=net,
         wallet_after=wallet_before + pos.margin + net,
     )
+
+
+@dataclass(frozen=True)
+class ProfitLadder:
+    """
+    Ratchet the stop as return-on-margin crosses rungs, locking a share of the
+    gain at each one.
+
+    This is the pattern from the account, made mechanical. A live SUI long at
+    25x sat at +11.47% ROE with its stop moved to +7.53% ROE — above entry, so
+    the worst case had become a profit of Rs86 rather than a loss. Earlier the
+    same thing was done by hand on another trade, the stop moved five times as
+    it ran.
+
+    Each rung is (roe_reached, roe_locked): once the trade has been worth
+    roe_reached, the stop moves to wherever it would return roe_locked. Rungs
+    ascend, so the stop can only climb — the ratchet is the point.
+
+    Two deliberate properties:
+
+    * The first rung locks BREAK-EVEN, not a profit. Locking a gain before
+      there is room to give one back just converts winners into scratches.
+    * The lock always trails the trigger. A rung that locked what it triggered
+      on would stop the trade out at the exact price that armed it.
+    """
+
+    enabled: bool = False
+    rungs: tuple[tuple[float, float], ...] = (
+        (0.20, 0.00),   # +20% ROE reached -> stop to break-even
+        (0.35, 0.12),   # +35%            -> keep at least +12%
+        (0.60, 0.30),
+        (1.00, 0.60),
+        (1.75, 1.20),
+        (3.00, 2.20),
+    )
+
+    # Break-even means entry plus the round trip, not entry. Stopping out at
+    # entry still loses both fees.
+    cover_costs_at_breakeven: bool = True
+
+    @classmethod
+    def tight(cls) -> ProfitLadder:
+        """
+        Locks earlier and keeps more, closer to how the account actually trades.
+
+        The live SUI position had its stop at +7.53% ROE while the trade was
+        worth +11.47% — 66% of the open gain protected almost immediately.
+        That converts more winners into small wins and fewer into large ones;
+        the default leaves more room before the first rung.
+        """
+        return cls(enabled=True, rungs=(
+            (0.10, 0.00),
+            (0.15, 0.07),
+            (0.30, 0.18),
+            (0.60, 0.40),
+            (1.00, 0.75),
+            (2.00, 1.60),
+            (3.00, 2.50),
+        ))
+
+    def locked_roe(self, peak_roe: float) -> float | None:
+        """Highest rung the trade has earned, or None if it has earned none."""
+        best = None
+        for reached, locked in self.rungs:
+            if peak_roe >= reached:
+                best = locked if best is None else max(best, locked)
+        return best
 
 
 @dataclass(frozen=True)
@@ -995,6 +1106,7 @@ class CycleConfig:
     # Off by default. Turning it on changes the exit distribution, so it should
     # be a measured decision rather than an assumption.
     trailing: TrailingStop = field(default_factory=TrailingStop)
+    ladder: ProfitLadder = field(default_factory=ProfitLadder)
 
     # How many closed bars of drift feed the trend term. Three bars is enough
     # to tell a run from a single spike without lagging into irrelevance.
@@ -1063,10 +1175,32 @@ class CycleConfig:
             "target_to_fee_ratio": round(tgt / be, 2) if be else None,
             "stop_inside_liquidation": self.stop_move_pct() < self.liquidation_move_pct(),
             "trailing_can_activate": self.trailing_can_activate(),
+            "ladder_can_activate": self.ladder_can_activate(),
+            "ladder_rungs_reachable": self.ladder_rungs_reachable(),
             "roe_at_target_pct": round(self.stop_pct_of_margin * self.reward_risk * 100, 2),
             "max_leverage_for_this_roe": round(self.max_leverage_for_roe(), 1),
             "roe_target_viable": self.roe_target_is_viable(),
         }
+
+    def ladder_can_activate(self) -> bool:
+        """
+        Can any rung fire before the target closes the trade?
+
+        The target sits at stop_pct_of_margin * reward_risk of ROE. A first
+        rung at or above that is unreachable — the position is already closed.
+        With a fixed 20/20 the target is +20% ROE and the default ladder's
+        first rung is also +20%, so it fires only on a bar that overshoots.
+        """
+        if not self.ladder.enabled or not self.ladder.rungs:
+            return False
+        return self.ladder.rungs[0][0] < self.stop_pct_of_margin * self.reward_risk
+
+    def ladder_rungs_reachable(self) -> int:
+        """How many rungs the target leaves room for. Zero means it is inert."""
+        if not self.ladder.enabled:
+            return 0
+        target_roe = self.stop_pct_of_margin * self.reward_risk
+        return sum(1 for reached, _ in self.ladder.rungs if reached < target_roe)
 
     def roe_target_is_viable(self) -> bool:
         """
