@@ -226,3 +226,50 @@ class TestTheming(unittest.TestCase):
     def test_the_active_theme_is_marked_once_the_dots_exist(self):
         """The bootstrap runs before the markup, so it waits for the DOM."""
         self.assertIn("DOMContentLoaded", self.snippet)
+
+
+class TestNoDanglingElementReferences(unittest.TestCase):
+    """
+    The sidebar rewrite deleted the KPI tiles and the old nav, but the JS kept
+    reaching for them. initView's FIRST statement touched grid-crypto, so it
+    threw before switchTab or refresh could run — every panel stayed on its
+    loading placeholder and the header read "Error — retrying". The page looked
+    like a backend outage and was a null dereference.
+
+    A missing element must never be able to blank the page, so this scans for
+    the pattern that throws: a property read straight off a literal lookup.
+    """
+
+    def setUp(self):
+        self.html = health._HTML
+        self.ids = set(re.findall(r'id="([A-Za-z0-9_-]+)"', self.html))
+
+    def test_every_direct_lookup_resolves_to_a_real_element(self):
+        dangling = sorted({
+            m.group(1)
+            for m in re.finditer(r"getElementById\('([A-Za-z0-9_-]+)'\)\s*\.\s*\w+", self.html)
+            if m.group(1) not in self.ids
+        })
+        self.assertEqual(dangling, [], f"JS reaches for missing elements: {dangling}")
+
+    def test_the_removed_tiles_are_gone_from_both_sides(self):
+        for gone in ("grid-crypto", "grid-sports", "tabbar-sports",
+                     "nav-crypto", "nav-sports", "stat-uptime"):
+            with self.subTest(el=gone):
+                self.assertNotIn(f'id="{gone}"', self.html)
+                self.assertNotIn(f"getElementById('{gone}').", self.html)
+
+    def test_refresh_writes_through_a_null_safe_helper(self):
+        """One absent tile should cost that tile, not the whole refresh."""
+        self.assertIn("function setText(id, value)", self.html)
+        block = self.html[self.html.index("async function refresh(){"):
+                          self.html.index("initView();")]
+        self.assertNotIn(".textContent=", block.replace("if(el) el.textContent", ""))
+
+    def test_init_view_survives_a_missing_element(self):
+        block = self.html[self.html.index("function initView(){"):]
+        block = block[:block.index("\n}")]
+        for m in re.finditer(r"getElementById\('([A-Za-z0-9_-]+)'\)", block):
+            with self.subTest(el=m.group(1)):
+                self.assertIn(m.group(1), self.ids)
+        self.assertIn("if(banner)", block)

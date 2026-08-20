@@ -2656,13 +2656,24 @@ function addCryptoSymbol2(){
 const IS_SPORTS = location.pathname.replace(/\/+$/,'') === '/sports';
 
 function initView(){
-  document.getElementById('grid-crypto').style.display   = IS_SPORTS ? 'none' : '';
-  document.getElementById('grid-sports').style.display   = IS_SPORTS ? '' : 'none';
-  document.getElementById('tabbar-sports').style.display = IS_SPORTS ? '' : 'none';
-  document.getElementById('page-title').textContent = IS_SPORTS ? '🎾 Sports Monitor' : '🪙 Crypto Monitor';
-  document.getElementById('nav-crypto').classList.toggle('active', !IS_SPORTS);
-  document.getElementById('nav-sports').classList.toggle('active', IS_SPORTS);
-  switchTab(IS_SPORTS ? 'tennis' : 'crypto');
+  // Rewritten for the sidebar. The previous version's first statement touched
+  // grid-crypto, which the sidebar replaced — it threw before switchTab or
+  // refresh could run, so the whole page loaded empty with "Error — retrying".
+  // Everything here is null-safe for that reason.
+  const sportsOnly = ['tennis','scalping','football'];
+  const cryptoOnly = ['dashboard','crypto','paper','guard','accuracy','historic','watchlist'];
+  (IS_SPORTS ? cryptoOnly : sportsOnly).forEach(t => {
+    const el = document.getElementById('tab-' + t);
+    if(el) el.classList.remove('active');
+  });
+  document.querySelectorAll('.side-item').forEach(b => {
+    const t = b.dataset.tab;
+    if(!t) return;
+    const wrong = IS_SPORTS ? cryptoOnly.includes(t) : sportsOnly.includes(t);
+    b.style.display = wrong ? 'none' : '';
+  });
+  const banner = document.getElementById('sports-paused-banner');
+  if(banner) banner.style.display = IS_SPORTS ? '' : 'none';
 }
 
 // ── FOOTBALL MATCHES ──────────────────────────────────────────────────────────
@@ -3119,12 +3130,26 @@ async function removeCryptoSymbol(sym){
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 // Fetch JSON that never rejects — a single failing endpoint must not blank the whole dashboard.
 function jget(url,fallback){return fetch(url).then(r=>r.ok?r.json():fallback).catch(()=>fallback);}
+function setText(id, value){
+  const el = document.getElementById(id);
+  if(el) el.textContent = value;
+  return !!el;
+}
+function setHTML(id, value){
+  const el = document.getElementById(id);
+  if(el) el.innerHTML = value;
+  return !!el;
+}
+
 async function refresh(){
   try{
     // Only fetch what the current view actually renders — the crypto page
     // doesn't need the sports endpoints and vice versa.
     const status = await jget('/api/status',{});
-    document.getElementById(IS_SPORTS?'stat-uptime-sports':'stat-uptime').textContent=fmtUptime(status.uptime_seconds);
+    setText(IS_SPORTS?'stat-uptime-sports':'stat-uptime', fmtUptime(status.uptime_seconds));
+    // The sidebar footer is where uptime actually lives now.
+    setText('side-uptime', 'up ' + fmtUptime(status.uptime_seconds));
+    setText('side-status', status.sports_enabled===false ? 'Crypto only' : 'Running');
 
     if(IS_SPORTS){
       const [matches,signals,fbMatches,fbSignals,scalps,wcGroups]=await Promise.all([
@@ -3135,9 +3160,9 @@ async function refresh(){
         jget('/api/scalping',[]),
         jget('/api/football/wc-groups',{}),
       ]);
-      document.getElementById('stat-matches').textContent=matches.length;
-      document.getElementById('stat-fb-matches').textContent=fbMatches.length;
-      document.getElementById('stat-signals').textContent=signals.length+fbSignals.length;
+      setText('stat-matches', matches.length);
+      setText('stat-fb-matches', fbMatches.length);
+      setText('stat-signals', signals.length+fbSignals.length);
       const banner=document.getElementById('sports-paused-banner');
       if(banner) banner.style.display = status.sports_enabled===false ? '' : 'none';
       renderStatus(status);
@@ -3153,8 +3178,8 @@ async function refresh(){
         jget('/api/crypto/signals',[]),
         jget('/api/commodities',[]),
       ]);
-      document.getElementById('stat-crypto-coins').textContent=crCoins.length;
-      document.getElementById('stat-crypto-signals').textContent=crSignals.length;
+      setText('stat-crypto-coins', crCoins.length);
+      setText('stat-crypto-signals', crSignals.length);
       renderCryptoCoins(crCoins);
       renderCryptoSignals(crSignals);
       renderCommodities(crCommodities);
@@ -3167,11 +3192,11 @@ async function refresh(){
       await loadPaper();
     }
 
-    document.getElementById('last-updated').textContent='Updated: '+new Date().toLocaleTimeString('en-IN',_IST)+' IST';
-    document.getElementById('refresh-label').textContent='Next in 30s';
+    setText('last-updated', 'Updated: '+new Date().toLocaleTimeString('en-IN',_IST)+' IST');
+    setText('refresh-label', 'Next in 30s');
   }catch(e){
     console.error('refresh error:', e);
-    document.getElementById('refresh-label').textContent='Error — retrying…';
+    setText('refresh-label', 'Error — retrying…');
   }
 }
 initView();

@@ -49,6 +49,12 @@ class Base(DeclarativeBase):
 
 
 async def init_db() -> None:
+    # Import for the side effect of registering every model on Base.metadata.
+    # Without it create_all sees an empty metadata and silently creates
+    # nothing — the tables then appear to be missing at query time, which is
+    # a confusing way to discover an import-order problem.
+    import storage.models  # noqa: F401
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_columns(conn)
