@@ -22,3 +22,5 @@ backtest_results/
 # skill from the .dc.html artboards and canvas.json beside it.
 design/*.html
 !design/*.dc.html
+design/themes/*.html
+!design/themes/*.dc.html
