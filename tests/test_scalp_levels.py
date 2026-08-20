@@ -29,7 +29,18 @@ class TestCostFloor(unittest.TestCase):
         self.assertAlmostEqual(self.cfg.cost_floor_pct, 0.00118 + 0.0002 + 0.0003, places=9)
 
     def test_minimum_target_is_a_multiple_of_the_floor(self):
-        self.assertAlmostEqual(self.cfg.min_target_pct, self.cfg.cost_floor_pct * 2.0, places=9)
+        self.assertAlmostEqual(self.cfg.min_target_pct,
+                               self.cfg.cost_floor_pct * self.cfg.min_edge_multiple, places=9)
+        self.assertEqual(self.cfg.min_edge_multiple, 3.0)
+
+    def test_the_engine_and_the_analyzers_share_one_floor(self):
+        """
+        Two floors created a dead band: the analyzer published anything over
+        0.336% and the engine refused anything under 0.354%, so a 0.337%
+        signal appeared on the dashboard and could never be traded.
+        """
+        from analysis.paper_trading import CycleConfig
+        self.assertEqual(CycleConfig().min_target_to_fee_ratio, self.cfg.min_edge_multiple)
 
     def test_the_floor_exceeds_every_target_from_the_screenshot(self):
         """0.050%, 0.080% and 0.170% all sit under the 0.336% minimum."""
@@ -309,7 +320,7 @@ class TestCostFrameIsPerMarket(unittest.TestCase):
     def test_gold_gets_a_far_lower_minimum_target(self):
         base = ScalpConfig()
         eth, xau = base.for_symbol("ethusdt"), base.for_symbol("xauusdt")
-        self.assertAlmostEqual(eth.min_target_pct * 100, 0.336, places=3)
+        self.assertAlmostEqual(eth.min_target_pct * 100, 0.504, places=3)
         self.assertLess(xau.min_target_pct, eth.min_target_pct)
 
     def test_a_gold_move_refused_as_crypto_is_accepted_as_gold(self):

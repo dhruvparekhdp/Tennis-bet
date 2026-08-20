@@ -102,8 +102,16 @@ class ScalpConfig:
     slippage_buffer_pct: float = 0.00030  # what fills actually cost beyond the spread
 
     # A target merely equal to cost is a coin flip you pay to enter. This is
-    # how much of the move must survive as profit.
-    min_edge_multiple: float = 2.0
+    # how much of the move must survive as profit, and it follows from
+    # kept = 1 - 1/x: at 2.0 a trade keeps half its gross, at 3.0 two thirds,
+    # at 5.0 four fifths.
+    #
+    # Set to 3.0 on the ledger's evidence. A real 0.177% ETH move — exactly
+    # 1.5x the round trip — grossed Rs57.53, paid Rs38.24 in fees and kept
+    # Rs19.29. Keeping a third of what a trade earns is not a trade worth
+    # taking. The paper engine reads this same value, so there is one floor
+    # rather than a band where a signal is published and then refused.
+    min_edge_multiple: float = 3.0
 
     # Volatility gate. If the recent swing cannot cover the cost floor, there
     # is no trade here at any confidence — this is the check that would have

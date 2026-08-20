@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+
+from analysis.scalp_levels import ScalpConfig
 from datetime import datetime
 from enum import Enum
 
@@ -1083,13 +1085,17 @@ class CycleConfig:
 
     # How many times the round-trip cost a target must clear.
     #
-    # Raised from 1.5 to 3.0 after a real trade landed exactly on the old
-    # value. At 1.5x you keep 1 - 1/1.5 = 33% of gross: the ledger showed a
-    # 0.177% ETH move (0.118% x 1.5, to the digit) that grossed Rs57.53 and
-    # paid Rs38.24 in fees, keeping Rs19.29. It passed the filter and should
-    # not have. At 3.0x a trade keeps two thirds of what it earns, which is
-    # the least that is worth executing.
-    min_target_to_fee_ratio: float = 3.0
+    # This is the SAME question the analyzers answer with
+    # ScalpConfig.min_edge_multiple, so it takes its default from there rather
+    # than carrying a second number. Two floors meant a dead band: with the
+    # analyzer at 2.0 and the engine at 3.0, anything between 0.336% and
+    # 0.354% was published to the dashboard and then refused by the engine —
+    # a signal you could see and the bot would never take.
+    #
+    # The value itself follows from kept = 1 - 1/x: at 2.0 a trade keeps half
+    # its gross, at 3.0 two thirds, at 5.0 four fifths.
+    min_target_to_fee_ratio: float = field(
+        default_factory=lambda: ScalpConfig().min_edge_multiple)
 
     # Quote conversion for INR-margined futures on a USDT-priced pair.
     # usdt_inr=1.0 with lot_step=0.0 keeps prices and margin in one currency
