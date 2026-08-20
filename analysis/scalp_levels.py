@@ -279,9 +279,20 @@ def scalp_levels(
         return NoTrade.TARGET_TOO_SMALL
     if actual_stop_pct <= 0:
         return NoTrade.TICK_TOO_COARSE
-    # Tolerance, not decoration: an exactly-1.0 setup computes to
-    # 0.9999999999999762 after tick rounding, and a bare `<` would silently
-    # refuse half of all symmetric shorts.
+
+    # Rounding both levels away from entry can widen the stop by more than it
+    # widens the target, leaving reward-to-risk a fraction under the floor —
+    # a shortfall smaller than one tick, which no price can express. Rather
+    # than refuse a setup for being un-representable, extend the target by
+    # whole ticks until it clears. Capped, so a genuinely poor setup is still
+    # refused rather than stretched into looking acceptable.
+    for _ in range(3):
+        if actual_stop_pct <= 0:
+            break
+        if actual_target_pct / actual_stop_pct >= cfg.min_reward_risk - 1e-9:
+            break
+        target = target + (tick if is_long else -tick)
+        actual_target_pct = abs(target - entry) / entry
     if actual_target_pct / actual_stop_pct < cfg.min_reward_risk - 1e-9:
         return NoTrade.POOR_REWARD
 
