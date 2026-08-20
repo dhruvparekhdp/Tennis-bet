@@ -130,3 +130,48 @@ class TestOnlyOneViewIsActive(unittest.TestCase):
         actives = re.findall(r'id="tab-[a-z]+" class="tab-content active"', health._HTML)
         self.assertEqual(len(actives), 1, actives)
         self.assertIn("tab-dashboard", actives[0])
+
+
+class TestSignalCards(unittest.TestCase):
+    """
+    The card carries stop, entry and target with a track showing where price
+    sits between them — the shape a trader already reads on the exchange.
+    """
+
+    def setUp(self):
+        self.html = health._HTML
+
+    def test_the_three_levels_are_shown_together(self):
+        for label in ("Stop loss", "Entry", "Take profit"):
+            with self.subTest(label=label):
+                self.assertIn(f"<label>{label}</label>", self.html)
+
+    def test_the_track_maps_stop_to_target(self):
+        """Left-to-right reads the same for a long and a short."""
+        self.assertIn("(p - sl) / (tp - sl) * 100", self.html)
+
+    def test_expected_profit_is_leveraged(self):
+        """A 0.34% move is 3.4% on margin at 10x — the number that matters."""
+        self.assertIn("const roe = move * PAPER_LEVERAGE", self.html)
+        self.assertIn("const PAPER_LEVERAGE =", self.html)
+
+    def test_a_refused_setup_gets_no_action_button(self):
+        """A live-looking Buy on a trade the bot refuses is a mixed message."""
+        self.assertIn("viable ? (long?'Buy / Long':'Sell / Short') : 'Refused'", self.html)
+
+    def test_a_sub_one_multiple_is_described_not_computed(self):
+        """
+        Below one round trip, "keeps N% of gross" goes negative — arithmetic
+        run past the point it means anything.
+        """
+        self.assertIn("xcost <= 1", self.html)
+        self.assertIn("costs more to open and close", self.html)
+
+    def test_direction_colours_the_card(self):
+        """The page was one flat slate; a good and a bad setup looked alike."""
+        self.assertIn(".sig.long{border-left-color:#22c55e", self.html)
+        self.assertIn(".sig.short{border-left-color:#ef4444", self.html)
+
+    def test_cards_go_two_up_when_there_is_room(self):
+        self.assertIn("#cr-signals,#dash-signals{display:grid", self.html)
+        self.assertIn("@media(max-width:900px){#cr-signals,#dash-signals", self.html)
