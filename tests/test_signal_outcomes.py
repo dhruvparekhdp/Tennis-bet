@@ -143,3 +143,83 @@ class TestNewScreensAreWired(unittest.TestCase):
         import inspect
         src = inspect.getsource(self.health._api_signal_accuracy)
         self.assertIn("return None, 0", src)
+
+
+class TestGateDiagnostic(unittest.IsolatedAsyncioTestCase):
+    """
+    Every gate that refuses a setup logs at debug and the setup then vanishes,
+    so "why is only one symbol firing" cannot be answered from outside the
+    process. This endpoint asks each gate the same question the engine does.
+    """
+
+    async def _report(self, cases):
+        import random
+        from datetime import timedelta
+
+        from analysis.crypto_state import CryptoState, OHLCVCandle
+        from analysis.crypto_state_store import CryptoStateStore, recalculate_indicators
+        import scheduler.health as health
+
+        t0 = datetime(2026, 8, 20, tzinfo=UTC)
+        store = CryptoStateStore()
+        for sym, bars, vol, drift, start, flat in cases:
+            st = CryptoState(symbol=sym, base_asset=sym[:-4].upper())
+            store._states[sym] = st
+            rnd = random.Random(sum(sym.encode()))       # stable across processes
+            # Volume draws from its own stream so they cannot shift the price
+            # path — that coupling made the fixture depend on how many bars
+            # had been generated rather than on the parameters.
+            vrnd = random.Random(7)
+            p = start
+            for i in range(bars):
+                o = p
+                p = o * (1 + drift + rnd.gauss(0, vol))
+                if flat:
+                    # What the REST poller used to write: no range at all.
+                    st.candles_1m.append(OHLCVCandle(p, p, p, p, vrnd.uniform(80, 400),
+                                                     t0 + timedelta(minutes=i)))
+                else:
+                    w = abs(rnd.gauss(0, vol * 0.5)) * p
+                    st.candles_1m.append(OHLCVCandle(o, max(o, p) + w, min(o, p) - w, p,
+                                                     vrnd.uniform(80, 400),
+                                                     t0 + timedelta(minutes=i)))
+            if bars:
+                st.current_price = p
+            if len(st.candles_1m) >= 14:
+                recalculate_indicators(st)
+
+        runner = type("R", (), {"crypto_store": store})()
+        resp = await health._api_debug_signals(runner, type("Q", (), {"query": {}})())
+        import json
+        return {r["symbol"]: r for r in json.loads(resp.text)["symbols"]}
+
+    async def test_it_names_a_different_reason_for_each_cause(self):
+        rows = await self._report([
+            ("bchusdt", 0, 0, 0, 0, False),               # never priced
+            ("solusdt", 30, 0.005, 0.0, 184.0, False),    # not enough history
+            ("ethusdt", 120, 0.0004, 0.0, 1900.0, False), # too quiet
+            ("xrpusdt", 120, 0.006, 0.0018, 1.0, False),  # volatile and trending
+        ])
+        self.assertIn("no price feed", rows["BCHUSDT"]["verdict"])
+        self.assertIn("warming up", rows["SOLUSDT"]["verdict"])
+        self.assertIn("quiet", rows["ETHUSDT"]["verdict"])
+        self.assertIn("WOULD FIRE", rows["XRPUSDT"]["verdict"])
+
+    async def test_it_reports_atr_against_the_floor(self):
+        """The number that decides most refusals, stated as a ratio."""
+        rows = await self._report([("xrpusdt", 120, 0.006, 0.0018, 1.0, False)])
+        r = rows["XRPUSDT"]
+        self.assertGreater(r["atr_vs_floor"], 1.0)
+        self.assertIn("cost_floor_pct", r)
+        self.assertIn("min_target_pct", r)
+
+    async def test_it_counts_flat_candles(self):
+        """A flat feed is the failure that silently collapses ATR."""
+        rows = await self._report([("ltcusdt", 120, 0.005, 0.0, 72.0, True)])
+        flat, total = rows["LTCUSDT"]["flat_candles"].split("/")
+        self.assertEqual(flat, total)
+
+    async def test_a_symbol_that_would_fire_reports_its_votes(self):
+        rows = await self._report([("xrpusdt", 120, 0.006, 0.0018, 1.0, False)])
+        self.assertIn("votes", rows["XRPUSDT"])
+        self.assertGreaterEqual(rows["XRPUSDT"]["agreeing"], 3)

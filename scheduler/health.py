@@ -369,6 +369,85 @@ def _signal_row(r) -> dict:
     }
 
 
+async def _api_debug_signals(runner, request: web.Request) -> web.Response:
+    """
+    Why each watchlist symbol did or did not produce a signal, right now.
+
+    Written because "only XRP is firing" cannot be answered from the outside:
+    every gate that refuses a setup logs at debug and then the setup vanishes.
+    This asks each gate the same question the engine does and reports the
+    first one that says no, per symbol.
+    """
+    from analysis import indicators as ind
+    from analysis.confluence import ConvictionGate, evaluate
+    from analysis.crypto_signals import GATE, SCALP
+    from analysis.scalp_levels import NoTrade, REASON_TEXT, scalp_levels
+
+    out = []
+    for st in sorted(await runner.crypto_store.get_all(), key=lambda x: x.symbol):
+        cfg = SCALP.for_symbol(st.symbol)
+        row = {
+            "symbol": st.symbol.upper(),
+            "price": st.current_price,
+            "candles": len(st.candles_1m),
+            "cost_floor_pct": round(cfg.cost_floor_pct * 100, 4),
+            "min_target_pct": round(cfg.min_target_pct * 100, 4),
+        }
+
+        if st.current_price <= 0:
+            row["verdict"] = "no price feed"
+            out.append(row)
+            continue
+
+        atr_pct = st.atr_14 / st.current_price if st.atr_14 > 0 else 0.0
+        row["atr_pct"] = round(atr_pct * 100, 4)
+        row["atr_vs_floor"] = round(atr_pct / cfg.cost_floor_pct, 2) if cfg.cost_floor_pct else None
+
+        if len(st.candles_1m) < 60:
+            row["verdict"] = f"warming up — {len(st.candles_1m)}/60 candles"
+            out.append(row)
+            continue
+
+        highs = [c.high for c in st.candles_1m]
+        lows = [c.low for c in st.candles_1m]
+        closes = [c.close for c in st.candles_1m]
+        flat = sum(1 for c in st.candles_1m if c.high == c.low)
+        row["flat_candles"] = f"{flat}/{len(st.candles_1m)}"
+        pctile = ind.volatility_percentile(highs, lows, closes)
+        row["vol_percentile"] = round(pctile, 2) if pctile is not None else None
+
+        # The same call the analyzers make, so the reason is the real one.
+        levels = scalp_levels(st.current_price, True, atr_pct, cfg, symbol=st.symbol)
+        if isinstance(levels, NoTrade):
+            row["verdict"] = REASON_TEXT.get(levels, levels.value)
+            row["gate"] = levels.value
+            out.append(row)
+            continue
+        row["would_target_pct"] = round(levels.target_pct * 100, 4)
+
+        v = evaluate(st.candles_1m, min_atr_pct=cfg.cost_floor_pct,
+                     min_agreeing=GATE.min_agreeing, max_dissent=GATE.max_dissent)
+        row["votes"] = {x.family.value: x.direction for x in v.votes}
+        row["agreeing"] = v.agreeing_families
+        row["dissenting"] = v.dissenting_families
+        if v.direction is None:
+            row["verdict"] = v.vetoes[0] if v.vetoes else "no majority"
+            row["gate"] = "confluence"
+        else:
+            row["verdict"] = f"WOULD FIRE {v.direction} at {v.confidence * 100:.0f}%"
+            row["gate"] = None
+        out.append(row)
+
+    fired = [r for r in out if r.get("gate") is None and "WOULD" in r.get("verdict", "")]
+    return web.json_response({
+        "checked": len(out),
+        "would_fire": len(fired),
+        "gate_profile": GATE.label,
+        "edge_multiple": SCALP.min_edge_multiple,
+        "symbols": out,
+    }, dumps=lambda o: json.dumps(o, indent=2, default=str))
+
+
 async def _api_signal_history(runner, request: web.Request) -> web.Response:
     """
     Signals in a window. `before` carves out the recent end, which is what
@@ -4110,6 +4189,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_post("/api/sentiment/ingest", lambda req: _api_sentiment_ingest(runner, req))
     app.router.add_get("/api/sentiment/recent", lambda req: _api_sentiment_recent(runner, req))
     app.router.add_get("/api/signals/history", lambda req: _api_signal_history(runner, req))
+    app.router.add_get("/api/debug/signals", lambda req: _api_debug_signals(runner, req))
     app.router.add_get("/api/signals/accuracy", lambda req: _api_signal_accuracy(runner, req))
     app.router.add_post("/api/crypto/watchlist/add", lambda req: _api_crypto_watchlist_add(runner, req))
     app.router.add_post("/api/crypto/watchlist/remove", lambda req: _api_crypto_watchlist_remove(runner, req))

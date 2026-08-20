@@ -360,3 +360,58 @@ class TestCostFrameIsPerMarket(unittest.TestCase):
         for move in (0.00050, 0.00080, 0.00170):
             with self.subTest(move=move):
                 self.assertLess(move, crypto.min_target_pct)
+
+
+class TestTickRoundingCannotRefuseAValidSetup(unittest.TestCase):
+    """
+    Rounding both levels away from entry can widen the stop more than the
+    target, leaving reward-to-risk a hair under the floor. The shortfall is
+    smaller than one tick — no price can express it — so refusing the setup
+    for being un-representable throws away real signals.
+
+    Found from a live XRP state: ATR 1.2486% at 1.1410 produced a ratio of
+    0.99937 and the whole setup was refused.
+    """
+
+    def test_the_real_case_now_resolves(self):
+        cfg = ScalpConfig().for_symbol("xrpusdt")
+        got = scalp_levels(1.1410044864597677, True, 0.012486, cfg, symbol="xrpusdt")
+        self.assertIsInstance(got, ScalpLevels)
+        self.assertGreaterEqual(got.reward_risk, cfg.min_reward_risk)
+
+    def test_no_spurious_refusals_across_the_range(self):
+        base = ScalpConfig()
+        refused = 0
+        for i in range(1, 400):
+            for sym, px in (("xrpusdt", 1.14), ("ethusdt", 1906.5),
+                            ("btcusdt", 62000.0), ("bchusdt", 203.3)):
+                got = scalp_levels(px, i % 2 == 0, i * 0.00005,
+                                   base.for_symbol(sym), symbol=sym)
+                refused += got is NoTrade.POOR_REWARD
+        self.assertEqual(refused, 0)
+
+    def test_the_stretch_is_bounded_to_a_few_ticks(self):
+        """
+        The stop is derived from the target, so the ratio is correct by
+        construction and only rounding can spoil it. The loop is capped so a
+        pathological tick cannot be stretched into looking acceptable — assert
+        the target never drifts far from where the volatility put it.
+        """
+        cfg = ScalpConfig().for_symbol("xrpusdt")
+        for i in range(1, 200):
+            atr = i * 0.0001
+            got = scalp_levels(1.14, True, atr, cfg, symbol="xrpusdt")
+            if isinstance(got, ScalpLevels):
+                wanted = max(atr, cfg.min_target_pct) * 1.14
+                with self.subTest(atr=atr):
+                    self.assertLessEqual(abs(got.target - 1.14) - wanted,
+                                         4 * got.tick)
+
+    def test_the_delivered_ratio_is_never_below_the_floor(self):
+        base = ScalpConfig()
+        for i in range(1, 200):
+            got = scalp_levels(1.14, True, i * 0.0001, base.for_symbol("xrpusdt"),
+                               symbol="xrpusdt")
+            if isinstance(got, ScalpLevels):
+                with self.subTest(i=i):
+                    self.assertGreaterEqual(got.reward_risk, base.min_reward_risk - 1e-9)
