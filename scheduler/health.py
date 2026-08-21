@@ -1285,6 +1285,9 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .cr-comm-price{font-size:18px;font-weight:800;color:#f1f5f9}
 /* Signal tabs + pagination + glossary */
 .cr-sig-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.cr-tab-n{display:inline-block;margin-left:5px;font-size:9px;opacity:.65;
+  font-variant-numeric:tabular-nums}
+.cr-sig-tab.quiet{opacity:.55}
 .cr-sig-tab{background:#1e293b;border:1px solid #334155;color:#94a3b8;font-size:11px;font-weight:700;padding:5px 12px;border-radius:9999px;cursor:pointer}
 .cr-sig-tab:hover{border-color:#0ea5e9}
 .cr-sig-tab.active{background:#0ea5e9;border-color:#0ea5e9;color:#0f172a}
@@ -2954,6 +2957,8 @@ const BREAK_EVEN_PCT = __BREAK_EVEN_PCT__;
 const MIN_TARGET_PCT = __MIN_TARGET_PCT__;
 const PAPER_LEVERAGE = __PAPER_LEVERAGE__;
 function renderCryptoCoins(coins){
+  _crWatchlistSymbols = (coins||[]).map(c=>String(c.symbol).toUpperCase());
+  renderCryptoSignalTabs();
   const el=document.getElementById('cr-coins');
   if(!coins.length){el.innerHTML='<div class="empty">Watchlist is empty — add a symbol above</div>';return;}
   el.innerHTML='<div class="cr-grid">'+coins.map(c=>{
@@ -2995,15 +3000,25 @@ function renderCryptoSignals(signals){
   renderCryptoSignalsPage();
 }
 
+// Every watched symbol gets a tab, whether or not it has fired lately. Tabs
+// built only from signals meant a quiet coin vanished from the filter — the
+// one case where you most want to check whether anything fired.
+let _crWatchlistSymbols = [];
+
 function renderCryptoSignalTabs(){
   const el=document.getElementById('cr-sig-tabs');
   if(!el) return;
-  const symbols=[...new Set(_crSignalsAll.map(s=>s.symbol))].sort();
+  const withSignals = new Set(_crSignalsAll.map(s=>s.symbol));
+  const symbols=[...new Set([..._crWatchlistSymbols, ...withSignals])].sort();
   if(!symbols.length){el.innerHTML='';return;}
-  const tabs=['ALL',...symbols];
-  el.innerHTML=tabs.map(t=>
-    `<button class="cr-sig-tab ${t===_crSignalFilter?'active':''}" onclick="setCryptoSignalFilter('${esc(t)}')">${t==='ALL'?'All':esc(t)}</button>`
-  ).join('');
+  const counts={};
+  _crSignalsAll.forEach(s=>{counts[s.symbol]=(counts[s.symbol]||0)+1;});
+  const tab=(t,label,n)=>
+    `<button class="cr-sig-tab ${t===_crSignalFilter?'active':''}${n===0?' quiet':''}"
+      onclick="setCryptoSignalFilter('${esc(t)}')">${esc(label)}${
+      n===undefined?'':`<span class="cr-tab-n">${n}</span>`}</button>`;
+  el.innerHTML = tab('ALL','All',_crSignalsAll.length)
+    + symbols.map(sym=>tab(sym,sym,counts[sym]||0)).join('');
 }
 
 function setCryptoSignalFilter(sym){
