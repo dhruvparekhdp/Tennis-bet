@@ -322,6 +322,87 @@ def supertrend(highs: list[float], lows: list[float], closes: list[float],
 
 # ── volume ────────────────────────────────────────────────────────────────
 
+def has_usable_volume(volumes: list[float], min_bars: int = 20) -> bool:
+    """
+    Is this a real per-bar volume series, or a placeholder?
+
+    Two feeds reach this code. The WebSocket path carries genuine per-minute
+    volume; the REST poller does not know it and writes zero. A third case is
+    worse than either: a feed that stamps the same rolling 24-hour total onto
+    every bar, which looks like data and is not — relative volume comes out at
+    1.0 forever, VWAP collapses to an unweighted average, and money flow ends
+    up driven purely by price with a constant weight attached.
+
+    So both are rejected: nothing traded, and nothing *changing*. A market
+    genuinely printing an identical volume every minute for twenty minutes
+    does not exist, and refusing to read that series costs one abstention
+    while accepting it costs a fabricated vote.
+    """
+    if len(volumes) < min_bars:
+        return False
+    # Negatives are checked across the whole series, not just the window: a
+    # negative volume anywhere means the feed is broken, and the next call
+    # with a different window would otherwise disagree with this one.
+    if any(v < 0 for v in volumes):
+        return False
+    window = volumes[-min_bars:]
+    total = sum(window)
+    if total <= 0:
+        return False
+    mean = total / len(window)
+    spread = max(window) - min(window)
+    return spread / mean > 0.01
+
+
+def relative_volume(volumes: list[float], period: int = 20) -> float | None:
+    """
+    The latest bar's volume against the average of the bars before it.
+
+    1.0 is an ordinary minute. Above ~1.5 the move has participation behind
+    it; below ~0.6 the tape has dried up and the price is drifting on very
+    few trades, which is where a short-horizon target is least trustworthy
+    and a modelled fill is least likely to be the fill you get.
+
+    Deliberately excludes the current bar from its own baseline — including
+    it damps exactly the spike the measure exists to detect.
+    """
+    if not has_usable_volume(volumes, min_bars=period + 1):
+        return None
+    prior = volumes[-period - 1:-1]
+    base = sum(prior) / len(prior)
+    if base <= 0:
+        return None
+    return volumes[-1] / base
+
+
+def volume_trend(closes: list[float], volumes: list[float],
+                 period: int = 20) -> float | None:
+    """
+    Does volume arrive on the up bars or the down bars?
+
+    Returns roughly -1..+1: the share of volume traded on rising bars minus
+    the share on falling ones. Positive means buyers are the ones showing up.
+
+    This is the question OBV answers as a running total, restated as a bounded
+    number over a fixed window so it can be compared across symbols — an OBV
+    of 4.2 million means nothing without knowing the coin.
+    """
+    if len(closes) != len(volumes):
+        return None
+    if not has_usable_volume(volumes, min_bars=period + 1):
+        return None
+    up = down = 0.0
+    for i in range(len(closes) - period, len(closes)):
+        if closes[i] > closes[i - 1]:
+            up += volumes[i]
+        elif closes[i] < closes[i - 1]:
+            down += volumes[i]
+    total = up + down
+    if total <= 0:
+        return None
+    return (up - down) / total
+
+
 def obv(closes: list[float], volumes: list[float]) -> float | None:
     """On-balance volume: does volume confirm the direction, or contradict it."""
     if len(closes) < 2 or len(volumes) != len(closes):

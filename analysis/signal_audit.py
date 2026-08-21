@@ -20,7 +20,7 @@ Two halves, deliberately in one place:
   catalogue test instead of quietly becoming a lie on a page.
 
 The point of pairing them is that a slice on the left has code on the right.
-If the 10-minute horizon underperforms, the horizon policy is one scroll away.
+If the short horizon underperforms, the horizon policy is one scroll away.
 
 Pure functions over plain rows. No I/O, no ORM import — the web layer passes
 whatever it read, and the tests pass fakes.
@@ -364,6 +364,9 @@ STAGES: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("analysis.indicators", "obv"),
             ("analysis.indicators", "mfi"),
             ("analysis.indicators", "vwap"),
+            ("analysis.indicators", "has_usable_volume"),
+            ("analysis.indicators", "relative_volume"),
+            ("analysis.indicators", "volume_trend"),
             ("analysis.indicators", "swing_pivots"),
             ("analysis.indicators", "divergence"),
             ("analysis.indicators", "trend_structure"),
@@ -394,6 +397,7 @@ STAGES: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("analysis.confluence", "structure_vote"),
             ("analysis.confluence", "pattern_vote"),
             ("analysis.confluence", "volatility_veto"),
+            ("analysis.confluence", "thin_volume_veto"),
             ("analysis.confluence", "evaluate"),
             ("analysis.confluence", "ConvictionGate"),
         ),

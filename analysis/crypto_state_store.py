@@ -206,6 +206,43 @@ class CryptoStateStore:
             if is_closed:
                 self._recalculate_indicators(state)
 
+    async def replace_candles(self, symbol: str, bars: list[dict]) -> None:
+        """
+        Install real OHLCV bars over the poll-aggregated ones.
+
+        Poll aggregation is a fallback, not a measurement: two polls a minute
+        cannot see the true high and low, and the poller does not know
+        per-bar volume at all. When the venue will hand over real candles they
+        replace the estimate outright rather than being merged into it —
+        merging would leave a history that is real in some places and invented
+        in others, with no way to tell which bar is which.
+
+        A short or empty payload is ignored, so a bad response cannot wipe a
+        history that was working.
+        """
+        if len(bars) < 20:
+            return
+        sym = symbol.lower()
+        async with self._lock:
+            state = self._states.get(sym)
+            if not state:
+                base = sym.replace("usdt", "").replace("busd", "").upper()
+                state = CryptoState(symbol=sym, base_asset=base)
+                self._states[sym] = state
+
+            state.candles_1m = [
+                OHLCVCandle(open=b["open"], high=b["high"], low=b["low"],
+                            close=b["close"], volume=b["volume"],
+                            timestamp=b["timestamp"], is_closed=True)
+                for b in bars[-CANDLE_WINDOW:]
+            ]
+            # The last bar is still forming; marking it closed would let the
+            # next poll append beside it instead of updating it.
+            state.candles_1m[-1].is_closed = False
+            if state.current_price <= 0:
+                state.current_price = state.candles_1m[-1].close
+            recalculate_indicators(state)
+
     async def update_24h_stats(
         self,
         symbol: str,
@@ -267,17 +304,25 @@ class CryptoStateStore:
             bucket = timestamp.replace(second=0, microsecond=0)
             last = state.candles_1m[-1] if state.candles_1m else None
 
+            # Per-bar volume is left at zero, NOT set to the rolling 24-hour
+            # figure. Stamping a 24h total onto a one-minute bar made every
+            # bar carry a near-identical number, so relative volume was always
+            # ~1.0, VWAP degenerated to a plain average and money-flow was
+            # driven purely by price with a constant weight. The volume family
+            # was voting on a constant and calling it evidence. The 24h total
+            # is already on the state, where it means something; zero here is
+            # honest about the poller not knowing per-minute volume, and the
+            # volume checks abstain rather than invent a reading.
             if last is not None and last.timestamp == bucket:
                 last.high = max(last.high, price)
                 last.low = min(last.low, price)
                 last.close = price
-                last.volume = volume_24h
             else:
                 if last is not None:
                     last.is_closed = True
                 append_candle(state, OHLCVCandle(
                     open=price, high=price, low=price, close=price,
-                    volume=volume_24h, timestamp=bucket, is_closed=False,
+                    volume=0.0, timestamp=bucket, is_closed=False,
                 ))
             recalculate_indicators(state)
 

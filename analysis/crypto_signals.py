@@ -96,8 +96,12 @@ def _emit(
     # Edge is what survives the round trip, not the raw move. Sizing off the
     # gross move is how a losing trade looks attractive.
     edge_pct = round(levels.edge_after_costs_pct * 100.0, 3)
+    # Participation is recorded on every signal, not just the volume ones, so
+    # the audit page can ask whether the wrong calls share a thin tape.
+    rel = ind.relative_volume([c.volume for c in state.candles_1m])
+    vol_part = f"Vol {rel:.1f}x" if rel is not None else "Vol n/a"
     summary = (f"RSI {state.rsi_14:.1f} | ATR {state.atr_14 / price * 100:.2f}% | "
-               f"24h {state.price_change_24h_pct:+.1f}%")
+               f"{vol_part} | 24h {state.price_change_24h_pct:+.1f}%")
     if extra_indicators:
         summary = f"{extra_indicators} | {summary}"
 
@@ -157,14 +161,20 @@ class VolumeSpikeAnalyzer:
         if len(state.candles_1m) < 15 or state.current_price <= 0:
             return None
 
-        # Check recent 5-candle volume vs baseline
-        recent_vols = [c.volume for c in state.candles_1m[-5:]]
-        avg_recent_vol = sum(recent_vols) / len(recent_vols) if recent_vols else 0.0
-
-        per_bar_baseline = state.volume_24h_avg / 288.0 if state.volume_24h_avg > 0 else 0.0
-        spiking = (per_bar_baseline > 0
-                   and avg_recent_vol / per_bar_baseline >= self.MIN_VOLUME_RATIO)
-        if not spiking and state.volume_ratio < self.MIN_VOLUME_RATIO:
+        # Prefer the per-bar measure and say which one fired. The old version
+        # tested a per-bar spike and then printed `state.volume_ratio`, a
+        # 24-hour figure, in the alert — two different numbers presented as
+        # one, so a message could claim 3.4x while the thing that triggered
+        # was something else entirely.
+        volumes = [c.volume for c in state.candles_1m]
+        rel = ind.relative_volume(volumes)
+        if rel is not None:
+            ratio, basis = rel, "its recent average"
+        elif state.volume_ratio > 0:
+            ratio, basis = state.volume_ratio, "its 24h average"
+        else:
+            return None
+        if ratio < self.MIN_VOLUME_RATIO:
             return None
 
         # Direction from the candle body: a volume surge confirms whichever way
@@ -176,13 +186,13 @@ class VolumeSpikeAnalyzer:
             state,
             direction="long" if is_bullish else "short",
             signal_type="volume_spike",
-            trigger_desc=(f"Trading volume just spiked to {state.volume_ratio:.1f}x normal "
+            trigger_desc=(f"Trading volume just spiked to {ratio:.1f}x {basis} "
                           "— a surge like this often kicks off a bigger move."),
             confidence=0.68,
             timeframe="30m",
             atr_target_multiple=1.5,
             reward_risk=1.0,
-            extra_indicators=f"Vol {state.volume_ratio:.1f}x avg",
+            extra_indicators=f"Vol {ratio:.1f}x",
         )
 
 
@@ -279,7 +289,14 @@ class ConfluenceAnalyzer:
             return None
 
         cfg = SCALP.for_symbol(state.symbol)
+        # The longest horizon on offer, spelled out rather than left to a
+        # default. This veto is a coarse "is a trade possible at all" filter;
+        # the per-horizon test that actually decides the levels happens in
+        # _emit, which tries the short window first. Vetoing at the short
+        # window here would refuse setups that are perfectly good at the long
+        # one before they were ever offered it.
         verdict = evaluate(state.candles_1m, min_atr_pct=cfg.cost_floor_pct,
+                           horizon_minutes=HORIZONS_MINUTES[-1],
                            min_agreeing=GATE.min_agreeing,
                            max_dissent=GATE.max_dissent)
         if verdict.direction is None:

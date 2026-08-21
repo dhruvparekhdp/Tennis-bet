@@ -17,12 +17,16 @@ Six families, each seeing something the others cannot:
     TREND       direction and strength of the prevailing move
     MOMENTUM    speed, and whether it is fading
     VOLATILITY  whether there is enough movement to be worth trading
-    VOLUME      whether the money agrees with the price
+    VOLUME      whether the money agrees with the price, and whether there is
+                enough of it to carry the move
     STRUCTURE   what the swing highs and lows are actually doing
     PATTERN     what the most recent bars did
 
 VOLATILITY is a gate rather than a vote: it can veto, never elect. A quiet
 market is not a reason to go long or short — it is a reason not to trade.
+Volume works both ways: which side is buying is a vote, but a tape that has
+dried up is a gate, for the same reason — thin trading says nothing about
+direction and a great deal about whether a target will be reached.
 """
 from __future__ import annotations
 
@@ -208,7 +212,32 @@ def momentum_vote(highs, lows, closes) -> Vote:
                 "; ".join(reasons))
 
 
+# How thin the tape may get before a short hold is not worth attempting.
+# Below this the price is drifting on very few trades: the move is easy to
+# reverse, the modelled fill is optimistic, and the target is least likely to
+# be reached inside the window.
+MIN_RELATIVE_VOLUME = 0.60
+
+# Above this the bar carries real participation, and the move behind it is
+# more likely to continue than to be one order pushing a thin book.
+STRONG_RELATIVE_VOLUME = 1.50
+
+
 def volume_vote(highs, lows, closes, volumes) -> Vote:
+    """
+    Whether the money agrees with the price.
+
+    Abstains outright when the feed has no usable per-bar volume. It used to
+    vote anyway: on the REST path every bar carried the same rolling 24-hour
+    total, so VWAP degenerated into an unweighted average of typical price and
+    money flow became a price oscillator wearing a volume label. That produced
+    a confident-looking fifth vote out of no volume information at all, and a
+    family that always votes is indistinguishable from a family that knows
+    something.
+    """
+    if not ind.has_usable_volume(volumes):
+        return Vote(Family.VOLUME, 0, 0.0, "no per-bar volume from this feed")
+
     m = ind.mfi(highs, lows, closes, volumes)
     vw = ind.vwap(highs, lows, closes, volumes)
     if m is None or vw is None or not closes:
@@ -230,12 +259,57 @@ def volume_vote(highs, lows, closes, volumes) -> Vote:
         score -= 0.5
         reasons.append("trading below VWAP")
 
+    # Which side the volume is actually arriving on. VWAP says where the money
+    # traded; this says who is doing the trading now, which is the part that
+    # decides whether a move continues.
+    vt = ind.volume_trend(closes, volumes)
+    if vt is not None and abs(vt) > 0.25:
+        score += 0.5 if vt > 0 else -0.5
+        reasons.append(f"{'buyers' if vt > 0 else 'sellers'} own "
+                       f"{abs(vt) * 100:.0f}% of the volume")
+
+    # Participation does not pick a side, so it scales the family's weight
+    # rather than adding to the score. A correct read on a dead tape is still
+    # a weak reason to pay a round trip.
+    rel = ind.relative_volume(volumes)
+    if rel is not None:
+        if rel >= STRONG_RELATIVE_VOLUME:
+            reasons.append(f"volume {rel:.1f}x its recent average")
+        elif rel < MIN_RELATIVE_VOLUME:
+            reasons.append(f"thin tape, volume {rel:.1f}x its recent average")
+
     # Threshold sits below the 0.5 that VWAP position alone contributes.
     # At `> 0.5` the family abstained in 39 of 40 runs, because money-flow
     # rarely reaches its extremes — the family was present but silent, which
     # is worse than absent since it looked like coverage.
     direction = 1 if score >= 0.5 else (-1 if score <= -0.5 else 0)
-    return Vote(Family.VOLUME, direction, min(1.0, abs(score) / 1.5), "; ".join(reasons))
+    weight = min(1.0, abs(score) / 2.0)
+    if rel is not None:
+        # 0.5x participation halves the family's say; 1.5x restores it in full.
+        weight *= max(0.4, min(1.0, rel))
+    return Vote(Family.VOLUME, direction, weight, "; ".join(reasons))
+
+
+def thin_volume_veto(volumes, min_relative: float = MIN_RELATIVE_VOLUME) -> str | None:
+    """
+    Stand aside when the tape has dried up. Never elects a direction.
+
+    A short-horizon target assumes the market keeps trading at something like
+    its recent rate. When it does not, three things go wrong at once: the move
+    is unlikely to arrive inside the window, the fill is worse than modelled,
+    and the same few orders that drifted the price up can drift it back.
+
+    Silent when the feed carries no usable per-bar volume. A missing
+    measurement is not evidence of a thin market, and vetoing on absent data
+    would have silenced every REST-fed symbol.
+    """
+    rel = ind.relative_volume(volumes)
+    if rel is None:
+        return None
+    if rel < min_relative:
+        return (f"volume is {rel:.2f}x its recent average — too few trades to "
+                f"carry a move inside the window")
+    return None
 
 
 def structure_vote(highs, lows) -> Vote:
@@ -322,9 +396,11 @@ def evaluate(candles: list[OHLCVCandle], min_atr_pct: float = 0.00168,
         pattern_vote(candles, atr_value),
     ]
 
-    veto = volatility_veto(highs, lows, closes, min_atr_pct, horizon_minutes)
-    if veto:
-        return Verdict(None, 0.0, votes=votes, vetoes=[veto])
+    vetoes = [v for v in (volatility_veto(highs, lows, closes, min_atr_pct,
+                                          horizon_minutes),
+                          thin_volume_veto(volumes)) if v]
+    if vetoes:
+        return Verdict(None, 0.0, votes=votes, vetoes=vetoes)
 
     long_score = sum(FAMILY_WEIGHT[v.family] * v.weight for v in votes if v.direction > 0)
     short_score = sum(FAMILY_WEIGHT[v.family] * v.weight for v in votes if v.direction < 0)

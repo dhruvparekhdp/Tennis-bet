@@ -35,7 +35,7 @@ def format_crypto_signal(sig: CryptoSignal) -> str:
     return (
         f"🪙 <b>{symbol_display}</b> · {dir_emoji}\n"
         # The timeframe is now the window the move is expected to need, and
-        # it is spelled out rather than left as a bare "10m" — the point of
+        # it is spelled out rather than left as a bare "15m" — the point of
         # running two horizons is being able to compare them by eye.
         f"<b>{name}</b> · expects the move within <b>{sig.timeframe}</b>\n\n"
         f"{sig.trigger_description}\n\n"

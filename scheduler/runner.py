@@ -430,6 +430,23 @@ class AppRunner:
         except Exception:
             log.exception("coindcx_job_failed")
 
+    async def _coindcx_candles_job(self) -> None:
+        """
+        Pull real OHLCV bars over the poll-aggregated estimate.
+
+        Runs less often than the price poll: candles are a correction to the
+        history, not the live price, and refetching 120 bars every 30 seconds
+        to change the last one is wasted. Five minutes keeps the true high,
+        low and volume close to current while the ticker keeps the price
+        itself fresh in between.
+        """
+        if not self.collector_enabled.get("coindcx", True):
+            return
+        try:
+            await self.coindcx.fetch_candles()
+        except Exception:
+            log.exception("coindcx_candles_job_failed")
+
     async def _coingecko_job(self) -> None:
         if not self.collector_enabled.get("coingecko", True):
             return
@@ -957,6 +974,14 @@ class AppRunner:
             "interval",
             seconds=settings.coindcx_poll_interval_seconds,
             id="coindcx_poll",
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        self.scheduler.add_job(
+            self._coindcx_candles_job,
+            "interval",
+            seconds=300,
+            id="coindcx_candles",
             max_instances=1,
             next_run_time=datetime.now(timezone.utc),
         )

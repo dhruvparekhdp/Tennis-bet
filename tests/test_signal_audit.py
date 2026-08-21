@@ -71,9 +71,9 @@ class TestAggregation(unittest.TestCase):
     def rows(self):
         base = datetime(2026, 8, 20, 12, 0)
         return [
-            Row(id=1, symbol="bchusdt", timeframe="10m", outcome="won", pnl_pct=0.6,
+            Row(id=1, symbol="bchusdt", timeframe="15m", outcome="won", pnl_pct=0.6,
                 current_price=100.0, target_price=100.6, stop_loss=99.4, timestamp=base),
-            Row(id=2, symbol="bchusdt", timeframe="10m", outcome="lost", pnl_pct=-0.6,
+            Row(id=2, symbol="bchusdt", timeframe="15m", outcome="lost", pnl_pct=-0.6,
                 current_price=100.0, target_price=100.6, stop_loss=99.4,
                 timestamp=base + timedelta(hours=1)),
             Row(id=3, symbol="ethusdt", timeframe="30m", outcome="pending", pnl_pct=0.0,
@@ -115,7 +115,7 @@ class TestAggregation(unittest.TestCase):
 
     def test_records_carry_the_horizon_label(self):
         rep = audit(self.rows())
-        self.assertEqual({r["horizon"] for r in rep["records"]}, {"10m", "30m"})
+        self.assertEqual({r["horizon"] for r in rep["records"]}, {"15m", "30m"})
 
     def test_an_empty_window_produces_a_report_rather_than_an_error(self):
         rep = audit([])

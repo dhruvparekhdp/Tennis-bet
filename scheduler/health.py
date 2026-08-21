@@ -545,6 +545,63 @@ async def _api_signal_accuracy(runner, request: web.Request) -> web.Response:
     })
 
 
+async def _api_debug_volume(runner, request: web.Request) -> web.Response:
+    """
+    Whether each watchlist symbol has usable per-bar volume, and what the
+    venue actually returns for candles.
+
+    Written because "the volume family abstained" is invisible from outside:
+    the family votes zero, the setup falls one short of the gate, and the
+    signal simply never appears. This says so out loud, and prints the raw
+    first candle so a changed response shape can be recognised rather than
+    guessed at.
+    """
+    from analysis import indicators as ind
+    from analysis.confluence import thin_volume_veto, volume_vote
+
+    out = []
+    states = await runner.crypto_store.get_all() if runner else []
+    for st in states:
+        volumes = [c.volume for c in st.candles_1m]
+        highs = [c.high for c in st.candles_1m]
+        lows = [c.low for c in st.candles_1m]
+        closes = [c.close for c in st.candles_1m]
+        usable = ind.has_usable_volume(volumes)
+        vote = volume_vote(highs, lows, closes, volumes) if closes else None
+        out.append({
+            "symbol": st.symbol,
+            "bars": len(volumes),
+            "per_bar_volume_usable": usable,
+            "relative_volume": ind.relative_volume(volumes),
+            "volume_trend": ind.volume_trend(closes, volumes) if closes else None,
+            "volume_24h": st.volume_24h,
+            "vote_direction": vote.direction if vote else None,
+            "vote_weight": round(vote.weight, 3) if vote else None,
+            "vote_reason": vote.reason if vote else "",
+            "thin_tape_veto": thin_volume_veto(volumes),
+        })
+
+    probe = None
+    symbol = request.query.get("symbol")
+    if symbol and runner is not None:
+        got = await runner.coindcx.fetch_candles_raw(symbol, limit=3)
+        if got:
+            pair, payload = got
+            probe = {"pair": pair, "rows": payload[:3] if isinstance(payload, list) else payload}
+        else:
+            probe = {"error": "no candle pair answered",
+                     "tried": list(runner.coindcx._pair_variants(symbol))}
+
+    return web.json_response({
+        "note": ("A symbol with per_bar_volume_usable=false has no volume "
+                 "information at all — the volume family abstains, so only "
+                 "four families can vote and signals are correspondingly "
+                 "rarer. Pass ?symbol=btcusdt to probe the candle endpoint."),
+        "symbols": out,
+        "candle_probe": probe,
+    })
+
+
 async def _api_audit(runner, request: web.Request) -> web.Response:
     """
     Every fired signal in a window, scored, plus the slices that explain it.
@@ -4732,6 +4789,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/audit", lambda req: _audit_page(req))
     app.router.add_get("/api/audit", lambda req: _api_audit(runner, req))
     app.router.add_get("/api/audit/methods", lambda req: _api_audit_methods(runner, req))
+    app.router.add_get("/api/debug/volume", lambda req: _api_debug_volume(runner, req))
     app.router.add_post("/api/crypto/watchlist/add", lambda req: _api_crypto_watchlist_add(runner, req))
     app.router.add_post("/api/crypto/watchlist/remove", lambda req: _api_crypto_watchlist_remove(runner, req))
     app.router.add_get("/api/commodities", lambda req: _api_commodities(runner, req))

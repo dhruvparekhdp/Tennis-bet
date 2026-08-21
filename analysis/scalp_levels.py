@@ -236,10 +236,30 @@ def max_leverage_for_roe_target(roe_target: float, min_move: float) -> float:
     return roe_target / min_move
 
 
-# Horizons offered to a setup, shortest first. A move reachable in ten
-# minutes is a stronger setup than one needing thirty, so the label records
-# which window the signal qualified under and both can be compared live.
-HORIZONS_MINUTES: tuple[int, ...] = (10, 30)
+# Horizons offered to a setup, shortest first. A move reachable in the short
+# window is a stronger setup than one needing the long one, so the label
+# records which window the signal qualified under and both can be compared
+# live.
+#
+# The short window was ten minutes and is now fifteen, because ten produced
+# a lot of wrong calls. The fault was not the setups but the deadline. Nothing
+# about the entry changes between the two: the target is set by whichever is
+# larger, the projected move or the cost floor, and for every symbol except
+# the most volatile the cost floor binds — so at ten minutes and at fifteen
+# the SAME target was being asked for, with half again less time to reach it.
+# A signal that was right about direction still resolved as a loss, because
+# the stop or the clock arrived before the move did.
+#
+# Where the projection does bind, fifteen bars also asks for more: sqrt(15) is
+# 3.87 against sqrt(10)'s 3.16, so BCH's target grows from 0.605% to 0.738%
+# and its edge over the round trip from 3.6x to 4.4x.
+#
+# Note the direction of the volatility gate, which is easy to get backwards:
+# a longer window projects further, so it admits QUIETER markets, not fewer.
+# Ten minutes needed a 0.053% one-minute ATR to clear the floor, fifteen needs
+# 0.043%, thirty needs 0.031%. Fifteen is not a stricter filter — it is the
+# same filter with a realistic deadline attached.
+HORIZONS_MINUTES: tuple[int, ...] = (15, 30)
 
 
 @dataclass(frozen=True)

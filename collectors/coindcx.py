@@ -20,6 +20,12 @@ _FUTURES_PRICE_URLS = (
     f"{_PUBLIC_BASE}/market_data/v3/current_prices/futures",
 )
 
+# Real OHLCV bars, which the ticker cannot give. The ticker reports a rolling
+# 24-hour volume; a 24-hour total is not a per-minute volume, and using one as
+# the other left every volume check reading a constant. This endpoint is the
+# only source here that carries volume actually traded inside a bar.
+_CANDLES_URL = f"{_PUBLIC_BASE}/market_data/candles"
+
 
 def _futures_name_variants(base: str) -> tuple[str, ...]:
     """
@@ -67,6 +73,50 @@ def _extract_price(node) -> float | None:
             if f > 0:
                 return f
     return None
+
+
+def _parse_candles(payload) -> list[dict]:
+    """
+    Normalise a candle payload into plain dicts, newest last.
+
+    Written tolerantly on purpose: this venue has published candles as both
+    objects and positional arrays, with the timestamp as `time` or `t` and in
+    seconds or milliseconds. A parser that insists on one shape turns a
+    working feed into a silent outage, so anything unrecognised is skipped
+    and the caller falls back to the poll-aggregated bars.
+    """
+    if not isinstance(payload, list):
+        return []
+    out: list[dict] = []
+    for row in payload:
+        try:
+            if isinstance(row, dict):
+                t = row.get("time", row.get("t", row.get("timestamp")))
+                o = row.get("open", row.get("o"))
+                h = row.get("high", row.get("h"))
+                low = row.get("low", row.get("l"))
+                c = row.get("close", row.get("c"))
+                v = row.get("volume", row.get("v", 0.0))
+            elif isinstance(row, (list, tuple)) and len(row) >= 6:
+                t, o, h, low, c, v = row[:6]
+            else:
+                continue
+            if t is None or o is None or c is None:
+                continue
+            ts = float(t)
+            # Seconds or milliseconds — anything past the year 2286 in seconds
+            # is milliseconds. Guessing wrong puts every bar in 1970.
+            if ts > 1e11:
+                ts /= 1000.0
+            out.append({
+                "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc),
+                "open": float(o), "high": float(h), "low": float(low),
+                "close": float(c), "volume": max(0.0, float(v or 0.0)),
+            })
+        except (TypeError, ValueError, OSError, OverflowError):
+            continue
+    out.sort(key=lambda r: r["timestamp"])
+    return out
 
 
 def _base_symbol(pair: str) -> str:
@@ -166,6 +216,71 @@ class CoinDCXCollector:
         except Exception as exc:
             self._consecutive_failures += 1
             log.warning("coindcx_fetch_failed", error=str(exc))
+
+    def _pair_variants(self, symbol: str) -> tuple[str, ...]:
+        """
+        Candle pairs are named differently from ticker markets: `B-BTC_USDT`
+        for the Binance-sourced book, `I-BTC_INR` for the Indian one. Order
+        matters — USDT pairs quote in the same unit as the levels.
+        """
+        base = _base_symbol(symbol).upper()
+        return (f"B-{base}_USDT", f"B-{base}_USDT_FUT", f"I-{base}_INR")
+
+    async def fetch_candles_raw(self, symbol: str, interval: str = "1m",
+                                limit: int = 120) -> tuple[str, object] | None:
+        """
+        Return (pair, payload) from the first candle pair name that answers.
+
+        Best effort and never fatal — the collector is a price poller first,
+        and a venue that changes its candle route must not take prices down
+        with it.
+        """
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for pair in self._pair_variants(symbol):
+                try:
+                    r = await client.get(_CANDLES_URL, params={
+                        "pair": pair, "interval": interval, "limit": limit})
+                except Exception as exc:
+                    log.debug("coindcx_candles_unreachable", pair=pair, error=str(exc))
+                    continue
+                if r.status_code != 200:
+                    continue
+                try:
+                    payload = r.json()
+                except Exception:
+                    continue
+                if isinstance(payload, list) and payload:
+                    return pair, payload
+        return None
+
+    async def fetch_candles(self, interval: str = "1m", limit: int = 120) -> int:
+        """
+        Replace the poll-aggregated history with real bars, where they exist.
+
+        Two things improve at once. Volume becomes a genuine per-bar figure,
+        so the volume family has something to read instead of abstaining. And
+        the high and low become the real ones: aggregating two polls a minute
+        understates the true range, which is a floor on volatility rather than
+        a measurement of it.
+
+        Returns the number of symbols refreshed, so a caller can tell "the
+        venue answered with nothing" from "the venue was never asked".
+        """
+        symbols = await self.store.get_symbols()
+        refreshed = 0
+        for sym in symbols:
+            got = await self.fetch_candles_raw(sym, interval, limit)
+            if not got:
+                continue
+            pair, payload = got
+            bars = _parse_candles(payload)
+            if not bars:
+                log.debug("coindcx_candles_unparsed", symbol=sym, pair=pair)
+                continue
+            await self.store.replace_candles(sym, bars)
+            refreshed += 1
+        log.info("coindcx_candles_done", refreshed=refreshed, requested=len(symbols))
+        return refreshed
 
     async def fetch_futures_raw(self) -> tuple[str, object] | None:
         """
