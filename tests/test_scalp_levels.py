@@ -86,7 +86,10 @@ class TestScalpLevels(unittest.TestCase):
 
     def test_a_quiet_market_produces_no_trade_rather_than_a_small_one(self):
         """The inversion that matters: cost sets the floor, not volatility."""
-        for atr in (0.0001, 0.0005, 0.001, 0.0015):
+        # A 1-minute ATR, since the gate now scales it out to the hold
+        # horizon before comparing it with cost. Every value here still
+        # projects to less than the round trip over thirty minutes.
+        for atr in (0.00001, 0.00005, 0.0001, 0.00015):
             with self.subTest(atr=atr):
                 self.assertIs(scalp_levels(1906.5, True, atr, self.cfg), NoTrade.TOO_QUIET)
 
@@ -326,8 +329,11 @@ class TestCostFrameIsPerMarket(unittest.TestCase):
     def test_a_gold_move_refused_as_crypto_is_accepted_as_gold(self):
         """The concrete consequence: same move, different verdict."""
         base = ScalpConfig()
-        # Between the two floors: gold needs 0.0736%, crypto needs 0.168%.
-        atr = 0.0012
+        # ATR is compared over the holding window now. These call scalp_levels
+        # directly at its 30-minute default (x5.477), so the value that lands
+        # between the two floors is 0.02%: reachable 0.110%, over gold's
+        # 0.0736% and under crypto's 0.168%.
+        atr = 0.0002
         as_crypto = scalp_levels(4365.91, True, atr, base.for_symbol("ethusdt"),
                                  symbol="ethusdt")
         as_gold = scalp_levels(4365.91, True, atr, base.for_symbol("xauusdt"),
@@ -338,11 +344,13 @@ class TestCostFrameIsPerMarket(unittest.TestCase):
     def test_a_quiet_market_stretches_the_target_to_the_floor(self):
         """Above the floor but below the minimum, the target is raised — not shrunk."""
         base = ScalpConfig()
-        got = scalp_levels(4365.91, True, 0.0020, base.for_symbol("ethusdt"),
+        # 0.05% x 5.477 = 0.274% reachable: over the 0.168% floor, under the
+        # 0.504% minimum target, so the target is stretched up to it.
+        got = scalp_levels(4365.91, True, 0.0005, base.for_symbol("ethusdt"),
                            symbol="ethusdt")
         self.assertAlmostEqual(got.target_pct, base.for_symbol("ethusdt").min_target_pct,
                                delta=0.00002)
-        self.assertGreater(got.target_pct, 0.0020)
+        self.assertGreater(got.target_pct, 0.0005)
 
     def test_your_three_winning_trades_all_clear_the_floor(self):
         """
@@ -402,7 +410,8 @@ class TestTickRoundingCannotRefuseAValidSetup(unittest.TestCase):
             atr = i * 0.0001
             got = scalp_levels(1.14, True, atr, cfg, symbol="xrpusdt")
             if isinstance(got, ScalpLevels):
-                wanted = max(atr, cfg.min_target_pct) * 1.14
+                reachable = cfg.reachable_move_pct(atr, 30.0)
+                wanted = max(reachable, cfg.min_target_pct) * 1.14
                 with self.subTest(atr=atr):
                     self.assertLessEqual(abs(got.target - 1.14) - wanted,
                                          4 * got.tick)

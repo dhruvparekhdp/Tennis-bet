@@ -23,15 +23,25 @@ def format_crypto_signal(sig: CryptoSignal) -> str:
     conf_pct = int(sig.confidence * 100)
     target_str = f"${sig.target_price:,.4f}" if sig.target_price else "n/a"
     stop_str = f"${sig.stop_loss:,.4f}" if sig.stop_loss else "n/a"
+    move_pct = (abs(sig.target_price - sig.current_price) / sig.current_price * 100
+                if sig.target_price and sig.current_price else 0.0)
+    # 0.05% base + 18% GST, both sides. Commodities are cheaper, so this reads
+    # slightly conservative for gold rather than optimistic.
+    round_trip = 2 * 0.0005 * 1.18 * 100
+    x_cost = move_pct / round_trip if round_trip else 0.0
     stake_amt = round(sig.stake_pct * settings.bank_size, 2)
     stake_pct_display = round(sig.stake_pct * 100, 2)
 
     return (
         f"🪙 <b>{symbol_display}</b> · {dir_emoji}\n"
-        f"<b>{name}</b> ({sig.timeframe})\n\n"
+        # The timeframe is now the window the move is expected to need, and
+        # it is spelled out rather than left as a bare "10m" — the point of
+        # running two horizons is being able to compare them by eye.
+        f"<b>{name}</b> · expects the move within <b>{sig.timeframe}</b>\n\n"
         f"{sig.trigger_description}\n\n"
         f"Entry <b>${sig.current_price:,.4f}</b> → "
         f"Target <b>{target_str}</b> → Stop <b>{stop_str}</b>\n"
+        f"Move <b>{move_pct:.3f}%</b> · <b>{x_cost:.1f}×</b> what the round trip costs\n"
         f"Confidence <b>{conf_pct}%</b> · Suggested stake <b>₹{stake_amt:,.0f}</b> "
         f"({stake_pct_display}% of bank)"
     )

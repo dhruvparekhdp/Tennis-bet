@@ -170,6 +170,27 @@ class ScalpConfig:
         """The smallest target worth executing."""
         return self.cost_floor_pct * self.min_edge_multiple
 
+    def reachable_move_pct(self, atr_pct: float, horizon_minutes: float,
+                           bar_minutes: float = 1.0) -> float:
+        """
+        How far this instrument is expected to travel over `horizon_minutes`.
+
+        The gate used to hold a ONE-MINUTE ATR against a per-trade cost, which
+        are different units, and the mismatch quietly reduced the watchlist to
+        a single coin. Measured on the live board: BCH at +21% a day has a
+        1-minute ATR near 0.19% and cleared the floor, while BTC at +7.6% sits
+        near 0.07% and ETH near 0.035%. Neither can move 0.5% in a minute —
+        but nobody was asking them to, since positions are held for hours.
+
+        Volatility grows with the square root of time under a random walk, so
+        a window of N bars expects sqrt(N) times the per-bar range. Real series
+        trend slightly, so the realised move over a window tends to be larger
+        than this, never smaller — the estimate errs toward refusing trades.
+        """
+        if atr_pct <= 0 or horizon_minutes <= 0 or bar_minutes <= 0:
+            return 0.0
+        return atr_pct * math.sqrt(max(1.0, horizon_minutes / bar_minutes))
+
     def roe_target_is_viable(self, roe_target: float, leverage: float) -> bool:
         """Does a fixed ROE target still ask for a big enough price move?"""
         return roe_to_price_move(roe_target, leverage) >= self.min_target_pct
@@ -215,6 +236,12 @@ def max_leverage_for_roe_target(roe_target: float, min_move: float) -> float:
     return roe_target / min_move
 
 
+# Horizons offered to a setup, shortest first. A move reachable in ten
+# minutes is a stronger setup than one needing thirty, so the label records
+# which window the signal qualified under and both can be compared live.
+HORIZONS_MINUTES: tuple[int, ...] = (10, 30)
+
+
 @dataclass(frozen=True)
 class ScalpLevels:
     entry: float
@@ -224,6 +251,7 @@ class ScalpLevels:
     target_pct: float
     stop_pct: float
     cost_pct: float
+    horizon_minutes: float = 30.0
 
     @property
     def reward_risk(self) -> float:
@@ -244,6 +272,8 @@ def scalp_levels(
     atr_target_multiple: float = 1.0,
     minutes_to_funding: float | None = None,
     symbol: str = "",
+    horizon_minutes: float = 30.0,
+    bar_minutes: float = 1.0,
 ) -> ScalpLevels | NoTrade:
     """
     Build target and stop for a short hold, or explain why there is no trade.
@@ -257,10 +287,13 @@ def scalp_levels(
         return NoTrade.TOO_QUIET
     if minutes_to_funding is not None and minutes_to_funding < cfg.funding_blackout_minutes:
         return NoTrade.FUNDING_WINDOW
-    if atr_pct < cfg.cost_floor_pct * cfg.atr_floor_multiple:
+    # Like for like: what the instrument can travel in the time we hold it,
+    # against what a round trip costs.
+    reachable = cfg.reachable_move_pct(atr_pct, horizon_minutes, bar_minutes)
+    if reachable < cfg.cost_floor_pct * cfg.atr_floor_multiple:
         return NoTrade.TOO_QUIET
 
-    target_pct = max(atr_pct * atr_target_multiple, cfg.min_target_pct)
+    target_pct = max(reachable * atr_target_multiple, cfg.min_target_pct)
     stop_pct = target_pct / reward_risk if reward_risk > 0 else target_pct
 
     tick = tick_for_price(entry, symbol)
@@ -299,5 +332,5 @@ def scalp_levels(
     return ScalpLevels(
         entry=entry, target=target, stop=stop, tick=tick,
         target_pct=actual_target_pct, stop_pct=actual_stop_pct,
-        cost_pct=cfg.cost_floor_pct,
+        cost_pct=cfg.cost_floor_pct, horizon_minutes=horizon_minutes,
     )

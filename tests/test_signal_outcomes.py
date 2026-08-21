@@ -197,12 +197,12 @@ class TestGateDiagnostic(unittest.IsolatedAsyncioTestCase):
         rows = await self._report([
             ("bchusdt", 0, 0, 0, 0, False),               # never priced
             ("solusdt", 30, 0.005, 0.0, 184.0, False),    # not enough history
-            ("ethusdt", 120, 0.0004, 0.0, 1900.0, False), # too quiet
+            ("ethusdt", 120, 0.00004, 0.0, 1900.0, False),  # too quiet even over the window
             ("xrpusdt", 120, 0.006, 0.0018, 1.0, False),  # volatile and trending
         ])
         self.assertIn("no price feed", rows["BCHUSDT"]["verdict"])
         self.assertIn("warming up", rows["SOLUSDT"]["verdict"])
-        self.assertIn("quiet", rows["ETHUSDT"]["verdict"])
+        self.assertIn("too quiet", rows["ETHUSDT"]["verdict"])
         self.assertIn("WOULD FIRE", rows["XRPUSDT"]["verdict"])
 
     async def test_it_reports_atr_against_the_floor(self):

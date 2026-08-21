@@ -1438,6 +1438,7 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .sig-setup{background:var(--acc-t);color:var(--accent-soft);border:1px solid var(--acc-t2);
   padding:2px 8px;border-radius:20px;font-weight:600}
 .sig-when{color:var(--muted2);font-variant-numeric:tabular-nums}
+.sig-horizon{color:var(--accent-soft);font-weight:600}
 
 .sig-levels{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .sig-levels>div{display:flex;flex-direction:column;gap:1px}
@@ -3102,7 +3103,7 @@ function renderCryptoSignalCard(s){
 
     <div class="sig-meta">
       <span class="sig-setup">${esc(name)}</span>
-      <span>&middot;</span><span>${esc(s.timeframe)}</span>
+      <span>&middot;</span><span class="sig-horizon" title="Window the move is expected to need">within ${esc(s.timeframe)}</span>
       <span>&middot;</span><span>${s.confidence}% confidence</span>
       <div style="flex-grow:1"></div>
       <span class="sig-when">${fmtSignalTime(s.timestamp)}</span>

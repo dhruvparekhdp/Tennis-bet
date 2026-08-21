@@ -26,6 +26,7 @@ market is not a reason to go long or short — it is a reason not to trade.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -257,7 +258,8 @@ def pattern_vote(candles: list[OHLCVCandle], atr_value: float) -> Vote:
                 min(1.0, abs(score)), best.description)
 
 
-def volatility_veto(highs, lows, closes, min_atr_pct: float = 0.00168) -> str | None:
+def volatility_veto(highs, lows, closes, min_atr_pct: float = 0.00168,
+                    horizon_minutes: float = 30.0) -> str | None:
     """
     Returns a reason to stand aside, or None. Never elects a direction.
 
@@ -271,10 +273,15 @@ def volatility_veto(highs, lows, closes, min_atr_pct: float = 0.00168) -> str | 
       coin that always moves 3% is not unusually volatile today because it
       moved 3%.
     """
+    # Over the holding window, not per bar. Holding a one-minute ATR against a
+    # per-trade cost is a unit mismatch, and it is what reduced the watchlist
+    # to whichever single coin happened to be most volatile that hour.
     absolute = ind.atr_pct(highs, lows, closes)
-    if absolute is not None and absolute < min_atr_pct:
-        return (f"ATR is {absolute * 100:.3f}% — below the {min_atr_pct * 100:.3f}% "
-                "it costs to open and close")
+    if absolute is not None:
+        reachable = absolute * math.sqrt(max(1.0, horizon_minutes))
+        if reachable < min_atr_pct:
+            return (f"could move {reachable * 100:.3f}% in {horizon_minutes:.0f} min — "
+                    f"under the {min_atr_pct * 100:.3f}% a round trip costs")
 
     pct = ind.volatility_percentile(highs, lows, closes)
     if pct is not None and pct < QUIET_PERCENTILE:
@@ -288,6 +295,7 @@ def volatility_veto(highs, lows, closes, min_atr_pct: float = 0.00168) -> str | 
 
 
 def evaluate(candles: list[OHLCVCandle], min_atr_pct: float = 0.00168,
+             horizon_minutes: float = 30.0,
              min_agreeing: int = MIN_AGREEING_FAMILIES,
              max_dissent: int | None = None) -> Verdict:
     """
@@ -314,7 +322,7 @@ def evaluate(candles: list[OHLCVCandle], min_atr_pct: float = 0.00168,
         pattern_vote(candles, atr_value),
     ]
 
-    veto = volatility_veto(highs, lows, closes, min_atr_pct)
+    veto = volatility_veto(highs, lows, closes, min_atr_pct, horizon_minutes)
     if veto:
         return Verdict(None, 0.0, votes=votes, vetoes=[veto])
 

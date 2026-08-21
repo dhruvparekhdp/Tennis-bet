@@ -10,7 +10,12 @@ from analysis.confluence import ConvictionGate, evaluate
 from analysis.crypto_signal import CryptoSignal, compute_crypto_stake
 from analysis.crypto_state import CryptoState
 from analysis.patterns import range_breakout
-from analysis.scalp_levels import NoTrade, ScalpConfig, scalp_levels
+from analysis.scalp_levels import (
+    HORIZONS_MINUTES,
+    NoTrade,
+    ScalpConfig,
+    scalp_levels,
+)
 from config.settings import settings
 
 log = structlog.get_logger()
@@ -63,15 +68,26 @@ def _emit(
     # Cost is per-market: gold is five times cheaper to trade than ether, so
     # holding both to the same floor would refuse profitable gold scalps.
     cfg = SCALP.for_symbol(state.symbol)
-    levels = scalp_levels(
-        entry=price,
-        is_long=direction == "long",
-        atr_pct=state.atr_14 / price,
-        cfg=cfg,
-        symbol=state.symbol,
-        reward_risk=reward_risk,
-        atr_target_multiple=atr_target_multiple,
-    )
+
+    # Offer the setup the shortest horizon first. A move reachable in ten
+    # minutes is a better setup than one needing thirty, and recording which
+    # window it qualified under makes the two directly comparable in the feed
+    # rather than being a silent internal assumption.
+    levels: object = NoTrade.TOO_QUIET
+    for horizon in HORIZONS_MINUTES:
+        levels = scalp_levels(
+            entry=price,
+            is_long=direction == "long",
+            atr_pct=state.atr_14 / price,
+            cfg=cfg,
+            symbol=state.symbol,
+            reward_risk=reward_risk,
+            atr_target_multiple=atr_target_multiple,
+            horizon_minutes=horizon,
+        )
+        if not isinstance(levels, NoTrade):
+            break
+
     if isinstance(levels, NoTrade):
         log.debug("scalp.refused", symbol=state.symbol,
                   signal_type=signal_type, reason=levels.value)
@@ -96,7 +112,7 @@ def _emit(
         stop_loss=levels.stop,
         edge_pct=edge_pct,
         stake_pct=compute_crypto_stake(edge_pct, confidence),
-        timeframe=timeframe,
+        timeframe=f"{levels.horizon_minutes:.0f}m",
         sentiment_score=state.sentiment_score,
         indicators_summary=summary,
         timestamp=datetime.now(UTC),
