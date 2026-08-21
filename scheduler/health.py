@@ -545,6 +545,46 @@ async def _api_signal_accuracy(runner, request: web.Request) -> web.Response:
     })
 
 
+async def _api_audit(runner, request: web.Request) -> web.Response:
+    """
+    Every fired signal in a window, scored, plus the slices that explain it.
+
+    Separate from /api/signals/accuracy on purpose: that endpoint answers
+    "is the confidence number calibrated". This one answers "which predictions
+    succeeded, which failed, and what do the failures have in common" — and it
+    nets the round-trip cost off every figure, because the gross column is the
+    one that made a leaking system look profitable.
+    """
+    from analysis.signal_audit import audit
+    from storage.database import AsyncSessionFactory
+    from storage.repository import Repository
+
+    days = max(1, min(365, int(request.query.get("days") or 30)))
+    async with AsyncSessionFactory() as session:
+        rows = await Repository(session).crypto_signals_between(days, limit=2000)
+
+    report = audit(rows)
+    report["days"] = days
+    report["cost_model"] = {
+        "round_trip_pct": round(_SCALP.cost_floor_pct * 100, 4),
+        "min_target_pct": round(_SCALP.min_target_pct * 100, 4),
+        "min_edge_multiple": _SCALP.min_edge_multiple,
+    }
+    return web.json_response(report)
+
+
+async def _api_audit_methods(runner, request: web.Request) -> web.Response:
+    """
+    The code that produces a signal, read out of the modules themselves.
+
+    Introspected rather than transcribed, so the page cannot describe a
+    function that no longer exists or miss one that was added.
+    """
+    from analysis.signal_audit import method_catalogue
+
+    return web.json_response({"stages": method_catalogue()})
+
+
 async def _api_sentiment_ingest(runner, request: web.Request) -> web.Response:
     """
     Accept scored headlines from an external analyser (Hermes on a laptop).
@@ -1616,6 +1656,7 @@ section h2{color:var(--accent-soft)}
   <div class="side-item side-secondary" data-tab="watchlist" onclick="switchTab('watchlist')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.2l5.9-.9z"/></svg><span>Watchlist</span></div>
   <div class="side-group">Other</div>
   <a class="side-item side-secondary" data-tab="sports" href="/sports"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18M3 12h18"/></svg><span>Sports</span></a>
+  <a class="side-item side-secondary" data-tab="audit" href="/audit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6v5l4 9a2 2 0 01-1.8 3H6.8A2 2 0 015 16l4-9z"/><path d="M9 8h6"/></svg><span>Signal Audit</span></a>
   <a class="side-item side-secondary" data-tab="diag" href="/api/debug/collectors"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4"/></svg><span>Diagnostics</span></a>
   <a class="side-item side-secondary" data-tab="settings" href="/settings"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 00-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 00-1.7-1L14.5 3h-4l-.4 2.6a7 7 0 00-1.7 1l-2.4-1-2 3.4L6 11a7 7 0 000 2l-2 1.6 2 3.4 2.4-1a7 7 0 001.7 1l.4 2.6h4l.4-2.6a7 7 0 001.7-1l2.4 1 2-3.4-2-1.6a7 7 0 00.1-1z"/></svg><span>Settings</span></a>
   <div class="side-item side-more" onclick="toggleMore()">
@@ -2683,7 +2724,7 @@ function initView(){
   // refresh could run, so the whole page loaded empty with "Error — retrying".
   // Everything here is null-safe for that reason.
   const sportsOnly = ['tennis','scalping','football'];
-  const cryptoOnly = ['dashboard','crypto','paper','guard','accuracy','historic','watchlist'];
+  const cryptoOnly = ['dashboard','crypto','paper','guard','accuracy','historic','watchlist','audit'];
   (IS_SPORTS ? cryptoOnly : sportsOnly).forEach(t => {
     const el = document.getElementById('tab-' + t);
     if(el) el.classList.remove('active');
@@ -4085,6 +4126,443 @@ setInterval(load, 30000);
 # ── Site-wide theme system ────────────────────────────────────────────────────
 # Injected into every page <head>. Theme stored in localStorage ('site_theme'),
 # applied as html[data-theme=...]; 'navy' (default) = no attribute, no overrides.
+async def _audit_page(request: web.Request) -> web.Response:
+    return web.Response(text=_AUDIT_HTML, content_type="text/html")
+
+
+# The signal post-mortem. Its own route rather than another sidebar tab: this
+# is a workbench, it wants the full width for a wide table, and it should be
+# reloadable without disturbing whatever the main dashboard was showing.
+_AUDIT_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signal Audit — what worked, what did not</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:60px;font-size:13px}
+header{background:var(--panel);border-bottom:1px solid var(--line);padding:12px 18px;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:20}
+header h1{font-size:16px;font-weight:700;color:var(--text-strong);display:flex;align-items:center;gap:8px}
+header .sub{font-size:12px;color:var(--muted)}
+a.nav-btn{background:var(--acc-t);border:1px solid var(--acc-t2);color:var(--accent);
+  font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;text-decoration:none;white-space:nowrap}
+a.nav-btn:hover{background:var(--acc-t2)}
+.spacer{margin-left:auto}
+main{padding:16px 18px;max-width:1500px;margin:0 auto}
+h2{font-size:14px;font-weight:700;color:var(--text-strong);margin:26px 0 10px;
+  display:flex;align-items:baseline;gap:9px}
+h2 .hint{font-size:11.5px;font-weight:400;color:var(--muted)}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+.card .t{font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted2)}
+.card .v{font-size:21px;font-weight:700;color:var(--text-strong);margin-top:3px;line-height:1.15}
+.card .s{font-size:11px;color:var(--muted);margin-top:2px}
+.pos{color:var(--pos)}.neg{color:var(--neg)}.acc{color:var(--accent)}
+
+.filters{background:var(--panel2);border:1px solid var(--line2);border-radius:10px;
+  padding:11px 13px;display:flex;flex-wrap:wrap;gap:9px;align-items:flex-end;margin-top:14px}
+.f{display:flex;flex-direction:column;gap:3px}
+.f label{font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted2)}
+.f select,.f input{background:var(--sunk);border:1px solid var(--line);color:var(--text);
+  border-radius:7px;padding:5px 8px;font-size:12.5px;font-family:inherit;min-width:112px}
+.f input[type=search]{min-width:170px}
+button.btn{background:var(--acc-t);border:1px solid var(--acc-t2);color:var(--accent);
+  border-radius:7px;padding:6px 13px;font-weight:600;font-size:12.5px;cursor:pointer;font-family:inherit}
+button.btn:hover{background:var(--acc-t2)}
+button.btn.ghost{background:transparent;border-color:var(--line);color:var(--muted)}
+
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:12px;white-space:nowrap}
+th,td{padding:6px 10px;text-align:left;border-bottom:1px solid var(--line2)}
+th{background:var(--panel2);color:var(--muted);font-weight:600;position:sticky;top:0;
+  font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;cursor:pointer;user-select:none}
+th:hover{color:var(--text-strong)}
+th.sorted::after{content:'';margin-left:5px;color:var(--accent)}
+th.asc::after{content:'\\2191';margin-left:5px;color:var(--accent)}
+th.desc::after{content:'\\2193';margin-left:5px;color:var(--accent)}
+tbody tr:hover td{background:var(--panel2)}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+th.num{text-align:right}
+.empty{color:var(--muted2);padding:16px;font-size:12.5px}
+
+.pill{display:inline-block;padding:1px 8px;border-radius:9999px;font-size:10.5px;font-weight:700;
+  letter-spacing:.3px}
+.pill.won{background:var(--pos-t);color:var(--pos);border:1px solid var(--pos-t2)}
+.pill.lost{background:var(--neg-t);color:var(--neg);border:1px solid var(--neg-t2)}
+.pill.expired{background:var(--mut-t);color:var(--muted);border:1px solid var(--line)}
+.pill.pending{background:var(--acc-t);color:var(--accent);border:1px solid var(--acc-t2)}
+.pill.long{background:var(--pos-t);color:var(--pos)}
+.pill.short{background:var(--neg-t);color:var(--neg)}
+
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+.tab{background:var(--panel2);border:1px solid var(--line2);color:var(--muted);
+  padding:5px 12px;border-radius:9999px;font-size:12px;cursor:pointer;font-weight:600;font-family:inherit}
+.tab.on{background:var(--acc-t);border-color:var(--acc-t2);color:var(--accent)}
+
+.bar{position:relative;background:var(--sunk);border-radius:4px;height:16px;min-width:90px;overflow:hidden}
+.bar i{position:absolute;left:0;top:0;bottom:0;background:var(--pos-t2);display:block}
+.bar span{position:relative;font-size:10.5px;line-height:16px;padding-left:5px;color:var(--text)}
+
+.stage{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:9px;overflow:hidden}
+.stage-hd{padding:10px 13px;display:flex;align-items:center;gap:10px;cursor:pointer;background:var(--panel2)}
+.stage-hd b{font-size:13px;color:var(--text-strong)}
+.stage-hd .d{font-size:11.5px;color:var(--muted);flex:1;min-width:0}
+.stage-hd .n{font-size:11px;color:var(--accent);font-weight:700}
+.stage-body{display:none;padding:4px 0}
+.stage.open .stage-body{display:block}
+.m{padding:8px 13px;border-top:1px solid var(--line2)}
+.m code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+  color:var(--accent-soft);word-break:break-word}
+.m .kind{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted2);
+  border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-right:6px}
+.m .sum{font-size:12px;color:var(--muted);margin-top:3px;white-space:normal}
+.m .src{font-size:10.5px;color:var(--muted2);margin-top:3px;font-family:ui-monospace,monospace}
+.m .mem{font-size:10.5px;color:var(--muted2);margin-top:3px}
+.m pre{display:none;white-space:pre-wrap;font-size:11px;color:var(--muted);
+  background:var(--sunk);border:1px solid var(--line2);border-radius:7px;padding:9px;margin-top:6px}
+.m.open pre{display:block}
+.note{font-size:11.5px;color:var(--muted2);margin-top:8px;white-space:normal;line-height:1.55}
+
+@media(max-width:720px){
+  html{-webkit-text-size-adjust:100%}
+  main{padding:12px}
+  header{padding:10px 12px}
+  .f select,.f input{min-width:0;width:100%;font-size:16px;min-height:38px}
+  .f{flex:1 1 130px}
+  .f input[type=search]{min-width:0}
+  .cards{grid-template-columns:repeat(auto-fit,minmax(128px,1fr))}
+  .card .v{font-size:18px}
+  table{font-size:11.5px}
+  th,td{padding:6px 7px}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>&#129514; Signal Audit</h1>
+  <span class="sub" id="hdr-sub">loading&hellip;</span>
+  <span class="spacer"></span>
+  <a class="nav-btn" href="/">&larr; Dashboard</a>
+  <a class="nav-btn" href="/data">Database</a>
+  <a class="nav-btn" href="/settings">Settings</a>
+</header>
+<main>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="filters">
+    <div class="f"><label>Window</label><select id="f-days" onchange="reload()">
+      <option value="1">Last 24h</option><option value="7">Last 7 days</option>
+      <option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option>
+      <option value="365">Everything</option></select></div>
+    <div class="f"><label>Symbol</label><select id="f-symbol" onchange="render()"></select></div>
+    <div class="f"><label>Setup</label><select id="f-setup" onchange="render()"></select></div>
+    <div class="f"><label>Horizon</label><select id="f-horizon" onchange="render()"></select></div>
+    <div class="f"><label>Direction</label><select id="f-direction" onchange="render()"></select></div>
+    <div class="f"><label>Result</label><select id="f-outcome" onchange="render()">
+      <option value="">All</option><option value="won">Won</option><option value="lost">Lost</option>
+      <option value="expired">Expired</option><option value="pending">Pending</option>
+      <option value="decided">Decided only</option>
+      <option value="netwin">Profitable after costs</option>
+      <option value="netloss">Lost money after costs</option></select></div>
+    <div class="f"><label>Min &times; cost</label><select id="f-xcost" onchange="render()">
+      <option value="0">Any</option><option value="1">1&times;+</option><option value="2">2&times;+</option>
+      <option value="3">3&times;+</option><option value="5">5&times;+</option></select></div>
+    <div class="f"><label>Min confidence</label><select id="f-conf" onchange="render()">
+      <option value="0">Any</option><option value="60">60%+</option><option value="70">70%+</option>
+      <option value="80">80%+</option><option value="90">90%+</option></select></div>
+    <div class="f"><label>Search</label><input type="search" id="f-q" placeholder="symbol or setup"
+      oninput="render()"></div>
+    <button class="btn ghost" onclick="clearFilters()">Reset</button>
+    <button class="btn" onclick="reload()">Refresh</button>
+  </div>
+
+  <h2>Predictions <span class="hint" id="tbl-count"></span></h2>
+  <div class="scroll"><table id="tbl">
+    <thead><tr>
+      <th data-k="timestamp">Fired</th>
+      <th data-k="symbol">Symbol</th>
+      <th data-k="signal_type">Setup</th>
+      <th data-k="direction">Dir</th>
+      <th data-k="horizon">Window</th>
+      <th class="num" data-k="confidence_pct">Conf</th>
+      <th class="num" data-k="entry">Entry</th>
+      <th class="num" data-k="target">Target</th>
+      <th class="num" data-k="stop">Stop</th>
+      <th class="num" data-k="move_pct">Move</th>
+      <th class="num" data-k="reward_risk">R:R</th>
+      <th class="num" data-k="x_cost">&times; cost</th>
+      <th data-k="outcome">Result</th>
+      <th class="num" data-k="pnl_pct">Gross</th>
+      <th class="num" data-k="net_pnl_pct">Net of fees</th>
+    </tr></thead><tbody id="tbody"></tbody>
+  </table></div>
+  <div class="note">Gross is the price move the signal captured. Net subtracts the round trip
+    for that market &mdash; fees, spread and slippage &mdash; which is the number that reaches the
+    wallet. A row that is green on gross and red on net is a win that cost money.</div>
+
+  <h2>Where it works and where it does not
+    <span class="hint">same signals, sliced by the thing you suspect</span></h2>
+  <div class="tabs" id="slice-tabs"></div>
+  <div class="scroll"><table>
+    <thead><tr>
+      <th id="slice-hd">Group</th>
+      <th class="num">Fired</th><th class="num">Won</th><th class="num">Lost</th>
+      <th class="num">Expired</th><th class="num">Pending</th>
+      <th>Hit rate (gross)</th>
+      <th class="num">Hit rate net</th>
+      <th class="num">Expectancy</th>
+      <th class="num">Avg move</th><th class="num">Avg &times; cost</th><th class="num">Avg conf</th>
+    </tr></thead><tbody id="slice-body"></tbody>
+  </table></div>
+  <div class="note">Expectancy is the average net move per signal fired. Positive means the slice
+    pays for its own costs; negative means every extra signal there is a slow leak, and no hit
+    rate rescues it. Slices with nothing resolved show &mdash; rather than 0% &mdash; an untested
+    slice is not a losing one.</div>
+
+  <h2>How a signal is made <span class="hint">every method on the path, read from the code</span></h2>
+  <div class="filters" style="margin-top:0">
+    <div class="f"><label>Find a method</label>
+      <input type="search" id="m-q" placeholder="rsi, atr, vote, tick&hellip;" oninput="renderMethods()"></div>
+    <button class="btn ghost" onclick="toggleAllStages(true)">Expand all</button>
+    <button class="btn ghost" onclick="toggleAllStages(false)">Collapse all</button>
+  </div>
+  <div id="methods"></div>
+  <div class="note">Signatures, descriptions and line numbers are read out of the modules at
+    request time, so this list cannot drift from the code that actually ran.</div>
+
+</main>
+<script>
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const _IST = {timeZone:'Asia/Kolkata'};
+let DATA = null, METHODS = null, SLICE = 'by_symbol', SORT = {k:'timestamp', dir:-1};
+
+const SETUP_NAME = {
+  rsi_divergence:'Momentum Reversal', volume_spike:'Volume Surge',
+  bollinger_squeeze:'Breakout Setup', sentiment_shift:'News Catalyst',
+  confluence:'Confluence',
+};
+const SLICES = [
+  ['by_symbol','Symbol'], ['by_setup','Setup'], ['by_horizon','Window'],
+  ['by_direction','Direction'], ['by_confidence','Confidence band'],
+  ['by_edge','Target vs cost'],
+];
+
+function fmtTime(iso){
+  if(!iso) return '';
+  const d = new Date(/[Z+]|-\\d\\d:\\d\\d$/.test(iso) ? iso : iso + 'Z');
+  if(isNaN(d)) return esc(iso);
+  return d.toLocaleString('en-IN',{..._IST,day:'2-digit',month:'short',
+    hour:'2-digit',minute:'2-digit',hour12:false});
+}
+function px(v){
+  if(v==null) return '&mdash;';
+  const a = Math.abs(v);
+  return a>=1000 ? v.toLocaleString('en-IN',{maximumFractionDigits:1})
+       : a>=1 ? v.toFixed(2) : v.toFixed(4);
+}
+function pct(v,d){ return v==null ? '&mdash;' : v.toFixed(d==null?2:d)+'%'; }
+function signed(v,d){
+  if(v==null) return '<span class="sub">&mdash;</span>';
+  const cls = v>0?'pos':(v<0?'neg':'');
+  return `<span class="${cls}">${v>0?'+':''}${v.toFixed(d==null?3:d)}%</span>`;
+}
+
+async function reload(){
+  const days = document.getElementById('f-days').value;
+  document.getElementById('hdr-sub').textContent = 'loading…';
+  try{
+    const [a,m] = await Promise.all([
+      fetch('/api/audit?days='+days).then(r=>r.json()),
+      METHODS ? Promise.resolve({stages:METHODS}) : fetch('/api/audit/methods').then(r=>r.json()),
+    ]);
+    DATA = a; METHODS = m.stages;
+    buildFilterOptions();
+    renderCards(); render(); renderMethods();
+    document.getElementById('hdr-sub').textContent =
+      `${a.records.length} signals · last ${a.days}d · round trip ${a.cost_model.round_trip_pct}%`;
+  }catch(e){
+    document.getElementById('hdr-sub').textContent = 'failed to load — ' + e;
+  }
+}
+
+// Options come from the data, not a hardcoded list, so a coin added to the
+// watchlist shows up here without a code change.
+function fillSelect(id, values, allLabel, pretty){
+  const el = document.getElementById(id), keep = el.value;
+  el.innerHTML = `<option value="">${allLabel}</option>` +
+    values.map(v=>`<option value="${esc(v)}">${esc(pretty?pretty(v):v)}</option>`).join('');
+  if(values.includes(keep)) el.value = keep;
+}
+function buildFilterOptions(){
+  const r = DATA.records, uniq = k => [...new Set(r.map(x=>x[k]).filter(Boolean))].sort();
+  fillSelect('f-symbol', uniq('symbol'), 'All coins');
+  fillSelect('f-setup', uniq('signal_type'), 'All setups', v=>SETUP_NAME[v]||v);
+  fillSelect('f-horizon', uniq('horizon'), 'All windows');
+  fillSelect('f-direction', uniq('direction'), 'Both ways', v=>v.toUpperCase());
+}
+function clearFilters(){
+  ['f-symbol','f-setup','f-horizon','f-direction','f-outcome'].forEach(i=>document.getElementById(i).value='');
+  ['f-xcost','f-conf'].forEach(i=>document.getElementById(i).value='0');
+  document.getElementById('f-q').value='';
+  render();
+}
+
+function filtered(){
+  const g = id => document.getElementById(id).value;
+  const sym=g('f-symbol'), setup=g('f-setup'), hz=g('f-horizon'), dir=g('f-direction'),
+        out=g('f-outcome'), xc=parseFloat(g('f-xcost'))||0, cf=parseFloat(g('f-conf'))||0,
+        q=g('f-q').trim().toLowerCase();
+  return DATA.records.filter(r=>{
+    if(sym && r.symbol!==sym) return false;
+    if(setup && r.signal_type!==setup) return false;
+    if(hz && r.horizon!==hz) return false;
+    if(dir && r.direction!==dir) return false;
+    if(out==='decided'){ if(r.outcome!=='won'&&r.outcome!=='lost') return false; }
+    else if(out==='netwin'){ if(!r.net_won) return false; }
+    else if(out==='netloss'){ if(r.outcome==='pending'||r.net_won) return false; }
+    else if(out && r.outcome!==out) return false;
+    if(r.x_cost < xc) return false;
+    if(r.confidence_pct < cf) return false;
+    if(q && !(r.symbol.toLowerCase().includes(q) ||
+              (SETUP_NAME[r.signal_type]||r.signal_type).toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function renderCards(){
+  const t = DATA.totals, c = DATA.cost_model;
+  document.getElementById('cards').innerHTML = [
+    ['Signals fired', t.n, `${t.decided} decided · ${t.pending} still open`,''],
+    ['Hit rate, gross', t.hit_rate_pct==null?'&mdash;':t.hit_rate_pct+'%',
+      t.decided?`${t.won} won / ${t.lost} lost`:'nothing resolved yet','acc'],
+    ['Hit rate, net of fees', t.net_hit_rate_pct==null?'&mdash;':t.net_hit_rate_pct+'%',
+      'finished ahead after the round trip',
+      t.net_hit_rate_pct!=null && t.net_hit_rate_pct>=50?'pos':'neg'],
+    ['Expectancy', t.expectancy_pct==null?'&mdash;':(t.expectancy_pct>0?'+':'')+t.expectancy_pct+'%',
+      'avg net move per signal',
+      t.expectancy_pct==null?'':(t.expectancy_pct>0?'pos':'neg')],
+    ['Avg target', t.avg_move_pct==null?'&mdash;':t.avg_move_pct.toFixed(3)+'%',
+      t.avg_x_cost==null?'':t.avg_x_cost.toFixed(1)+'× the round trip',''],
+    ['Round trip', c.round_trip_pct+'%',
+      `floor ${c.min_target_pct}% at ${c.min_edge_multiple}× cost`,'neg'],
+  ].map(([t_,v,s,cls])=>
+    `<div class="card"><div class="t">${t_}</div><div class="v ${cls||''}">${v}</div>
+     <div class="s">${s||''}</div></div>`).join('');
+}
+
+function render(){
+  if(!DATA) return;
+  const rows = filtered();
+  const k = SORT.k;
+  rows.sort((a,b)=>{
+    const x=a[k], y=b[k];
+    if(x===y) return 0;
+    if(x==null) return 1;
+    if(y==null) return -1;
+    return (x>y?1:-1) * SORT.dir;
+  });
+  document.getElementById('tbl-count').textContent =
+    `${rows.length} of ${DATA.records.length} shown`;
+
+  document.getElementById('tbody').innerHTML = rows.length ? rows.map(r=>`<tr>
+    <td>${fmtTime(r.timestamp)}</td>
+    <td><b>${esc(r.symbol)}</b></td>
+    <td>${esc(SETUP_NAME[r.signal_type]||r.signal_type)}</td>
+    <td><span class="pill ${esc(r.direction)}">${esc(r.direction.toUpperCase())}</span></td>
+    <td>${esc(r.horizon||'—')}</td>
+    <td class="num">${r.confidence_pct}%</td>
+    <td class="num">${px(r.entry)}</td>
+    <td class="num">${px(r.target)}</td>
+    <td class="num">${px(r.stop)}</td>
+    <td class="num">${pct(r.move_pct,3)}</td>
+    <td class="num">${r.reward_risk?r.reward_risk.toFixed(2):'—'}</td>
+    <td class="num ${r.x_cost>=3?'pos':(r.x_cost<1?'neg':'')}">${r.x_cost.toFixed(1)}×</td>
+    <td><span class="pill ${esc(r.outcome)}">${esc(r.outcome.toUpperCase())}</span></td>
+    <td class="num">${r.outcome==='pending'?'<span>—</span>':signed(r.pnl_pct)}</td>
+    <td class="num">${r.outcome==='pending'?'<span>—</span>':signed(r.net_pnl_pct)}</td>
+  </tr>`).join('') : '<tr><td colspan="15" class="empty">No signals match these filters</td></tr>';
+
+  document.querySelectorAll('#tbl th').forEach(th=>{
+    th.classList.toggle('asc', th.dataset.k===k && SORT.dir===1);
+    th.classList.toggle('desc', th.dataset.k===k && SORT.dir===-1);
+  });
+  renderSlices();
+}
+
+document.addEventListener('click', e=>{
+  const th = e.target.closest('#tbl th');
+  if(!th || !th.dataset.k) return;
+  if(SORT.k===th.dataset.k) SORT.dir = -SORT.dir; else SORT = {k:th.dataset.k, dir:-1};
+  render();
+});
+
+function renderSlices(){
+  document.getElementById('slice-tabs').innerHTML = SLICES.map(([k,label])=>
+    `<button class="tab ${k===SLICE?'on':''}" onclick="SLICE='${k}';renderSlices()">${label}</button>`).join('');
+  const label = (SLICES.find(s=>s[0]===SLICE)||[])[1] || 'Group';
+  document.getElementById('slice-hd').textContent = label;
+  const rows = DATA[SLICE] || [];
+  const max = Math.max(1, ...rows.map(r=>r.n));
+  document.getElementById('slice-body').innerHTML = rows.length ? rows.map(r=>`<tr>
+    <td><b>${esc(SETUP_NAME[r.label]||r.label)}</b></td>
+    <td class="num">
+      <div class="bar"><i style="width:${r.n/max*100}%"></i><span>${r.n}</span></div></td>
+    <td class="num pos">${r.won}</td>
+    <td class="num neg">${r.lost}</td>
+    <td class="num">${r.expired}</td>
+    <td class="num">${r.pending}</td>
+    <td>${r.hit_rate_pct==null?'<span class="empty" style="padding:0">not resolved yet</span>'
+      :`<div class="bar"><i style="width:${r.hit_rate_pct}%"></i><span>${r.hit_rate_pct}% of ${r.decided}</span></div>`}</td>
+    <td class="num">${r.net_hit_rate_pct==null?'&mdash;':r.net_hit_rate_pct+'%'}</td>
+    <td class="num">${r.expectancy_pct==null?'&mdash;':signed(r.expectancy_pct)}</td>
+    <td class="num">${r.avg_move_pct==null?'&mdash;':r.avg_move_pct.toFixed(3)+'%'}</td>
+    <td class="num ${r.avg_x_cost>=3?'pos':(r.avg_x_cost<1?'neg':'')}">${r.avg_x_cost==null?'&mdash;':r.avg_x_cost.toFixed(1)+'×'}</td>
+    <td class="num">${r.avg_confidence_pct==null?'&mdash;':r.avg_confidence_pct+'%'}</td>
+  </tr>`).join('') : '<tr><td colspan="12" class="empty">Nothing in this window</td></tr>';
+}
+
+function renderMethods(){
+  if(!METHODS) return;
+  const q = (document.getElementById('m-q').value||'').trim().toLowerCase();
+  const host = document.getElementById('methods');
+  host.innerHTML = METHODS.map((st,i)=>{
+    const ms = st.methods.filter(m=> !q ||
+      m.name.toLowerCase().includes(q) || m.module.toLowerCase().includes(q) ||
+      m.summary.toLowerCase().includes(q));
+    if(q && !ms.length) return '';
+    return `<div class="stage ${q||i<1?'open':''}">
+      <div class="stage-hd" onclick="this.parentNode.classList.toggle('open')">
+        <b>${esc(st.stage)}</b>
+        <span class="d">${esc(st.description)}</span>
+        <span class="n">${ms.length}${ms.length!==st.count?' / '+st.count:''}</span>
+      </div>
+      <div class="stage-body">${ms.map(m=>`
+        <div class="m" onclick="this.classList.toggle('open')">
+          <div><span class="kind">${esc(m.kind)}</span><code>${esc(m.signature)}</code></div>
+          ${m.summary?`<div class="sum">${esc(m.summary)}</div>`:''}
+          ${m.members.length?`<div class="mem">members: ${m.members.map(esc).join(', ')}</div>`:''}
+          <div class="src">${esc(m.source)}</div>
+          ${m.doc && m.doc!==m.summary?`<pre>${esc(m.doc)}</pre>`:''}
+        </div>`).join('')}</div>
+    </div>`;
+  }).join('') || '<div class="empty">No method matches that search</div>';
+}
+function toggleAllStages(open){
+  document.querySelectorAll('.stage').forEach(s=>s.classList.toggle('open', open));
+}
+
+reload();
+</script>
+</body>
+</html>
+"""
+
+
 _THEME_SNIPPET = """
 <style>
 /* Theme palettes */
@@ -4216,6 +4694,7 @@ _HTML = (
 _HTML = _HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _DATA_HTML = _DATA_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _SETTINGS_HTML = _SETTINGS_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
+_AUDIT_HTML = _AUDIT_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 
 
 async def make_app(runner) -> web.Application:
@@ -4250,6 +4729,9 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/signals/history", lambda req: _api_signal_history(runner, req))
     app.router.add_get("/api/debug/signals", lambda req: _api_debug_signals(runner, req))
     app.router.add_get("/api/signals/accuracy", lambda req: _api_signal_accuracy(runner, req))
+    app.router.add_get("/audit", lambda req: _audit_page(req))
+    app.router.add_get("/api/audit", lambda req: _api_audit(runner, req))
+    app.router.add_get("/api/audit/methods", lambda req: _api_audit_methods(runner, req))
     app.router.add_post("/api/crypto/watchlist/add", lambda req: _api_crypto_watchlist_add(runner, req))
     app.router.add_post("/api/crypto/watchlist/remove", lambda req: _api_crypto_watchlist_remove(runner, req))
     app.router.add_get("/api/commodities", lambda req: _api_commodities(runner, req))
