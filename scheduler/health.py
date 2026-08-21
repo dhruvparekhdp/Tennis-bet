@@ -94,7 +94,7 @@ async def _api_matches(runner, request: web.Request) -> web.Response:
         )
         odds_history = [
             {"odds_p1": p.odds_p1, "odds_p2": p.odds_p2,
-             "timestamp": p.timestamp.isoformat()}
+             "timestamp": _iso(p.timestamp)}
             for p in s.odds_history[-20:]
         ]
         matches.append({
@@ -119,7 +119,7 @@ async def _api_matches(runner, request: web.Request) -> web.Response:
             "duration_mins": s.match_duration_mins,
             "source": s.match_id.split("_")[0],
             "is_upcoming": s.is_scheduled,
-            "start_time": s.start_time.isoformat() if s.start_time else None,
+            "start_time": _iso(s.start_time),
         })
     return web.Response(text=json.dumps(matches), content_type="application/json")
 
@@ -152,7 +152,7 @@ async def _api_football_matches(runner, request: web.Request) -> web.Response:
             "is_extra_time": s.is_extra_time,
             "period": s.period,
             "is_scheduled": s.is_scheduled,
-            "kickoff_time": s.kickoff_time.isoformat() if s.kickoff_time else None,
+            "kickoff_time": _iso(s.kickoff_time),
         })
     return web.Response(text=json.dumps(matches), content_type="application/json")
 
@@ -176,7 +176,7 @@ async def _api_football_signals(runner, request: web.Request) -> web.Response:
             "trigger": s.trigger_description,
             "score_summary": s.score_summary,
             "minute": s.minute,
-            "timestamp": s.timestamp.isoformat(),
+            "timestamp": _iso(s.timestamp),
         }
         for s in reversed(sigs)  # newest first
     ]
@@ -260,7 +260,7 @@ async def _api_signals(runner, request: web.Request) -> web.Response:
             "model_win_prob": round(getattr(r, "model_win_prob", 0) * 100, 1),
             "score_at_signal": getattr(r, "score_at_signal", ""),
             "outcome": getattr(r, "outcome", "pending"),
-            "timestamp": r.timestamp.isoformat(),
+            "timestamp": _iso(r.timestamp),
         }
         for r in rows
     ]
@@ -297,7 +297,7 @@ async def _api_scalping(runner, request: web.Request) -> web.Response:
             "reasons": o.reasons,
             "scalp_window": o.scalp_window,
             "is_serving": o.is_serving,
-            "timestamp": o.timestamp.isoformat(),
+            "timestamp": _iso(o.timestamp),
         }
         for o in opps
     ]
@@ -322,7 +322,7 @@ async def _api_crypto_coins(runner, request: web.Request) -> web.Response:
             "macd_line": round(s.macd_line, 4),
             "bollinger_bandwidth": round(s.bollinger_bandwidth * 100, 2),
             "sentiment_score": s.sentiment_score,
-            "timestamp": s.timestamp.isoformat(),
+            "timestamp": _iso(s.timestamp),
         })
     return web.Response(text=json.dumps(coins), content_type="application/json")
 
@@ -351,11 +351,29 @@ async def _api_crypto_signals(runner, request: web.Request) -> web.Response:
             "sentiment_score": r.sentiment_score,
             "indicators": r.indicators_summary,
             "outcome": r.outcome,
-            "timestamp": r.timestamp.isoformat(),
+            "timestamp": _iso(r.timestamp),
         }
         for r in rows
     ]
     return web.Response(text=json.dumps(signals), content_type="application/json")
+
+
+
+def _iso(dt):
+    """
+    Serialise a timestamp so the browser cannot mistake it for local time.
+
+    Every DateTime column here is naive UTC, and _iso(datetime) on a
+    naive value emits no offset. JavaScript parses an offset-less date-time as
+    LOCAL time, so a browser in IST read a UTC instant as an IST wall clock —
+    signals displayed 5h30m early with an "ago" that was 5h30m too large. The
+    stored instants were always correct; only the wire format was ambiguous.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.isoformat()
 
 
 def _signal_row(r) -> dict:
@@ -365,7 +383,7 @@ def _signal_row(r) -> dict:
         "current_price": r.current_price, "target_price": r.target_price,
         "stop_loss": r.stop_loss, "edge_pct": r.edge_pct,
         "timeframe": r.timeframe, "outcome": r.outcome, "pnl_pct": r.pnl_pct,
-        "timestamp": r.timestamp.isoformat(),
+        "timestamp": _iso(r.timestamp),
     }
 
 
@@ -584,7 +602,7 @@ async def _api_sentiment_recent(runner, request: web.Request) -> web.Response:
         "symbol": r.symbol.upper(), "headline": r.headline, "source": r.source,
         "score": round(r.score, 3), "confidence": round(r.confidence, 3),
         "event_type": r.event_type, "model": r.model, "url": r.url,
-        "published_at": r.published_at.isoformat(),
+        "published_at": _iso(r.published_at),
     } for r in rows])
 
 
@@ -708,7 +726,7 @@ async def _api_paper(runner, request: web.Request) -> web.Response:
             "signal_type": r.signal_type,
             "unrealised": round(net, 2),
             "roe_pct": round(net / r.margin * 100, 2) if r.margin else 0.0,
-            "opened_at": r.opened_at.isoformat(),
+            "opened_at": _iso(r.opened_at),
         })
 
     return web.Response(text=json.dumps({
@@ -738,8 +756,8 @@ def _cycle_row(c) -> dict:
         "min_confidence": c.min_confidence,
         "trailing_enabled": c.trailing_enabled,
         "scaled_sizing": c.scaled_sizing,
-        "started_at": c.started_at.isoformat(),
-        "ended_at": c.ended_at.isoformat() if c.ended_at else None,
+        "started_at": _iso(c.started_at),
+        "ended_at": _iso(c.ended_at),
     }
 
 
@@ -760,7 +778,7 @@ def _trade_row(t) -> dict:
         "confidence": round(t.confidence * 100),
         "signal_type": t.signal_type,
         "hours_held": round(t.hours_held, 2),
-        "closed_at": t.closed_at.isoformat(),
+        "closed_at": _iso(t.closed_at),
     }
 
 
@@ -885,7 +903,7 @@ async def _api_commodities(runner, request: web.Request) -> web.Response:
             "price": s.current_price,
             "change_24h_pct": round(s.price_change_24h_pct, 2),
             "rsi_14": s.rsi_14,
-            "timestamp": s.timestamp.isoformat(),
+            "timestamp": _iso(s.timestamp),
         }
         for s in states
     ]
