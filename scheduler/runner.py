@@ -1132,6 +1132,10 @@ class AppRunner:
             self._ws_tasks.append(task)
             log.info("twelvedata_ws_task_spawned")
 
+        # Preload bundled historical candles into in-memory state store (zero-DB requirement)
+        from collectors.historical_data_service import HistoricalDataService
+        await HistoricalDataService.preload_states(self.crypto_store)
+
         crypto_count = await self.crypto_store.count()
         if settings.sports_enabled:
             bets_api_status = "BetsAPI: active" if settings.bets_api_token else "BetsAPI: no token"
