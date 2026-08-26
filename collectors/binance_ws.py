@@ -148,9 +148,17 @@ class BinanceWSCollector:
             )
 
         # Build combined stream URLs: <symbol>@kline_<interval> and <symbol>@miniTicker
+        # Filter out commodities/forex (e.g. gold xauusdt) not listed on Binance spot
+        NON_BINANCE = {"xauusdt", "xagusdt", "wtiusdt", "xauinr", "xaginr"}
+        binance_symbols = [s for s in symbols if s.lower() not in NON_BINANCE]
+        if not binance_symbols:
+            log.debug("binance_ws_no_crypto_symbols")
+            await asyncio.sleep(15)
+            return
+
         interval = settings.crypto_kline_interval
         streams = []
-        for sym in symbols:
+        for sym in binance_symbols:
             s = sym.lower()
             streams.append(f"{s}@kline_{interval}")
             streams.append(f"{s}@miniTicker")

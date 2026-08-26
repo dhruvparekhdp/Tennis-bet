@@ -118,6 +118,11 @@ def _emit(
 
     tf_label = _format_timeframe(levels.horizon_minutes, timeframe)
 
+    if price <= 0.001 or levels.target <= 0 or levels.stop <= 0:
+        return None
+    if abs(levels.target - price) / price > 0.50:
+        return None
+
     return CryptoSignal(
         symbol=state.symbol,
         signal_type=signal_type,

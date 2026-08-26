@@ -272,6 +272,17 @@ def _x_cost_band(v: Verdict) -> str:
     return "5x+ (keeps 4/5+)"
 
 
+def is_valid_verdict(v: Verdict) -> bool:
+    """Filter out corrupt or distorted legacy signal records (e.g. entry=0.0001, target=-1799.9)."""
+    if v.entry <= 0.001 or v.target <= 0 or v.stop <= 0:
+        return False
+    if v.move_pct > 100.0 or v.risk_pct > 100.0:
+        return False
+    if abs(v.pnl_pct) > 200.0:
+        return False
+    return True
+
+
 def audit(rows: Iterable[Any], cfg: ScalpConfig | None = None) -> dict:
     """
     Turn stored signal rows into a table plus every slice worth suspecting.
@@ -283,6 +294,7 @@ def audit(rows: Iterable[Any], cfg: ScalpConfig | None = None) -> dict:
     never cleared its own costs.
     """
     verdicts = [to_verdict(r, cfg) for r in rows]
+    verdicts = [v for v in verdicts if is_valid_verdict(v)]
     total = Bucket(key="all", label="All signals")
     for v in verdicts:
         total.add(v)

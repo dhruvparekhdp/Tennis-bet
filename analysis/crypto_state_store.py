@@ -204,7 +204,7 @@ class CryptoStateStore:
                 del state.candles_1m[:-CANDLE_WINDOW]
 
             if is_closed:
-                self._recalculate_indicators(state)
+                recalculate_indicators(state)
 
     async def replace_candles(self, symbol: str, bars: list[dict]) -> None:
         """

@@ -657,6 +657,11 @@ class AppRunner:
                 states = {st.symbol: st for st in await self.crypto_store.get_all()}
                 resolved = 0
                 for sig in pending:
+                    if sig.current_price <= 0.001 or sig.target_price <= 0 or sig.stop_loss <= 0:
+                        await repo.resolve_crypto_signal(sig.id, "expired", 0.0)
+                        resolved += 1
+                        continue
+
                     st = states.get(sig.symbol.lower())
                     if st is None or not st.candles_1m:
                         continue
