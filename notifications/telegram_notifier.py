@@ -13,13 +13,15 @@ log = structlog.get_logger()
 class TelegramNotifier:
     def __init__(self) -> None:
         token = settings.telegram_bot_token
-        if token is None:
-            raise RuntimeError(
-                "TELEGRAM_BOT_TOKEN is not set — copy .env.example to .env and fill it in"
-            )
+        if token is None or not token.get_secret_value().strip():
+            log.info("telegram_bot_token_not_set", hint="Running with Telegram notifications disabled")
+            self._bot = None
+            return
         self._bot = Bot(token=token.get_secret_value())
 
     async def send_signal(self, sig: Signal) -> bool:
+        if self._bot is None or not settings.telegram_chat_id:
+            return False
         message = format_signal(sig)
         try:
             await self._bot.send_message(
@@ -43,6 +45,8 @@ class TelegramNotifier:
     async def send_text(self, text: str, parse_mode: str | None = None) -> bool:
         """Send a message. Pass parse_mode=ParseMode.HTML for messages built with <b>/<i> tags —
         without it Telegram shows the tags literally instead of rendering them."""
+        if self._bot is None or not settings.telegram_chat_id:
+            return False
         try:
             await self._bot.send_message(
                 chat_id=settings.telegram_chat_id,
@@ -66,6 +70,8 @@ class TelegramNotifier:
 
     async def verify(self) -> bool:
         """Called at startup to validate credentials before anything else runs."""
+        if self._bot is None:
+            return False
         try:
             me = await self._bot.get_me()
             log.info("telegram_bot_verified", bot_username=me.username, bot_id=me.id)
