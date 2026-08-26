@@ -15,6 +15,39 @@ class OHLCVCandle:
     is_closed: bool = True
 
 
+def resample_candles(candles: list[OHLCVCandle], timeframe_minutes: int) -> list[OHLCVCandle]:
+    """
+    Resample 1-minute OHLCVCandles into higher timeframe bars (e.g. 15m, 30m, 1h, 4h).
+    """
+    if not candles or timeframe_minutes <= 1:
+        return list(candles)
+
+    bucket_secs = timeframe_minutes * 60
+    buckets: dict[int, list[OHLCVCandle]] = {}
+    for c in candles:
+        ts = int(c.timestamp.timestamp())
+        bucket_key = (ts // bucket_secs) * bucket_secs
+        buckets.setdefault(bucket_key, []).append(c)
+
+    resampled: list[OHLCVCandle] = []
+    for key in sorted(buckets.keys()):
+        group = buckets[key]
+        if not group:
+            continue
+        o = group[0].open
+        h = max(x.high for x in group)
+        low = min(x.low for x in group)
+        close = group[-1].close
+        vol = sum(x.volume for x in group)
+        ts = datetime.fromtimestamp(key, tz=UTC)
+        is_closed = len(group) >= timeframe_minutes and group[-1].is_closed
+        resampled.append(OHLCVCandle(
+            open=o, high=h, low=low, close=close, volume=vol,
+            timestamp=ts, is_closed=is_closed
+        ))
+    return resampled
+
+
 @dataclass
 class CryptoState:
     symbol: str                                                    # e.g., "btcusdt"
@@ -28,12 +61,29 @@ class CryptoState:
     low_24h: float = 0.0
 
     # Candle histories for multiple timeframes
-    candles_1m: list[OHLCVCandle] = field(default_factory=list)    # last 120 candles (2h)
+    candles_1m: list[OHLCVCandle] = field(default_factory=list)    # last 120-480 candles
     candles_5m: list[OHLCVCandle] = field(default_factory=list)    # last 72 candles (6h)
     candles_15m: list[OHLCVCandle] = field(default_factory=list)   # last 96 candles (24h)
     candles_1h: list[OHLCVCandle] = field(default_factory=list)    # last 168 candles (7d)
     candles_4h: list[OHLCVCandle] = field(default_factory=list)    # last 60 candles (10d)
     candles_1d: list[OHLCVCandle] = field(default_factory=list)    # last 30 candles (30d)
+
+    def get_candles(self, timeframe: str = "1m") -> list[OHLCVCandle]:
+        """Return candles for requested timeframe ('1m', '15m', '30m', '1h', '4h')."""
+        tf = timeframe.strip().lower()
+        if tf == "1m":
+            return self.candles_1m
+        elif tf == "5m":
+            return self.candles_5m or resample_candles(self.candles_1m, 5)
+        elif tf == "15m":
+            return self.candles_15m or resample_candles(self.candles_1m, 15)
+        elif tf == "30m":
+            return resample_candles(self.candles_1m, 30)
+        elif tf in ("1h", "60m"):
+            return self.candles_1h or resample_candles(self.candles_1m, 60)
+        elif tf in ("4h", "240m"):
+            return self.candles_4h or resample_candles(self.candles_1m, 240)
+        return self.candles_1m
 
     # Key Technical Indicators (Computed periodically on candle updates)
     rsi_14: float = 50.0

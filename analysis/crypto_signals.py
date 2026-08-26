@@ -34,6 +34,17 @@ GATE = (ConvictionGate.high_conviction() if settings.high_conviction_only
         else ConvictionGate())
 
 
+def _format_timeframe(horizon_minutes: float, fallback: str = "30m") -> str:
+    h = int(round(horizon_minutes))
+    if h == 60:
+        return "1h"
+    elif h == 240:
+        return "4h"
+    elif h > 0:
+        return f"{h}m"
+    return fallback
+
+
 def _emit(
     state: CryptoState,
     *,
@@ -105,6 +116,8 @@ def _emit(
     if extra_indicators:
         summary = f"{extra_indicators} | {summary}"
 
+    tf_label = _format_timeframe(levels.horizon_minutes, timeframe)
+
     return CryptoSignal(
         symbol=state.symbol,
         signal_type=signal_type,
@@ -116,7 +129,7 @@ def _emit(
         stop_loss=levels.stop,
         edge_pct=edge_pct,
         stake_pct=compute_crypto_stake(edge_pct, confidence),
-        timeframe=f"{levels.horizon_minutes:.0f}m",
+        timeframe=tf_label,
         sentiment_score=state.sentiment_score,
         indicators_summary=summary,
         timestamp=datetime.now(UTC),

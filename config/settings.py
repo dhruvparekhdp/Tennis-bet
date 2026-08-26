@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     # Active streaming Kline interval
     crypto_kline_interval: str = "1m"
     # Target prediction timeframes
-    crypto_timeframes: str = "30m,1h,4h,1d"
+    crypto_timeframes: str = "15m,30m,1h,4h,1d"
 
     # Binance WebSocket — off by default because the main host returns HTTP 451
     # (geo-blocked) from Render's US IPs. Hit /api/debug/binance on the live
