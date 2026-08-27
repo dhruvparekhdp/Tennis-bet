@@ -249,7 +249,10 @@ class TestDashboardSharesTheCostModel(unittest.TestCase):
         mt = re.search(r"const MIN_TARGET_PCT = ([\d.]+);", self.html)
         self.assertIsNotNone(be)
         self.assertIsNotNone(mt)
-        self.assertAlmostEqual(float(be.group(1)), cfg.round_trip_fee_pct * 100, places=4)
+        # The FULL round trip, not brokerage alone. Dividing a target by
+        # brokerage only made every "x cost" chip read 1.42x too high — a
+        # 0.845% target showed 7.2x while the engine scored it 5.0x.
+        self.assertAlmostEqual(float(be.group(1)), cfg.cost_floor_pct * 100, places=4)
         self.assertAlmostEqual(float(mt.group(1)), cfg.min_target_pct * 100, places=4)
 
     def test_the_fee_arithmetic_is_no_longer_written_in_javascript(self):

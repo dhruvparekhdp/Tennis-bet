@@ -2685,7 +2685,7 @@ function moveHistogram(buckets){
            title="${b.n} signals"></div>
       <span style="font-size:9px;color:#475569">${b.upper_pct}%</span></div>`;
   }).join('') + `</div><div style="font-size:10px;color:#64748b;margin-top:6px">
-    Red is under the ${MIN_TARGET_PCT.toFixed(3)}% the engine requires. Break-even alone is ${BREAK_EVEN_PCT.toFixed(3)}%.</div>`;
+    Red is under the ${MIN_TARGET_PCT.toFixed(3)}% the engine requires. A round trip alone costs ${BREAK_EVEN_PCT.toFixed(3)}%.</div>`;
 }
 
 async function loadHistoric(){
@@ -4744,7 +4744,13 @@ function setSiteTheme(t){
 # page and the engine together.
 _HTML = (
     _HTML
-    .replace("__BREAK_EVEN_PCT__", f"{_SCALP.round_trip_fee_pct * 100:.4f}")
+    # The FULL round trip — brokerage, the spread crossed twice, and what
+    # fills actually cost beyond it. This used to be brokerage alone, so every
+    # "x cost" chip on the site read 1.42x higher than the trade really earns:
+    # a 0.845% ETH target showed as 7.2x when the engine, and /audit, scored
+    # the same target at 5.0x. Two pages disagreeing about the same number is
+    # how a losing edge gets believed.
+    .replace("__BREAK_EVEN_PCT__", f"{_SCALP.cost_floor_pct * 100:.4f}")
     .replace("__MIN_TARGET_PCT__", f"{_SCALP.min_target_pct * 100:.4f}")
     .replace("__PAPER_LEVERAGE__", f"{_SETTINGS.paper_leverage:g}")
 )

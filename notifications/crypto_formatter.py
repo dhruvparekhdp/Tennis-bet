@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from analysis.crypto_signal import CryptoSignal
+from analysis.scalp_levels import ScalpConfig
 from config.settings import settings
 
 # Plain-English headline for each signal_type — the underlying jargon
@@ -25,9 +26,11 @@ def format_crypto_signal(sig: CryptoSignal) -> str:
     stop_str = f"${sig.stop_loss:,.4f}" if sig.stop_loss else "n/a"
     move_pct = (abs(sig.target_price - sig.current_price) / sig.current_price * 100
                 if sig.target_price and sig.current_price else 0.0)
-    # 0.05% base + 18% GST, both sides. Commodities are cheaper, so this reads
-    # slightly conservative for gold rather than optimistic.
-    round_trip = 2 * 0.0005 * 1.18 * 100
+    # The full round trip for THIS market, from the same config the engine
+    # sizes against. This was brokerage alone, hardcoded in this file — so a
+    # Telegram alert claimed 7.2x on a target the engine scored at 5.0x, and
+    # gold was costed as though it paid ether's brokerage.
+    round_trip = ScalpConfig().for_symbol(sig.symbol).cost_floor_pct * 100
     x_cost = move_pct / round_trip if round_trip else 0.0
     stake_amt = round(sig.stake_pct * settings.bank_size, 2)
     stake_pct_display = round(sig.stake_pct * 100, 2)

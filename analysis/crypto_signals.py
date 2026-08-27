@@ -73,6 +73,12 @@ def _emit(
     # minutes is a better setup than one needing thirty, and recording which
     # window it qualified under makes the two directly comparable in the feed
     # rather than being a silent internal assumption.
+    # How long a bar actually is, measured rather than assumed. The ATR is
+    # per BAR, and the projection scales it by sqrt(horizon / bar) — so a feed
+    # returning five-minute candles, or a history with gaps from an instance
+    # that slept, makes "within 15m" mean something else entirely.
+    bar_minutes = ind.median_bar_minutes([c.timestamp for c in state.candles_1m])
+
     levels: object = NoTrade.TOO_QUIET
     for horizon in HORIZONS_MINUTES:
         levels = scalp_levels(
@@ -84,6 +90,7 @@ def _emit(
             reward_risk=reward_risk,
             atr_target_multiple=atr_target_multiple,
             horizon_minutes=horizon,
+            bar_minutes=bar_minutes,
         )
         if not isinstance(levels, NoTrade):
             break

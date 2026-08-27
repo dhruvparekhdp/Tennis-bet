@@ -322,6 +322,41 @@ def supertrend(highs: list[float], lows: list[float], closes: list[float],
 
 # ── volume ────────────────────────────────────────────────────────────────
 
+def median_bar_minutes(timestamps: list, default: float = 1.0) -> float:
+    """
+    How far apart these bars actually are, in minutes.
+
+    Every projection here scales volatility by sqrt(horizon / bar), and that
+    ratio was hardcoded to treat one bar as one minute. Two things break it.
+    A venue that ignores the requested interval and returns five-minute
+    candles inflates the ATR by sqrt(5) and, with the bar length still assumed
+    to be one, every target and every "within 15m" label silently means
+    something else. And on a free instance that sleeps, the poll-aggregated
+    history has gaps, so consecutive bars can be an hour apart.
+
+    The median is used rather than the mean because one gap must not restate
+    the whole series. Falls back to `default` when there is not enough history
+    to measure, which is the same assumption as before — but now it is an
+    assumption made once, in the open, rather than everywhere implicitly.
+    """
+    if len(timestamps) < 3:
+        return default
+    gaps = []
+    for a, b in zip(timestamps, timestamps[1:]):
+        try:
+            delta = (b - a).total_seconds() / 60.0
+        except (AttributeError, TypeError):
+            return default
+        if delta > 0:
+            gaps.append(delta)
+    if not gaps:
+        return default
+    gaps.sort()
+    mid = len(gaps) // 2
+    median = gaps[mid] if len(gaps) % 2 else (gaps[mid - 1] + gaps[mid]) / 2.0
+    return median if median > 0 else default
+
+
 def has_usable_volume(volumes: list[float], min_bars: int = 20) -> bool:
     """
     Is this a real per-bar volume series, or a placeholder?
