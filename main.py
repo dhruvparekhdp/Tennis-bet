@@ -41,9 +41,14 @@ async def main() -> None:
         log.info("shutdown_signal_received")
         stop_event.set()
 
+    import sys
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _handle_signal)
+    if sys.platform != "win32":
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _handle_signal)
+            except (NotImplementedError, AttributeError):
+                pass
 
     await runner.start()
     log.info("monitor_running", health_url=f"http://localhost:{port}/health")

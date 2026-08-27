@@ -27,7 +27,7 @@ _FUTURES_PRICE_URLS = (
 _CANDLES_URL = f"{_PUBLIC_BASE}/market_data/candles"
 
 
-def _futures_name_variants(base: str) -> tuple[str, ...]:
+def _futures_name_variants(base: str, quote: str = "USDT") -> tuple[str, ...]:
     """
     Fallback spellings, kept only for instruments whose record omits "mkt".
 
@@ -36,10 +36,20 @@ def _futures_name_variants(base: str) -> tuple[str, ...]:
     spelling. Deriving the key from data beats guessing the prefix.
     """
     b = base.upper()
+    q = quote.upper()
     return (
-        f"B-{b}_USDT", f"F-{b}_USDT", f"{b}_USDT", f"{b}USDT",
-        f"B-{b}_INR", f"{b}_INR", f"{b}INR",
+        f"B-{b}_{q}", f"F-{b}_{q}", f"{b}_{q}", f"{b}{q}",
+        f"I-{b}_{q}", f"B-{b}_{q}_FUT",
     )
+
+
+def _quote_symbol(pair: str) -> str:
+    """Return the quote currency of a pair in uppercase, e.g. 'btcusdt' -> 'USDT', 'xauinr' -> 'INR'."""
+    p = pair.strip().lower()
+    for quote in ("usdt", "busd", "usdc", "inr"):
+        if p.endswith(quote):
+            return quote.upper()
+    return "USDT"
 
 
 def _num(node: dict, *keys: str) -> float | None:
@@ -120,9 +130,9 @@ def _parse_candles(payload) -> list[dict]:
 
 
 def _base_symbol(pair: str) -> str:
-    """Strip the quote asset from a Binance-style pair, e.g. 'btcusdt' -> 'btc'."""
+    """Strip the quote asset from a Binance-style pair, e.g. 'btcusdt' -> 'btc', 'xauinr' -> 'xau'."""
     p = pair.strip().lower()
-    for quote in ("usdt", "busd", "usdc"):
+    for quote in ("usdt", "busd", "usdc", "inr"):
         if p.endswith(quote) and len(p) > len(quote):
             return p[: -len(quote)]
     return p
@@ -171,11 +181,8 @@ class CoinDCXCollector:
             matched: set[str] = set()
             for sym in symbols:
                 base = _base_symbol(sym).upper()
-                row = None
-                for quote in self._QUOTES:
-                    row = by_market.get(f"{base}{quote}")
-                    if row:
-                        break
+                quote = _quote_symbol(sym)
+                row = by_market.get(f"{base}{quote}")
                 if not row:
                     continue
 
@@ -220,11 +227,16 @@ class CoinDCXCollector:
     def _pair_variants(self, symbol: str) -> tuple[str, ...]:
         """
         Candle pairs are named differently from ticker markets: `B-BTC_USDT`
-        for the Binance-sourced book, `I-BTC_INR` for the Indian one. Order
-        matters — USDT pairs quote in the same unit as the levels.
+        for the Binance-sourced book, `I-BTC_INR` for the Indian one.
+        Quote currency must strictly match the symbol's quote.
         """
         base = _base_symbol(symbol).upper()
-        return (f"B-{base}_USDT", f"B-{base}_USDT_FUT", f"I-{base}_INR")
+        quote = _quote_symbol(symbol)
+        if quote == "USDT":
+            return (f"B-{base}_USDT", f"B-{base}_USDT_FUT", f"{base}USDT")
+        elif quote == "INR":
+            return (f"I-{base}_INR", f"B-{base}_INR", f"{base}INR")
+        return (f"B-{base}_{quote}", f"{base}{quote}")
 
     async def fetch_candles_raw(self, symbol: str, interval: str = "1m",
                                 limit: int = 120) -> tuple[str, object] | None:
@@ -347,9 +359,10 @@ class CoinDCXCollector:
 
         for sym in symbols:
             base = _base_symbol(sym).upper()
-            rec = by_market.get(f"{base}USDT") or by_market.get(f"{base}INR")
+            quote = _quote_symbol(sym)
+            rec = by_market.get(f"{base}{quote}")
             if rec is None:
-                for name in _futures_name_variants(base):
+                for name in _futures_name_variants(base, quote):
                     rec = by_market.get(name)
                     if rec is not None:
                         break

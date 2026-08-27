@@ -85,8 +85,8 @@ def _compute_atr(candles: list[OHLCVCandle], period: int = 14) -> float:
     return sum(tr_list[-period:]) / period
 
 
-CANDLE_WINDOW = 120
-"""Rolling 1-minute window kept per symbol. Shared so the backtest cannot
+CANDLE_WINDOW = 360
+"""Rolling 1-minute window kept per symbol (6 hours). Shared so the backtest cannot
 silently diverge from the live store by holding a different amount of history."""
 
 # The longest indicator lookback is EMA-200, but RSI and ATR only ever consume
@@ -204,7 +204,7 @@ class CryptoStateStore:
                 del state.candles_1m[:-CANDLE_WINDOW]
 
             if is_closed:
-                self._recalculate_indicators(state)
+                recalculate_indicators(state)
 
     async def replace_candles(self, symbol: str, bars: list[dict]) -> None:
         """

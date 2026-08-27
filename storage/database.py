@@ -155,6 +155,13 @@ async def _migrate_columns(conn) -> None:
             symbol VARCHAR PRIMARY KEY,
             added_at TIMESTAMP
         )""",
+        # Purge any legacy corrupted signals with invalid entry prices or astronomical moves
+        """DELETE FROM crypto_signal_log 
+           WHERE current_price <= 0.001 
+              OR target_price <= 0 
+              OR stop_loss <= 0 
+              OR ABS(pnl_pct) > 500 
+              OR ABS(target_price - current_price) / NULLIF(current_price, 0) > 2.0""",
     ]
     for sql in migrations:
         try:

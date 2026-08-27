@@ -77,28 +77,50 @@ class CryptoEngine:
 
         return fired
 
-    def _still_live(self, sig: CryptoSignal, price: float) -> bool:
+    def _get_signal_ttl(self, sig: CryptoSignal) -> timedelta:
+        """Derive time-to-live from signal timeframe so live tracking does not deadlock."""
+        tf = (sig.timeframe or "").strip().lower()
+        if tf.endswith("m"):
+            try:
+                mins = int(tf[:-1])
+                return timedelta(minutes=max(30, int(mins * 1.5)))
+            except ValueError:
+                pass
+        elif tf.endswith("h"):
+            try:
+                hrs = int(tf[:-1])
+                return timedelta(hours=max(1, hrs))
+            except ValueError:
+                pass
+        return timedelta(minutes=60)
+
+    def _still_live(self, sig: CryptoSignal, price: float, now: datetime | None = None) -> bool:
         """
         Is a previous signal for this symbol and direction still running?
 
         A timer alone cannot tell a fresh setup from the same move re-detected:
         one strongly trending coin produced four "new" longs inside an hour,
-        every one of them the same continuous move at a later price, which
-        crowded every other symbol off the page.
+        every one of them the same continuous move at a later price.
 
-        The test is semantic rather than temporal. While price sits between the
-        earlier signal's stop and its target, that call has not yet been right
-        or wrong, and repeating it says nothing new.
+        However, holding indefinitely without TTL caused complete watchlist
+        starvation after a few hours when price hovered between target and stop.
+        We check price resolution first, then age out old signals past their TTL.
         """
         prev = self._live.get((sig.symbol, sig.direction))
         if prev is None or price <= 0:
+            return False
+
+        cur_now = now or datetime.now(UTC)
+        ttl = self._get_signal_ttl(prev)
+        if (cur_now - prev.timestamp) >= ttl:
+            self._live.pop((sig.symbol, sig.direction), None)
             return False
 
         long_ = sig.direction == "long"
         resolved = (price >= prev.target_price or price <= prev.stop_loss) if long_ \
             else (price <= prev.target_price or price >= prev.stop_loss)
         if resolved:
-            del self._live[(sig.symbol, sig.direction)]
+            self._live.pop((sig.symbol, sig.direction), None)
             return False
         return True
 

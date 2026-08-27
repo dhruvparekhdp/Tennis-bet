@@ -12,4 +12,5 @@ alembic>=1.13
 python-telegram-bot>=21.0
 scikit-learn>=1.4
 pandas>=2.0
+pyarrow>=14.0
 websockets>=13.0

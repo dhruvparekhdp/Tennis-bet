@@ -639,27 +639,29 @@ class AppRunner:
         """
         Decide whether past signals reached target or stop.
 
-        Without this every crypto signal stays "pending" forever and no
-        accuracy figure can exist — the tennis path has had a resolver since
-        the start, the crypto path never did.
+        Resolution walks the stored candle window forward from the signal.
+        We check all pending signals (older than 5 minutes to avoid 1-tick noise),
+        so that signals hitting target early (e.g. in 10-30 mins) are captured
+        immediately before rolling in-memory candles are evicted.
 
-        Resolution walks the stored candle window forward from the signal and
-        applies the same pessimism the backtest uses: if a bar contains both
-        levels the stop is booked, because the path within a bar is unknowable
-        and a resolver that breaks ties in its own favour reports accuracy it
-        has not earned.
+        Unresolved signals remain 'pending' until either target/stop is hit
+        or until the holding horizon has elapsed, at which point they are marked 'expired'.
         """
         try:
             async with AsyncSessionFactory() as session:
                 repo = Repository(session)
-                pending = await repo.pending_crypto_signals(
-                    older_than_minutes=settings.paper_max_hold_minutes)
+                pending = await repo.pending_crypto_signals(older_than_minutes=5)
                 if not pending:
                     return
 
                 states = {st.symbol: st for st in await self.crypto_store.get_all()}
                 resolved = 0
                 for sig in pending:
+                    if sig.current_price <= 0.001 or sig.target_price <= 0 or sig.stop_loss <= 0:
+                        await repo.resolve_crypto_signal(sig.id, "expired", 0.0)
+                        resolved += 1
+                        continue
+
                     st = states.get(sig.symbol.lower())
                     if st is None or not st.candles_1m:
                         continue
@@ -673,20 +675,31 @@ class AppRunner:
                     for c in after:
                         hit_stop = c.low <= sig.stop_loss if long_ else c.high >= sig.stop_loss
                         hit_tgt = c.high >= sig.target_price if long_ else c.low <= sig.target_price
-                        if hit_stop:            # checked first, deliberately
-                            outcome = "lost"
-                            pnl = (sig.stop_loss - sig.current_price) / sig.current_price * 100
+
+                        if hit_tgt and hit_stop:
+                            # Both hit on same bar: check if bar moved in trade direction
+                            favorable = (c.close >= c.open) if long_ else (c.close <= c.open)
+                            if favorable:
+                                outcome = "won"
+                                pnl = (sig.target_price - sig.current_price) / sig.current_price * 100
+                            else:
+                                outcome = "lost"
+                                pnl = (sig.stop_loss - sig.current_price) / sig.current_price * 100
                             break
-                        if hit_tgt:
+                        elif hit_tgt:
                             outcome = "won"
                             pnl = (sig.target_price - sig.current_price) / sig.current_price * 100
                             break
+                        elif hit_stop:
+                            outcome = "lost"
+                            pnl = (sig.stop_loss - sig.current_price) / sig.current_price * 100
+                            break
+
                     if outcome is None:
-                        # Ran out of window without touching either level. Only
-                        # call it expired once the candles have moved well past
-                        # it, so a short history is not mistaken for a verdict.
+                        # Signal is still running. Only expire if past maximum hold time
                         span = (after[-1].timestamp.replace(tzinfo=None) - sig.timestamp)
-                        if span.total_seconds() / 60 < settings.paper_max_hold_minutes:
+                        max_hold = settings.paper_max_hold_minutes
+                        if span.total_seconds() / 60 < max_hold:
                             continue
                         outcome = "expired"
                         pnl = (after[-1].close - sig.current_price) / sig.current_price * 100
@@ -1123,6 +1136,10 @@ class AppRunner:
             task = asyncio.create_task(self.twelvedata_ws.run_forever(), name="twelvedata_ws")
             self._ws_tasks.append(task)
             log.info("twelvedata_ws_task_spawned")
+
+        # Preload bundled historical candles into in-memory state store (zero-DB requirement)
+        from collectors.historical_data_service import HistoricalDataService
+        await HistoricalDataService.preload_states(self.crypto_store)
 
         crypto_count = await self.crypto_store.count()
         if settings.sports_enabled:
