@@ -1546,6 +1546,12 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
 .sig-levels b.pos{color:var(--pos)}.sig-levels b.neg{color:var(--neg)}
 .sig-levels span{font-size:9px;color:var(--muted2);font-variant-numeric:tabular-nums}
 
+.sig-trail{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:12px;
+  color:var(--muted);background:var(--panel2);border:1px dashed var(--line);
+  border-radius:8px;padding:6px 10px;margin-top:8px}
+.sig-trail b{color:var(--text-strong);font-variant-numeric:tabular-nums}
+.sig-trail-k{font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--accent);font-weight:700}
 .sig-track{position:relative;height:6px;background:var(--sunk);border-radius:3px;margin:2px 0 6px}
 .sig-track .cap{position:absolute;top:-2px;width:4px;height:10px;border-radius:2px}
 .sig-track .cap.sl{left:0;background:var(--neg-strong)}
@@ -3044,6 +3050,13 @@ function renderWcGroups(data){
 // Enough precision that entry, target and stop are always distinguishable.
 // Rounding a $1,905 price to whole dollars made every signal render as
 // "Entry $1,905  Target $1,905  Stop $1,905", hiding the real distances.
+// A price distance, shown at the precision of the price it belongs to. Running
+// a delta through fmtPrice alone gives "10.7500" for ten and three quarters.
+function fmtDelta(d, ref){
+  if(ref>=1000) return d.toFixed(2);
+  if(ref>=1) return d.toFixed(4);
+  return d.toFixed(6);
+}
 function fmtPrice(p){
   if(p>=1000) return p.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
   if(p>=1) return p.toFixed(4);
@@ -3220,6 +3233,8 @@ function renderCryptoSignalCard(s){
       <span class="now" style="left:${at}%"></span>
     </div>
 
+    ${trailPlan(entry, sl, long)}
+
     <div class="sig-foot">
       <span class="pill ${viable?'ok':'bad'}">${xcost.toFixed(1)}× cost</span>
       ${rr?`<span class="pill">${rr.toFixed(2)} reward:risk</span>`:''}
@@ -3234,6 +3249,22 @@ function renderCryptoSignalCard(s){
         ? 'It costs more to open and close than the move can win, so this loses money when it succeeds.'
         : `It would keep only ${(100-100/xcost).toFixed(0)}% of what it earns.`}
       The bot will not take a trade under ${MIN_TARGET_PCT.toFixed(3)}%.</div>`}
+  </div>`;
+}
+
+// The exit, in prices, because the venue's TP/SL box takes prices. A 2x
+// reward:risk and a trail are one decision: the target alone caps the winner
+// that pays for the losers, and a trail behind a 1R target never arms.
+function trailPlan(entry, stop, long){
+  const risk = Math.abs(entry - stop);
+  if(!entry || !risk) return '';
+  const sign = long ? 1 : -1;
+  const arm = entry + sign * 0.75 * risk;
+  const be  = entry * (1 + sign * BREAK_EVEN_PCT/100);
+  return `<div class="sig-trail">
+    <span class="sig-trail-k">Trail</span>
+    <span>at <b>${fmtPrice(arm)}</b> move the stop to <b>${fmtPrice(be)}</b>,
+      then keep it <b>${fmtDelta(risk, entry)}</b> behind the best price</span>
   </div>`;
 }
 

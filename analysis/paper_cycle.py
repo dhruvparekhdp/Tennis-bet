@@ -73,7 +73,12 @@ def config_for_cycle(row) -> CycleConfig:
         sizing=SizingConfig() if row.scaled_sizing else None,
         leverage_scaling=(LeverageConfig(ceiling_leverage=row.leverage)
                           if getattr(row, "scaled_leverage", False) else None),
-        trailing=TrailingStop(enabled=row.trailing_enabled, activate_at_r=0.75),
+        # The runner preset when trailing is on: arm at 0.75R, ride 1R behind
+        # the high, release the fixed target. Distances in R rather than in
+        # percent of margin, so the trail scales with the setup's own stop
+        # instead of with the leverage dial.
+        trailing=(TrailingStop.runner() if row.trailing_enabled
+                  else TrailingStop(enabled=False)),
         ladder=(ProfitLadder.tight() if getattr(row, "ladder_tight", False)
                 else ProfitLadder(enabled=getattr(row, "ladder_enabled", False))),
     )

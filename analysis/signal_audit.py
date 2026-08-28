@@ -421,6 +421,7 @@ STAGES: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("analysis.scalp_levels", "ScalpConfig"),
             ("analysis.scalp_levels", "scalp_levels"),
+            ("analysis.scalp_levels", "trailing_plan"),
             ("analysis.scalp_levels", "tick_for_price"),
             ("analysis.scalp_levels", "round_to_tick"),
             ("analysis.scalp_levels", "roe_to_price_move"),
@@ -445,6 +446,7 @@ STAGES: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("analysis.paper_trading", "FeeModel"),
             ("analysis.paper_trading", "SlippageModel"),
             ("analysis.paper_trading", "TrailingStop"),
+            ("analysis.paper_trading", "Position"),
             ("analysis.paper_trading", "ProfitLadder"),
             ("analysis.paper_trading", "liquidation_price"),
             ("analysis.paper_trading", "resolve_candle"),

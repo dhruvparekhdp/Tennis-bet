@@ -40,6 +40,7 @@ class NoTrade(StrEnum):
     TARGET_TOO_SMALL = "target_small"  # move cannot cover the round trip
     TICK_TOO_COARSE = "tick_coarse"    # rounding error is a large share of the edge
     POOR_REWARD = "poor_reward"        # reward-to-risk below the floor
+    STOP_INSIDE_NOISE = "stop_noise"   # stop sits inside one bar's ordinary range
     FUNDING_WINDOW = "funding_window"  # settlement too close to open a short hold
 
 
@@ -48,6 +49,7 @@ REASON_TEXT = {
     NoTrade.TARGET_TOO_SMALL: "target does not clear the round-trip cost",
     NoTrade.TICK_TOO_COARSE: "price steps are too coarse for a move this small",
     NoTrade.POOR_REWARD: "risking more than the trade can win",
+    NoTrade.STOP_INSIDE_NOISE: "stop sits inside one bar's normal range — noise would take it out",
     NoTrade.FUNDING_WINDOW: "funding settles too soon for a short hold",
 }
 
@@ -120,6 +122,34 @@ class ScalpConfig:
 
     # Rounding must be small relative to the edge, or the tick eats the profit.
     max_tick_share_of_target: float = 0.10
+
+    # What the setup AIMS for, as a multiple of the initial stop distance.
+    #
+    # Every signal this system has ever fired used 1.00 — target and stop the
+    # same distance from entry. That makes the outcome a coin flip that pays a
+    # toll: break-even needs p = 0.5 + cost/(2*move), which on a 0.83% ETH move
+    # is 60.1%. Measured over 170 resolved signals the hit rate was 50.6%, so
+    # the design was losing by construction, not by bad luck.
+    #
+    # Raising this does NOT create edge. What it does is lower how much edge is
+    # needed, because the round trip is paid once whatever the target:
+    #
+    #     R      break-even p   random-walk p   real edge required
+    #     1.00       60.1%          50.0%          +10.1 pts
+    #     1.50       48.1%          40.0%           +8.1
+    #     2.00       40.1%          33.3%           +6.7
+    #     3.00       30.0%          25.0%           +5.0
+    #
+    # The cost of 2.00 is a stop half as far away, which ordinary noise reaches
+    # more often — min_stop_atr_multiple below is what stops that becoming
+    # absurd.
+    target_reward_risk: float = 2.0
+
+    # A stop must sit outside one bar's ordinary range. Deriving the stop as
+    # target/R means raising R tightens the stop, and a stop inside the noise
+    # is not a risk control — it is a way of paying the round trip to be shaken
+    # out of trades that were never wrong.
+    min_stop_atr_multiple: float = 1.0
 
     min_reward_risk: float = 1.0
     max_hold_minutes: int = 30
@@ -236,6 +266,64 @@ def max_leverage_for_roe_target(roe_target: float, min_move: float) -> float:
     return roe_target / min_move
 
 
+@dataclass(frozen=True)
+class TrailPlan:
+    """
+    What to do with the stop once the trade is working, in prices.
+
+    A reward:risk above 1 and a trailing stop are one decision, not two. On
+    their own, a 2R target caps the winner that pays for the losers; a trail
+    with a 1R target never arms, because the position closes at the target
+    first. Together the stop cuts at 1R, the trail takes over at 0.75R, and
+    nothing caps the upside.
+
+    Expressed as prices rather than percentages because the venue's TP/SL box
+    takes prices, and this has to be usable by hand.
+    """
+
+    risk: float               # 1R, the initial stop distance in price
+    arm_price: float          # move the stop the first time price reaches here
+    breakeven_stop: float     # where it goes then: entry plus the round trip
+    trail_distance: float     # afterwards, ride this far behind the best price
+    step: float               # ignore moves smaller than this
+
+    def stop_at(self, best_price: float, is_long: bool) -> float:
+        """Where the stop sits once the trail has armed and price reached `best`."""
+        sign = 1.0 if is_long else -1.0
+        candidate = best_price - sign * self.trail_distance
+        return max(candidate, self.breakeven_stop) if is_long \
+            else min(candidate, self.breakeven_stop)
+
+
+def trailing_plan(entry: float, stop: float, cfg: ScalpConfig,
+                  activate_at_r: float = 0.75, trail_r: float = 1.0,
+                  step_r: float = 0.10) -> TrailPlan | None:
+    """
+    Derive the trail from the levels the signal already carries.
+
+    Distances are multiples of the initial stop, never percentages of margin.
+    A margin-denominated trail is a function of the leverage dial rather than
+    of the setup: at 10x a 20%-of-margin trail is 2.0% of price, which against
+    an ATR-derived stop of 0.43% sits nearly five times further out than the
+    original stop and can never ratchet anything.
+    """
+    risk = abs(entry - stop)
+    if entry <= 0 or risk <= 0:
+        return None
+    sign = 1.0 if stop < entry else -1.0
+    return TrailPlan(
+        risk=risk,
+        arm_price=entry + sign * activate_at_r * risk,
+        # The full round trip, not brokerage alone. A "breakeven" stop that
+        # only covers the fee still books a loss once the spread and the fill
+        # are paid, which is the quietest way to lose money on a trade that
+        # was supposed to be a scratch.
+        breakeven_stop=entry * (1 + sign * cfg.cost_floor_pct),
+        trail_distance=trail_r * risk,
+        step=step_r * risk,
+    )
+
+
 # Horizons offered to a setup, shortest first. A move reachable in the short
 # window is a stronger setup than one needing the long one, so the label
 # records which window the signal qualified under and both can be compared
@@ -288,7 +376,7 @@ def scalp_levels(
     is_long: bool,
     atr_pct: float,
     cfg: ScalpConfig,
-    reward_risk: float = 1.0,
+    reward_risk: float | None = None,
     atr_target_multiple: float = 1.0,
     minutes_to_funding: float | None = None,
     symbol: str = "",
@@ -313,8 +401,18 @@ def scalp_levels(
     if reachable < cfg.cost_floor_pct * cfg.atr_floor_multiple:
         return NoTrade.TOO_QUIET
 
+    # None means "whatever this cost frame aims for", so the ratio lives in one
+    # place instead of being repeated as a literal in five analyzers.
+    rr = cfg.target_reward_risk if reward_risk is None else reward_risk
+
     target_pct = max(reachable * atr_target_multiple, cfg.min_target_pct)
-    stop_pct = target_pct / reward_risk if reward_risk > 0 else target_pct
+    stop_pct = target_pct / rr if rr > 0 else target_pct
+
+    # The stop is derived from the target, so a higher R pulls it closer to
+    # entry. Past a point it lands inside the range a single bar covers, where
+    # it is taken out by noise rather than by being wrong.
+    if stop_pct < atr_pct * cfg.min_stop_atr_multiple:
+        return NoTrade.STOP_INSIDE_NOISE
 
     tick = tick_for_price(entry, symbol)
     if tick > 0 and tick / entry > target_pct * cfg.max_tick_share_of_target:

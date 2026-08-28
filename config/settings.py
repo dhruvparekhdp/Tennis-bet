@@ -162,12 +162,17 @@ class Settings(BaseSettings):
     paper_target_wallet: float = 20000.0
     paper_leverage: float = 10.0
     paper_stop_pct_of_margin: float = 0.20      # your fixed 20% risk
-    paper_reward_risk: float = 1.0              # your fixed 20% target
+    # 2.0, not the old 1.0. At 1.0 the target and the stop sit the same
+    # distance out, break-even needs ~60% and the measured hit rate is 50.6%.
+    paper_reward_risk: float = 2.0
     paper_min_confidence: float = 0.70
     paper_max_concurrent: int = 3
     paper_max_hold_minutes: int = 240
     paper_scaled_sizing: bool = True            # Rs500 / Rs1,000 / Rs1,500 ladder
-    paper_trailing_enabled: bool = False        # measure on real data before enabling
+    # On, and only useful now: the trail arms at 0.75R, which under the old
+    # reward:risk of 1.0 sat behind a target the position reached first, so
+    # the trail could never fire. See CycleConfig.trailing_can_activate.
+    paper_trailing_enabled: bool = True
     # Leverage rises with confidence, capped so liquidation stays 3 ATR away.
     paper_scaled_leverage: bool = False
     # Ratchet the stop as return-on-margin crosses rungs, the way a stop gets

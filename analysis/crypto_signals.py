@@ -54,7 +54,7 @@ def _emit(
     confidence: float,
     timeframe: str,
     atr_target_multiple: float = 1.0,
-    reward_risk: float = 1.0,
+    reward_risk: float | None = None,
     extra_indicators: str = "",
 ) -> CryptoSignal | None:
     """
@@ -173,7 +173,7 @@ class RSIDivergenceAnalyzer:
         return _emit(
             state, direction=direction, signal_type="rsi_divergence",
             trigger_desc=trigger_desc, confidence=confidence, timeframe="1h",
-            atr_target_multiple=1.2, reward_risk=1.0,
+            atr_target_multiple=1.2,
         )
 
 
@@ -216,7 +216,6 @@ class VolumeSpikeAnalyzer:
             confidence=0.68,
             timeframe="30m",
             atr_target_multiple=1.5,
-            reward_risk=1.0,
             extra_indicators=f"Vol {ratio:.1f}x",
         )
 
@@ -259,7 +258,6 @@ class BollingerSqueezeAnalyzer:
             confidence=0.70,
             timeframe="4h",
             atr_target_multiple=1.4,
-            reward_risk=1.0,
             extra_indicators="squeeze released",
         )
 
@@ -287,7 +285,7 @@ class SentimentShiftAnalyzer:
         return _emit(
             state, direction=direction, signal_type="sentiment_shift",
             trigger_desc=trigger_desc, confidence=confidence, timeframe="1d",
-            atr_target_multiple=2.0, reward_risk=1.0,
+            atr_target_multiple=2.0,
             extra_indicators=(f"Sentiment {state.sentiment_score:+.2f} | "
                               f"News {state.sentiment_news_count}"),
         )
@@ -349,6 +347,5 @@ class ConfluenceAnalyzer:
             confidence=verdict.confidence,
             timeframe="1h",
             atr_target_multiple=multiple,
-            reward_risk=1.0,
             extra_indicators=f"{agree}/5 agree",
         )

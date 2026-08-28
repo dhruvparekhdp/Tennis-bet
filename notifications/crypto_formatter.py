@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from analysis.crypto_signal import CryptoSignal
-from analysis.scalp_levels import ScalpConfig
+from analysis.scalp_levels import ScalpConfig, trailing_plan
 from config.settings import settings
 
 # Plain-English headline for each signal_type — the underlying jargon
@@ -32,8 +32,24 @@ def format_crypto_signal(sig: CryptoSignal) -> str:
     # gold was costed as though it paid ether's brokerage.
     round_trip = ScalpConfig().for_symbol(sig.symbol).cost_floor_pct * 100
     x_cost = move_pct / round_trip if round_trip else 0.0
+    risk_pct = (abs(sig.current_price - sig.stop_loss) / sig.current_price * 100
+                if sig.stop_loss and sig.current_price else 0.0)
+    rr = move_pct / risk_pct if risk_pct else 0.0
     stake_amt = round(sig.stake_pct * settings.bank_size, 2)
     stake_pct_display = round(sig.stake_pct * 100, 2)
+
+    # The trail, in prices, because the venue's TP/SL box takes prices and this
+    # has to be followable by hand. Without these two lines the alert publishes
+    # a 2R target and says nothing about the exit that actually pays for it.
+    plan = trailing_plan(sig.current_price, sig.stop_loss,
+                         ScalpConfig().for_symbol(sig.symbol))
+    trail_lines = ""
+    if plan:
+        trail_lines = (
+            f"\n<b>Trail</b> at <b>${plan.arm_price:,.4f}</b> "
+            f"→ stop to <b>${plan.breakeven_stop:,.4f}</b> (breakeven), "
+            f"then ride <b>${plan.trail_distance:,.4f}</b> behind the high\n"
+        )
 
     return (
         f"🪙 <b>{symbol_display}</b> · {dir_emoji}\n"
@@ -44,7 +60,9 @@ def format_crypto_signal(sig: CryptoSignal) -> str:
         f"{sig.trigger_description}\n\n"
         f"Entry <b>${sig.current_price:,.4f}</b> → "
         f"Target <b>{target_str}</b> → Stop <b>{stop_str}</b>\n"
-        f"Move <b>{move_pct:.3f}%</b> · <b>{x_cost:.1f}×</b> what the round trip costs\n"
+        f"Move <b>{move_pct:.3f}%</b> · <b>{x_cost:.1f}×</b> what the round trip costs · "
+        f"reward:risk <b>{rr:.2f}</b>\n"
+        + trail_lines +
         f"Confidence <b>{conf_pct}%</b> · Suggested stake <b>₹{stake_amt:,.0f}</b> "
         f"({stake_pct_display}% of bank)"
     )

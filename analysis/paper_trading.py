@@ -446,14 +446,22 @@ class Position:
                 # Nothing else closes the trade now, so the trail has to.
                 self.target_price = s * math.inf
 
-        # Distances are % of margin; dividing by leverage puts them in price.
-        trail_move = self.entry_price * trail.trail_pct_of_margin / self.leverage
-        step = self.entry_price * trail.step_pct_of_margin / self.leverage
+        # In R when the setup says so, otherwise % of margin converted to price
+        # by dividing out the leverage.
+        if trail.trail_r is not None:
+            trail_move = risk * trail.trail_r
+        else:
+            trail_move = self.entry_price * trail.trail_pct_of_margin / self.leverage
+        if trail.step_r is not None:
+            step = risk * trail.step_r
+        else:
+            step = self.entry_price * trail.step_pct_of_margin / self.leverage
         candidate = best - s * trail_move
 
         if trail.lock_breakeven:
             # Entry plus the round trip, so the floor is a scratch not a loss.
-            be = self.entry_price * (1 + s * fees.round_trip_pct())
+            be = self.entry_price * (
+                1 + s * (fees.round_trip_pct() + trail.breakeven_buffer_pct))
             candidate = s * max(s * candidate, s * be)
 
         moved = s * (candidate - self.stop_price) > step
@@ -824,13 +832,47 @@ class TrailingStop:
     # every bar, which in a live account is a stream of order amendments.
     step_pct_of_margin: float = 0.05
 
+    # The same two distances expressed in R — multiples of the initial stop —
+    # and preferred whenever they are set.
+    #
+    # The margin-denominated versions were written for the fixed 20/20 world,
+    # where the stop IS 20% of margin and a 20% trail is exactly 1R. Signal
+    # levels are ATR-derived and much tighter: an ETH stop of 0.426% against a
+    # trail of 0.20/10x = 2.0% of price puts the trail nearly five times
+    # further from the high than the original stop is from entry, so it can
+    # never ratchet anything and the feature silently does nothing. In R the
+    # distance travels with the setup instead of with the leverage dial.
+    trail_r: float | None = None
+    step_r: float | None = None
+
     # On activation, jump the stop to entry plus the round-trip fee, so the
     # worst case becomes a scratch rather than a small loss.
     lock_breakeven: bool = True
 
+    # What "breakeven" has to clear. FeeModel knows brokerage; the spread
+    # crossed twice and the slippage beyond it are separate models, so their
+    # cost is added here. Without it the trail locks a stop 0.05% short of
+    # flat and calls a small loss a scratch.
+    breakeven_buffer_pct: float = 0.0005
+
     # Let a winner run past the fixed target instead of taking it. Only sane
     # WITH a trail, since otherwise nothing closes the trade.
     release_target: bool = False
+
+    @classmethod
+    def runner(cls) -> TrailingStop:
+        """
+        Let winners run, cut losers at 1R. The point of pairing a trail with a
+        reward:risk above 1.
+
+        Arms at 0.75R — before the 2R target, or the position would close at
+        the target first and the trail would be dead code. On arming the stop
+        jumps to entry plus the round trip, so a trade that came good and then
+        turned is a scratch rather than a loss, and the fixed target is
+        released so nothing caps the upside but the trail itself.
+        """
+        return cls(enabled=True, activate_at_r=0.75, trail_r=1.0, step_r=0.10,
+                   lock_breakeven=True, release_target=True)
 
 
 @dataclass(frozen=True)

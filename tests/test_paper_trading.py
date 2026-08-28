@@ -899,7 +899,14 @@ class TestTrailingStop(unittest.TestCase):
         self.assertTrue(p.update_trail(self.ENTRY * 1.02, self.ENTRY, self._trail(), f))
         self.assertTrue(p.trail_active)
         self.assertGreater(p.stop_price, self.ENTRY)   # a loss is no longer possible
-        self.assertAlmostEqual(p.stop_price, self.ENTRY * (1 + f.round_trip_pct()), places=6)
+        # Breakeven clears the FULL round trip: brokerage plus the spread and
+        # slippage FeeModel does not know about. A stop that only covers the
+        # fee still books a loss and calls it a scratch.
+        t = self._trail()
+        self.assertAlmostEqual(
+            p.stop_price,
+            self.ENTRY * (1 + f.round_trip_pct() + t.breakeven_buffer_pct),
+            places=6)
 
     def test_disabled_trail_never_touches_the_stop(self):
         p = self._pos()
