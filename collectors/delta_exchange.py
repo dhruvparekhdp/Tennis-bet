@@ -47,6 +47,12 @@ SYMBOL_MAP = {
     "dogeusdt": "DOGEUSD",
     "avaxusdt": "AVAXUSD",
     "linkusdt": "LINKUSD",
+    # Gold and silver, which the venue lists as tokenised perpetuals at a
+    # tenth of the crypto fee — the cheap-to-trade markets the cost model has
+    # always had a separate frame for.
+    "xauusdt": "XAUTUSD",
+    "paxgusdt": "PAXGUSD",
+    "xagusdt": "SLVONUSD",
 }
 
 

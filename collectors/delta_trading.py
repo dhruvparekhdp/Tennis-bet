@@ -59,6 +59,22 @@ class OrderRefused(Exception):
     """A rail stopped this order. The message says which one."""
 
 
+# How far the signal's entry may sit from the venue's live price before the
+# trade is refused.
+#
+# The signals are priced from CoinDCX INR futures; the orders go to Delta.
+# Those are different books and they do not agree — observed live, an ETH
+# signal quoting 2517.00 against a Delta mid of 2501.83, a 0.6% gap. On a
+# SHORT with a 0.506% target that gap is fatal in a specific way: the take
+# profit sat at 2504.26, ABOVE the price the order would actually fill at, so
+# the trade was already past its target before it opened and the only
+# direction left was the stop.
+#
+# 0.15% is a third of a typical target here, so anything that could invert the
+# setup is caught while ordinary tick-to-tick drift is not.
+MAX_PRICE_DIVERGENCE_PCT = 0.0015
+
+
 @dataclass(frozen=True)
 class ContractSpec:
     """What one contract of a market is worth, read from the venue."""
@@ -120,6 +136,20 @@ class DeltaTradingClient:
     @property
     def has_credentials(self) -> bool:
         return bool(self.api_key and self.api_secret)
+
+    @property
+    def credential_gap(self) -> str:
+        """
+        Which half is missing, in words. "No API key configured" when only the
+        secret is absent sends you to check the thing that is already right.
+        """
+        if self.api_key and self.api_secret:
+            return ""
+        if self.api_key and not self.api_secret:
+            return "DELTA_API_SECRET is not set"
+        if self.api_secret and not self.api_key:
+            return "DELTA_API_KEY is not set"
+        return "DELTA_API_KEY and DELTA_API_SECRET are not set"
 
     def _sign(self, method: str, path: str, query: str, body: str) -> tuple[str, str]:
         """
@@ -236,7 +266,8 @@ class DeltaTradingClient:
     # ── the rails ─────────────────────────────────────────────────────────
 
     def check(self, symbol: str, price: float, contracts: int,
-              stop_price: float | None) -> ContractSpec:
+              stop_price: float | None,
+              venue_price: float | None = None) -> ContractSpec:
         """
         Every reason to refuse, checked before anything is built.
 
@@ -245,7 +276,7 @@ class DeltaTradingClient:
         if not self.enabled:
             raise OrderRefused("live trading is disabled")
         if not self.has_credentials:
-            raise OrderRefused("no API credentials configured")
+            raise OrderRefused(self.credential_gap)
         if not venue_symbol(symbol):
             raise OrderRefused(f"{symbol} is not listed on this venue")
         spec = self.spec_for(symbol)
@@ -260,6 +291,17 @@ class DeltaTradingClient:
         if price <= 0:
             raise OrderRefused("no price")
 
+        # The signal was priced on one venue and this order fills on another.
+        # A gap big enough to move the target past the market turns a valid
+        # setup into a trade that can only lose.
+        if venue_price and venue_price > 0:
+            gap = abs(price - venue_price) / venue_price
+            if gap > MAX_PRICE_DIVERGENCE_PCT:
+                raise OrderRefused(
+                    f"signal priced at {price:,.4f} but the venue is at "
+                    f"{venue_price:,.4f} — {gap * 100:.2f}% apart, so the "
+                    f"levels do not describe this market")
+
         notional_inr = spec.notional_usdt(price, contracts) * self.usdt_inr
         if notional_inr > self.max_notional_inr:
             raise OrderRefused(
@@ -270,7 +312,8 @@ class DeltaTradingClient:
     # ── orders ────────────────────────────────────────────────────────────
 
     def build_entry(self, symbol: str, is_long: bool, price: float,
-                    contracts: int, stop_price: float) -> dict:
+                    contracts: int, stop_price: float,
+                    venue_price: float | None = None) -> dict:
         """
         The entry order body. Pure, so a test can read it without a network.
 
@@ -280,7 +323,7 @@ class DeltaTradingClient:
         caller reaching this function without having decided where the trade
         is wrong.
         """
-        spec = self.check(symbol, price, contracts, stop_price)
+        spec = self.check(symbol, price, contracts, stop_price, venue_price)
         return {
             "product_id": spec.product_id,
             "size": int(contracts),
@@ -333,7 +376,8 @@ class DeltaTradingClient:
 
     async def place(self, symbol: str, is_long: bool, price: float, contracts: int,
                     stop_price: float, target_price: float | None = None,
-                    trail_amount: float | None = None) -> dict:
+                    trail_amount: float | None = None,
+                    venue_price: float | None = None) -> dict:
         """
         Enter, then protect. Two calls, because the venue has two endpoints.
 
@@ -348,7 +392,8 @@ class DeltaTradingClient:
         Dry run runs every check and builds both real bodies, sending neither.
         A rehearsal that skipped the rails would rehearse nothing.
         """
-        entry = self.build_entry(symbol, is_long, price, contracts, stop_price)
+        entry = self.build_entry(symbol, is_long, price, contracts, stop_price,
+                                 venue_price)
         bracket = self.build_bracket(symbol, is_long, stop_price, target_price,
                                      trail_amount)
         self.last_payload = {"entry": entry, "bracket": bracket}

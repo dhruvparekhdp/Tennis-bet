@@ -215,7 +215,10 @@ class TestLiquiditySweep(unittest.TestCase):
 class TestDeltaParsing(unittest.TestCase):
     def test_symbols_map_and_unlisted_ones_return_none(self):
         self.assertEqual(venue_symbol("ethusdt"), "ETHUSD")
-        self.assertIsNone(venue_symbol("xauusdt"))
+        # Gold is listed here as a tokenised perpetual, under a name string
+        # surgery would never produce.
+        self.assertEqual(venue_symbol("xauusdt"), "XAUTUSD")
+        self.assertIsNone(venue_symbol("nosuchusdt"))
 
     def test_candles_parse_from_the_result_envelope(self):
         got = parse_candles({"result": [
@@ -392,3 +395,63 @@ class TestOrderBodies(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPriceDivergence(unittest.TestCase):
+    """
+    Signals are priced on CoinDCX INR futures; orders go to Delta. Observed
+    live: an ETH signal quoting 2517.00 against a Delta mid of 2501.83. On that
+    SHORT the take profit sat at 2504.26 — above the price the order would
+    actually fill at — so the trade was past its target before it opened and
+    the only direction left was the stop.
+    """
+
+    def client(self):
+        c = DeltaTradingClient("key", "secret", enabled=True, dry_run=True,
+                               max_notional_inr=3000.0)
+        c._specs["ethusdt"] = ContractSpec(1282, "ETHUSD", 0.01, 0.1)
+        return c
+
+    def test_the_observed_gap_is_refused(self):
+        with self.assertRaises(OrderRefused) as ctx:
+            self.client().build_entry("ethusdt", False, 2517.0, 1, 2529.74,
+                                      venue_price=2501.83)
+        self.assertIn("apart", str(ctx.exception))
+
+    def test_ordinary_drift_is_allowed(self):
+        self.assertTrue(self.client().build_entry(
+            "ethusdt", False, 2517.0, 1, 2529.74, venue_price=2515.0))
+
+    def test_no_venue_price_means_no_opinion(self):
+        """Absent data is not evidence the prices agree — but it cannot veto."""
+        self.assertTrue(self.client().build_entry(
+            "ethusdt", False, 2517.0, 1, 2529.74))
+
+    def test_the_threshold_is_smaller_than_a_typical_target(self):
+        from collectors.delta_trading import MAX_PRICE_DIVERGENCE_PCT
+        self.assertLess(MAX_PRICE_DIVERGENCE_PCT, 0.00504)
+
+
+class TestRequestedMargin(unittest.TestCase):
+    def margin(self, raw):
+        from scheduler.health import _requested_margin
+        return _requested_margin(raw)
+
+    def test_a_typed_value_is_used(self):
+        self.assertEqual(self.margin("250"), 250.0)
+
+    def test_junk_falls_back_to_the_default(self):
+        from config.settings import settings
+        for raw in (None, "", "abc", "-5", "0"):
+            with self.subTest(raw=raw):
+                self.assertEqual(self.margin(raw), settings.delta_margin_inr)
+
+    def test_it_cannot_exceed_what_the_cap_allows(self):
+        """
+        Refusing at the box rather than after a round trip to the venue: a
+        margin that could never pass the notional cap is not a size, it is a
+        typo.
+        """
+        from config.settings import settings
+        ceiling = settings.delta_max_notional_inr / settings.delta_leverage
+        self.assertEqual(self.margin("999999"), ceiling)

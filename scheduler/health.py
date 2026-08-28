@@ -545,6 +545,26 @@ async def _api_signal_accuracy(runner, request: web.Request) -> web.Response:
     })
 
 
+def _requested_margin(raw) -> float:
+    """
+    Margin the desk asked for, clamped to something sane.
+
+    Comes from a text box, so it is whatever was typed. The floor stops a
+    zero or a minus sign producing a nonsense size; the ceiling is the
+    notional cap divided by leverage, because a margin that could never pass
+    the cap should be refused at the box rather than after a round trip to
+    the venue.
+    """
+    ceiling = _SETTINGS.delta_max_notional_inr / max(_SETTINGS.delta_leverage, 1.0)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _SETTINGS.delta_margin_inr
+    if value <= 0:
+        return _SETTINGS.delta_margin_inr
+    return min(value, ceiling)
+
+
 async def _api_trade_state(runner, request: web.Request) -> web.Response:
     """
     Everything the trading desk needs in one call: rails, account, book, plan.
@@ -555,20 +575,25 @@ async def _api_trade_state(runner, request: web.Request) -> web.Response:
     """
     from analysis.orderbook import imbalance, round_trip_execution_pct
     from analysis.scalp_levels import ScalpConfig, trailing_plan
-    from collectors.delta_trading import contracts_for
+    from collectors.delta_trading import MAX_PRICE_DIVERGENCE_PCT, contracts_for
 
     symbol = (request.query.get("symbol") or "ethusdt").lower()
     trader = getattr(runner, "delta_trader", None) if runner else None
+    margin_inr = _requested_margin(request.query.get("margin_inr"))
     out: dict = {
         "symbol": symbol,
         "rails": {
             "trading_enabled": _SETTINGS.delta_trading_enabled,
             "dry_run": _SETTINGS.delta_dry_run,
             "credentials": bool(_SETTINGS.delta_api_key and _SETTINGS.delta_api_secret),
+            "credential_gap": (trader.credential_gap if trader else
+                               "no trading client"),
             "max_notional_inr": _SETTINGS.delta_max_notional_inr,
-            "margin_inr": _SETTINGS.delta_margin_inr,
+            "margin_inr": margin_inr,
+            "default_margin_inr": _SETTINGS.delta_margin_inr,
             "leverage": _SETTINGS.delta_leverage,
             "usdt_inr": _SETTINGS.paper_usdt_inr,
+            "max_divergence_pct": round(MAX_PRICE_DIVERGENCE_PCT * 100, 3),
         },
         "account": {"balances": [], "positions": [], "open_orders": 0},
         "book": None, "plan": None, "signal": None,
@@ -599,7 +624,7 @@ async def _api_trade_state(runner, request: web.Request) -> web.Response:
     spec = trader.spec_for(symbol) if trader else None
     contracts = 0
     if spec and price > 0:
-        contracts = contracts_for(_SETTINGS.delta_margin_inr, _SETTINGS.delta_leverage,
+        contracts = contracts_for(margin_inr, _SETTINGS.delta_leverage,
                                   price, spec, _SETTINGS.paper_usdt_inr)
         out["contract"] = {
             "product_id": spec.product_id, "venue_symbol": spec.symbol,
@@ -631,6 +656,15 @@ async def _api_trade_state(runner, request: web.Request) -> web.Response:
     async with AsyncSessionFactory() as session:
         rows = await Repository(session).crypto_signals_between(1, limit=200)
     latest = next((r for r in rows if r.symbol.lower() == symbol), None)
+    venue_price = book.mid if book is not None else 0.0
+    if latest is not None and venue_price > 0 and latest.current_price > 0:
+        gap = abs(latest.current_price - venue_price) / venue_price
+        out["divergence"] = {
+            "signal_price": latest.current_price,
+            "venue_price": venue_price,
+            "gap_pct": round(gap * 100, 3),
+            "blocked": gap > MAX_PRICE_DIVERGENCE_PCT,
+        }
     if latest is not None:
         cfg = ScalpConfig().for_symbol(symbol)
         plan = trailing_plan(latest.current_price, latest.stop_loss, cfg)
@@ -660,6 +694,7 @@ async def _api_trade_execute(runner, request: web.Request) -> web.Response:
 
     body = await request.json() if request.can_read_body else {}
     symbol = (body.get("symbol") or "").lower()
+    margin_inr = _requested_margin(body.get("margin_inr"))
     trader = getattr(runner, "delta_trader", None) if runner else None
     if not symbol or trader is None:
         return web.json_response({"error": "symbol required"}, status=400)
@@ -678,14 +713,22 @@ async def _api_trade_execute(runner, request: web.Request) -> web.Response:
         spec = trader.spec_for(symbol)
         if spec is None:
             return web.json_response({"error": f"{symbol} not listed"}, status=409)
-        contracts = contracts_for(_SETTINGS.delta_margin_inr, _SETTINGS.delta_leverage,
+        contracts = contracts_for(margin_inr, _SETTINGS.delta_leverage,
                                   sig.current_price, spec, _SETTINGS.paper_usdt_inr)
+        # The live book, so the divergence rail has something to compare
+        # against. Without it a signal priced on another venue would be sent
+        # verbatim to this one.
+        state = await runner.crypto_store.get(symbol)
+        vbook = getattr(state, "order_book", None) if state else None
+        if vbook is None:
+            vbook = await runner.delta.fetch_orderbook(symbol)
         trail = abs(sig.current_price - sig.stop_loss)
         result = await trader.place(
             symbol=symbol, is_long=sig.direction == "long",
             price=sig.current_price, contracts=contracts,
             stop_price=sig.stop_loss, target_price=sig.target_price,
-            trail_amount=trail)
+            trail_amount=trail,
+            venue_price=vbook.mid if vbook is not None else None)
         return web.json_response(result)
     except OrderRefused as exc:
         return web.json_response({"refused": str(exc)}, status=409)
@@ -1743,6 +1786,16 @@ footer{text-align:center;padding:16px;color:#334155;font-size:11px;border-top:1p
    between stop and target without reading a single number. */
 /* Two columns once there is room. One card stretched across 1140px puts the
    stop and the target so far apart they stop reading as one setup. */
+.desk-link{display:flex;align-items:center;gap:13px;text-decoration:none;
+  background:linear-gradient(90deg,var(--acc-t),transparent 70%),var(--panel);
+  border:1px solid var(--acc-t2);border-radius:12px;padding:13px 16px;margin-bottom:14px}
+.desk-link:hover{border-color:var(--accent)}
+.desk-ico{font-size:21px;line-height:1}
+.desk-txt{display:flex;flex-direction:column;gap:2px;min-width:0}
+.desk-txt b{color:var(--text-strong);font-size:14.5px}
+.desk-txt span{color:var(--muted);font-size:12px}
+.desk-go{margin-left:auto;color:var(--accent);font-weight:700;font-size:13px;white-space:nowrap}
+@media(max-width:620px){.desk-txt span{display:none}}
 #cr-signals,#dash-signals{display:grid;gap:12px;
   grid-template-columns:repeat(auto-fill,minmax(430px,1fr))}
 #cr-signals .sig,#dash-signals .sig{margin-bottom:0}
@@ -1947,6 +2000,7 @@ section h2{color:var(--accent-soft)}
   <div class="side-group">Live</div>
   <div class="side-item" data-tab="dashboard" onclick="switchTab('dashboard')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h7V3H3zM14 21h7v-9h-7zM14 9h7V3h-7zM3 21h7v-6H3z"/></svg><span>Dashboard</span></div>
   <div class="side-item" data-tab="crypto" onclick="switchTab('crypto')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M17 7h4v4"/></svg><span>Signals</span></div>
+  <a class="side-item" data-tab="trade" href="/trade"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg><span>Live Desk</span></a>
   <div class="side-item" data-tab="paper" onclick="switchTab('paper')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h12"/></svg><span>Paper Trading</span></div>
   <div class="side-item" data-tab="guard" onclick="switchTab('guard')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V7z"/></svg><span>Session Guard</span></div>
   <div class="side-group">Analysis</div>
@@ -1955,7 +2009,6 @@ section h2{color:var(--accent-soft)}
   <div class="side-item side-secondary" data-tab="watchlist" onclick="switchTab('watchlist')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.2l5.9-.9z"/></svg><span>Watchlist</span></div>
   <div class="side-group">Other</div>
   <a class="side-item side-secondary" data-tab="sports" href="/sports"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18M3 12h18"/></svg><span>Sports</span></a>
-  <a class="side-item side-secondary" data-tab="trade" href="/trade"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg><span>Live Desk</span></a>
   <a class="side-item side-secondary" data-tab="audit" href="/audit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6v5l4 9a2 2 0 01-1.8 3H6.8A2 2 0 015 16l4-9z"/><path d="M9 8h6"/></svg><span>Signal Audit</span></a>
   <a class="side-item side-secondary" data-tab="diag" href="/api/debug/collectors"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4"/></svg><span>Diagnostics</span></a>
   <a class="side-item side-secondary" data-tab="settings" href="/settings"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 00-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 00-1.7-1L14.5 3h-4l-.4 2.6a7 7 0 00-1.7 1l-2.4-1-2 3.4L6 11a7 7 0 000 2l-2 1.6 2 3.4 2.4-1a7 7 0 001.7 1l.4 2.6h4l.4-2.6a7 7 0 001.7-1l2.4 1 2-3.4-2-1.6a7 7 0 00.1-1z"/></svg><span>Settings</span></a>
@@ -1993,6 +2046,12 @@ section h2{color:var(--accent-soft)}
 
 
 <div id="tab-dashboard" class="tab-content active">
+  <a class="desk-link" href="/trade">
+    <span class="desk-ico">&#9889;</span>
+    <span class="desk-txt"><b>Live Desk</b>
+      <span>Delta Exchange India &middot; place the current signal, or rehearse it</span></span>
+    <span class="desk-go">Open &rarr;</span>
+  </a>
   <div class="cards" id="dash-cards"></div>
   <section>
     <h2>Predictions &middot; last 7 days</h2>
@@ -4905,261 +4964,386 @@ _TRADE_HTML = """<!DOCTYPE html>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-  background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:60px;font-size:13px}
-header{background:var(--panel);border-bottom:1px solid var(--line);padding:11px 16px;
-  display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:30}
-header h1{font-size:16px;font-weight:700;color:var(--text-strong);display:flex;gap:8px;align-items:center}
+  background:var(--bg);color:var(--text);min-height:100vh;font-size:13px}
+header{background:var(--panel);border-bottom:1px solid var(--line);padding:10px 16px;
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:sticky;top:0;z-index:30}
+header h1{font-size:15px;font-weight:700;color:var(--text-strong);display:flex;gap:7px;align-items:center}
 a.nav-btn{background:var(--acc-t);border:1px solid var(--acc-t2);color:var(--accent);font-size:12px;
   font-weight:600;padding:5px 12px;border-radius:8px;text-decoration:none;white-space:nowrap}
 .spacer{margin-left:auto}
-main{padding:14px 16px;max-width:1240px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.ticker{display:flex;align-items:baseline;gap:9px}
+.ticker b{font-size:18px;color:var(--text-strong);font-variant-numeric:tabular-nums}
+.ticker .sym{font-size:13px;font-weight:700;letter-spacing:.02em}
 
-/* the rail banner is the loudest thing on the page, by design */
-.rails{border-radius:10px;padding:11px 14px;display:flex;gap:10px;align-items:center;
-  flex-wrap:wrap;font-weight:600;font-size:13px;border:1px solid}
+/* Delta's own shape: markets on the left, the trade in the middle, book right */
+.shell{display:grid;grid-template-columns:236px minmax(0,1fr) 300px;gap:0;
+  min-height:calc(100vh - 46px)}
+.rail{border-right:1px solid var(--line);background:var(--panel2);overflow-y:auto}
+.rail h2,.side h2,.mid h2{font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted2);font-weight:700;padding:11px 14px 7px}
+.mkt{display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:9px 14px;cursor:pointer;
+  border-left:2px solid transparent;border-bottom:1px solid var(--line2)}
+.mkt:hover{background:var(--line2)}
+.mkt.on{background:var(--panel);border-left-color:var(--accent)}
+.mkt .s{font-weight:700;color:var(--text-strong);font-size:13px}
+.mkt .p{font-variant-numeric:tabular-nums;font-size:13px}
+.mkt .n{grid-column:1;font-size:11px;color:var(--muted2)}
+.mkt .c{grid-column:2;font-size:11px;font-variant-numeric:tabular-nums}
+.mkt .flag{display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--accent);margin-left:5px;vertical-align:middle}
+.mid{padding:0 18px 40px;overflow-y:auto}
+.side{border-left:1px solid var(--line);background:var(--panel2);overflow-y:auto}
+
+.rails{border-radius:9px;padding:10px 13px;display:flex;gap:9px;align-items:center;
+  flex-wrap:wrap;font-weight:600;font-size:12.5px;border:1px solid;margin:14px 0}
 .rails.safe{background:var(--pos-t);border-color:var(--pos-t2);color:var(--pos)}
 .rails.armed{background:var(--neg-t);border-color:var(--neg-t2);color:var(--neg)}
-.rails .sub{font-weight:400;color:var(--muted);font-size:12px}
-.rails .dot{width:9px;height:9px;border-radius:50%;background:currentColor;flex:none}
+.rails .sub{font-weight:400;color:var(--muted);font-size:11.5px}
+.rails .dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
 
-h2{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted2);
-  font-weight:700;margin-bottom:7px}
-.cols{display:grid;grid-template-columns:1.15fr .85fr;gap:14px;align-items:start}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 15px}
+.warn{background:var(--neg-t);border:1px solid var(--neg-t2);color:var(--neg);
+  border-radius:9px;padding:10px 13px;font-size:12.5px;margin-bottom:14px;line-height:1.5}
+.warn b{color:var(--neg-strong)}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:13px 15px;margin-bottom:14px}
 .kv{display:flex;justify-content:space-between;gap:12px;padding:5px 0;
   border-bottom:1px solid var(--line2);font-size:12.5px}
 .kv:last-child{border-bottom:none}
 .kv span:first-child{color:var(--muted)}
 .kv b{color:var(--text-strong);font-variant-numeric:tabular-nums;font-weight:600}
-.pos{color:var(--pos)}.neg{color:var(--neg)}.acc{color:var(--accent)}
-.muted{color:var(--muted)}
+.pos{color:var(--pos)}.neg{color:var(--neg)}.acc{color:var(--accent)}.muted{color:var(--muted)}
 
-.levels{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:10px 0}
+.levels{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px;margin:10px 0}
 .levels div{background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:9px 10px}
 .levels label{display:block;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;
   color:var(--muted2);margin-bottom:3px}
-.levels b{font-size:16px;font-variant-numeric:tabular-nums}
+.levels b{font-size:15px;font-variant-numeric:tabular-nums}
 
-/* order book ladder */
-.ladder{font-variant-numeric:tabular-nums;font-size:12px}
-.lrow{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:2px 6px;position:relative}
-.lrow i{position:absolute;top:0;bottom:0;right:0;display:block;opacity:.16}
-.lrow.bid i{background:var(--pos)}
-.lrow.ask i{background:var(--neg)}
+.amount{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin:4px 0 10px}
+.fld{display:flex;flex-direction:column;gap:4px}
+.fld label{font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted2)}
+.fld input,.fld select{background:var(--sunk);border:1px solid var(--line);color:var(--text);
+  border-radius:8px;padding:9px 11px;font-size:15px;font-family:inherit;
+  font-variant-numeric:tabular-nums;width:130px;min-height:42px}
+.fld input:focus{outline:2px solid var(--accent);outline-offset:1px}
+.quick{display:flex;gap:6px;flex-wrap:wrap}
+.quick button{background:var(--panel2);border:1px solid var(--line);color:var(--muted);
+  font-size:12px;font-weight:600;padding:7px 11px;border-radius:7px;min-height:34px}
+.quick button:hover{border-color:var(--accent);color:var(--accent)}
+
+.ladder{font-variant-numeric:tabular-nums;font-size:11.5px;padding:0 8px 12px}
+.lrow{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:2px 6px;position:relative}
+.lrow i{position:absolute;top:0;bottom:0;right:0;display:block;opacity:.15}
+.lrow.bid i{background:var(--pos)} .lrow.ask i{background:var(--neg)}
 .lrow span{position:relative}
 .lrow .p{font-weight:600}
-.lrow.bid .p{color:var(--pos)}
-.lrow.ask .p{color:var(--neg)}
-.lmid{text-align:center;padding:6px;color:var(--muted);font-size:11.5px;
+.lrow.bid .p{color:var(--pos)} .lrow.ask .p{color:var(--neg)}
+.lmid{text-align:center;padding:7px;color:var(--muted);font-size:11.5px;
   border-top:1px dashed var(--line);border-bottom:1px dashed var(--line);margin:4px 0}
 
 .actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:12px}
 button{font-family:inherit;font-size:13.5px;font-weight:700;border-radius:9px;padding:11px 18px;
   cursor:pointer;border:1px solid transparent;min-height:44px}
-button:disabled{opacity:.45;cursor:not-allowed}
+button:disabled{opacity:.4;cursor:not-allowed}
 .btn-go{background:var(--pos-btn);color:#fff}
 .btn-dry{background:var(--acc-t);border-color:var(--acc-t2);color:var(--accent)}
 .btn-kill{background:var(--neg-btn);color:#fff;margin-left:auto}
 .out{margin-top:11px;background:var(--sunk);border:1px solid var(--line2);border-radius:8px;
   padding:10px 12px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;
-  white-space:pre-wrap;word-break:break-word;max-height:280px;overflow:auto;color:var(--muted)}
+  white-space:pre-wrap;word-break:break-word;max-height:240px;overflow:auto;color:var(--muted)}
 .empty{color:var(--muted2);font-size:12.5px;padding:10px 0}
 .note{font-size:11.5px;color:var(--muted2);line-height:1.55;margin-top:8px}
-select{background:var(--sunk);border:1px solid var(--line);color:var(--text);border-radius:7px;
-  padding:6px 9px;font-size:13px;font-family:inherit;min-height:36px}
-@media(max-width:820px){
-  .cols{grid-template-columns:1fr}
-  main{padding:12px}
+
+@media(max-width:1000px){
+  .shell{grid-template-columns:1fr}
+  /* The rail becomes a horizontal strip. The flex has to go on the LIST, not
+     on .rail — the list is a child wrapper, so flexing the parent only lays
+     out the heading beside it and leaves the markets stacked down the page. */
+  .rail{border-right:none;border-bottom:1px solid var(--line);padding-bottom:2px}
+  .rail h2{display:none}
+  #markets{display:flex;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .mkt{border-bottom:none;border-left:none;border-top:2px solid transparent;
+    grid-template-columns:auto;min-width:104px;flex:none;padding:8px 12px}
+  .mkt.on{border-left:none;border-top-color:var(--accent)}
+  .mkt .c{grid-column:1}
+  .side{border-left:none;border-top:1px solid var(--line)}
+  .mid{padding:0 14px 32px}
   .levels{grid-template-columns:1fr}
-  button{width:100%}
-  .btn-kill{margin-left:0}
-  select{font-size:16px;min-height:42px}
+  .fld input,.fld select{width:100%;font-size:16px}
+  .fld{flex:1 1 130px}
+  .actions button{width:100%} .btn-kill{margin-left:0}
 }
 </style>
 </head>
 <body>
 <header>
   <h1>&#9889; Live Desk</h1>
-  <span class="muted" id="venue">Delta Exchange India</span>
-  <select id="sym" onchange="load()"></select>
+  <span class="muted">Delta Exchange India</span>
+  <div class="ticker"><span class="sym" id="t-sym">&mdash;</span><b id="t-px">&mdash;</b>
+    <span class="muted" id="t-sub"></span></div>
   <span class="spacer"></span>
   <a class="nav-btn" href="/">&larr; Dashboard</a>
   <a class="nav-btn" href="/audit">Audit</a>
 </header>
-<main>
-  <div class="rails safe" id="rails"><span class="dot"></span><span>checking&hellip;</span></div>
 
-  <div class="cols">
-    <div>
-      <div class="panel">
-        <h2>The signal</h2>
-        <div id="signal"><div class="empty">loading&hellip;</div></div>
-      </div>
+<div class="shell">
+  <div class="rail" id="rail"><h2>Markets</h2><div id="markets"></div></div>
 
-      <div class="panel" style="margin-top:14px">
-        <h2>Size and cost</h2>
-        <div id="sizing"><div class="empty">loading&hellip;</div></div>
-        <div class="actions">
-          <button class="btn-dry" id="btn-dry" onclick="execute(true)">Rehearse (dry run)</button>
-          <button class="btn-go" id="btn-go" onclick="execute(false)">Place order</button>
-          <button class="btn-kill" onclick="flatten()">Flatten everything</button>
-        </div>
-        <div class="out" id="out">No order sent this session.</div>
-      </div>
+  <div class="mid">
+    <div class="rails safe" id="rails"><span class="dot"></span><span>checking&hellip;</span></div>
+    <div id="warn"></div>
+
+    <div class="card">
+      <h2 style="padding:0 0 7px">The signal</h2>
+      <div id="signal"><div class="empty">loading&hellip;</div></div>
     </div>
 
-    <div>
-      <div class="panel">
-        <h2>Order book</h2>
-        <div class="ladder" id="book"><div class="empty">loading&hellip;</div></div>
+    <div class="card">
+      <h2 style="padding:0 0 7px">How much</h2>
+      <div class="amount">
+        <div class="fld"><label id="amt-label">Margin (&#8377;)</label>
+          <input id="amt" type="number" min="1" step="10" inputmode="decimal"
+                 onchange="onAmount()" oninput="preview()"></div>
+        <div class="fld"><label>Currency</label>
+          <select id="cur" onchange="onCurrency()">
+            <option value="inr">INR &#8377;</option>
+            <option value="usd">USD $</option></select></div>
+        <div class="quick" id="quick"></div>
       </div>
-      <div class="panel" style="margin-top:14px">
-        <h2>Account</h2>
-        <div id="account"><div class="empty">loading&hellip;</div></div>
+      <div id="sizing"></div>
+      <div class="actions">
+        <button class="btn-dry" onclick="execute(true)">Rehearse</button>
+        <button class="btn-go" id="btn-go" onclick="execute(false)">Place order</button>
+        <button class="btn-kill" onclick="flatten()">Flatten everything</button>
       </div>
+      <div class="out" id="out">No order sent this session.</div>
     </div>
   </div>
-</main>
+
+  <div class="side">
+    <h2>Order book</h2>
+    <div class="ladder" id="book"><div class="empty" style="padding:0 14px">loading&hellip;</div></div>
+    <h2>Account</h2>
+    <div style="padding:0 14px 20px" id="account"><div class="empty">loading&hellip;</div></div>
+  </div>
+</div>
+
 <script>
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-let DATA=null;
-const SYMS=['ethusdt','btcusdt','solusdt','xrpusdt','ltcusdt','bchusdt'];
+const MARKETS=['ethusdt','btcusdt','solusdt','xrpusdt','ltcusdt','bchusdt','xauusdt'];
+let DATA=null, SYMBOL='ethusdt', PRICES={}, MARGIN=null, CUR='inr';
 
-function num(v,d){ return v==null?'&mdash;':Number(v).toLocaleString('en-IN',
-  {minimumFractionDigits:d==null?2:d,maximumFractionDigits:d==null?2:d}); }
+function num(v,d){ return v==null||isNaN(v)?'&mdash;'
+  :Number(v).toLocaleString('en-IN',{minimumFractionDigits:d==null?2:d,
+                                     maximumFractionDigits:d==null?2:d}); }
+function rate(){ return (DATA&&DATA.rails.usdt_inr)||102; }
+// The box takes either currency; everything downstream is rupees, converted once
+// here so no other function has to know which unit was typed.
+function marginInr(){
+  const v=parseFloat(document.getElementById('amt').value);
+  if(!v||v<=0) return null;
+  return CUR==='usd' ? v*rate() : v;
+}
 
-function initSyms(){
-  const el=document.getElementById('sym');
-  el.innerHTML=SYMS.map(s=>`<option value="${s}">${s.toUpperCase()}</option>`).join('');
+function initMarkets(){
   const q=new URLSearchParams(location.search).get('symbol');
-  if(q&&SYMS.includes(q)) el.value=q;
+  if(q&&MARKETS.includes(q)) SYMBOL=q;
+  renderMarkets();
+  fetch('/api/crypto/coins').then(r=>r.json()).then(rows=>{
+    (rows||[]).forEach(c=>{PRICES[(c.symbol||'').toLowerCase()]=c;});
+    renderMarkets();
+  }).catch(()=>{});
+}
+function renderMarkets(){
+  document.getElementById('markets').innerHTML=MARKETS.map(s=>{
+    const c=PRICES[s]||{}, ch=c.price_change_24h_pct;
+    return `<div class="mkt ${s===SYMBOL?'on':''}" onclick="pick('${s}')">
+      <span class="s">${esc(s.replace('usdt','').toUpperCase())}</span>
+      <span class="p">${c.current_price?num(c.current_price,c.current_price>100?2:4):'&mdash;'}</span>
+      <span class="n">${esc(s.toUpperCase())}</span>
+      <span class="c ${ch>0?'pos':(ch<0?'neg':'muted')}">${ch==null?''
+        :(ch>0?'+':'')+ch.toFixed(2)+'%'}</span></div>`;
+  }).join('');
+}
+function pick(s){ SYMBOL=s; history.replaceState(null,'','?symbol='+s);
+  renderMarkets(); load(); }
+
+function onCurrency(){
+  const prev=marginInr(); CUR=document.getElementById('cur').value;
+  document.getElementById('amt-label').textContent=CUR==='usd'?'Margin ($)':'Margin (₹)';
+  if(prev) document.getElementById('amt').value=(CUR==='usd'?prev/rate():prev).toFixed(2);
+  renderQuick(); onAmount();
+}
+// Shortcuts, deduplicated against the ceiling — at a Rs3,000 cap and 10x the
+// ceiling IS Rs300, so an undeduped list renders "300 300 max" and invites the
+// question of what the difference is.
+function renderQuick(){
+  const cap=DATA?DATA.rails.max_notional_inr/DATA.rails.leverage:300;
+  // Filter in the unit the buttons are labelled in. Comparing dollar steps
+  // against a rupee ceiling let $5 and $10 through on a Rs300 ($2.94) cap.
+  const ceiling=CUR==='usd'?cap/rate():cap;
+  const raw=(CUR==='usd'?[1,2,5,10]:[100,200,500,1000]).filter(v=>v<ceiling*0.98);
+  const label=v=>(CUR==='usd'?'$':'₹')+(v>=100?Math.round(v):v.toFixed(2));
+  document.getElementById('quick').innerHTML=raw.map(v=>
+    `<button onclick="setAmt(${v})">${label(v)}</button>`).join('')
+    +`<button onclick="setAmt(${(CUR==='usd'?cap/rate():cap).toFixed(2)})"
+        title="the most the notional cap allows">max</button>`;
+}
+function setAmt(v){ document.getElementById('amt').value=v; onAmount(); }
+function onAmount(){ MARGIN=marginInr(); load(); }
+// Instant feedback while typing, without a round trip on every keystroke.
+function preview(){
+  const m=marginInr(), c=DATA&&DATA.contract;
+  if(!m||!c||!DATA.book) return;
+  const per=DATA.book.mid*c.contract_value*rate()/DATA.rails.leverage;
+  const el=document.getElementById('live-n');
+  if(el) el.textContent=Math.max(0,Math.floor(m/per));
 }
 
 async function load(){
-  const sym=document.getElementById('sym').value;
-  history.replaceState(null,'','?symbol='+sym);
-  try{
-    DATA=await fetch('/api/trade/state?symbol='+sym).then(r=>r.json());
-  }catch(e){ document.getElementById('rails').innerHTML='failed to load — '+esc(e); return; }
-  renderRails(); renderSignal(); renderSizing(); renderBook(); renderAccount();
+  let url='/api/trade/state?symbol='+SYMBOL;
+  if(MARGIN) url+='&margin_inr='+MARGIN;
+  try{ DATA=await fetch(url).then(r=>r.json()); }
+  catch(e){ document.getElementById('rails').innerHTML='failed to load — '+esc(e); return; }
+  if(document.getElementById('amt').value==='')
+    document.getElementById('amt').value=DATA.rails.margin_inr;
+  if(!document.getElementById('quick').innerHTML) renderQuick();
+  renderTicker(); renderRails(); renderWarn(); renderSignal();
+  renderSizing(); renderBook(); renderAccount();
 }
 
-// The rails banner is the first thing on the page because it answers the only
-// question that matters before clicking: can this spend money right now.
+function renderTicker(){
+  const b=DATA.book;
+  document.getElementById('t-sym').textContent=SYMBOL.toUpperCase();
+  document.getElementById('t-px').innerHTML=b?num(b.mid,b.mid>100?2:4):'&mdash;';
+  document.getElementById('t-sub').textContent=b?`spread ${b.spread_pct}%`:'no book';
+}
+
+// The rails banner answers the only question that matters before clicking:
+// can this spend money right now.
 function renderRails(){
   const r=DATA.rails, el=document.getElementById('rails');
-  const live = r.trading_enabled && !r.dry_run && r.credentials;
+  const live=r.trading_enabled && !r.dry_run && r.credentials;
   el.className='rails '+(live?'armed':'safe');
   const bits=[];
-  if(!r.credentials) bits.push('no API key configured');
-  if(!r.trading_enabled) bits.push('trading switch off');
+  if(r.credential_gap) bits.push(r.credential_gap);
+  if(!r.trading_enabled) bits.push('DELTA_TRADING_ENABLED is off');
   if(r.dry_run) bits.push('dry run');
   el.innerHTML=`<span class="dot"></span>
-    <span>${live?'ARMED — orders will reach the market':'SAFE — nothing will be sent'}</span>
+    <span>${live?'ARMED — orders reach the market':'SAFE — nothing will be sent'}</span>
     <span class="sub">${bits.length?bits.join(' · '):'all rails open'}</span>
-    <span class="sub" style="margin-left:auto">cap &#8377;${num(r.max_notional_inr,0)}
-      · margin &#8377;${num(r.margin_inr,0)} · ${r.leverage}&times;</span>`;
-  document.getElementById('btn-go').disabled = !live;
+    <span class="sub" style="margin-left:auto">cap ₹${num(r.max_notional_inr,0)}
+      · ${r.leverage}×</span>`;
+  document.getElementById('btn-go').disabled=!live;
+}
+
+// A signal priced on one venue against a book on another is the failure that
+// turns a valid setup into a trade that can only lose.
+function renderWarn(){
+  const d=DATA.divergence, el=document.getElementById('warn');
+  if(!d||!d.blocked){ el.innerHTML=''; return; }
+  el.innerHTML=`<div class="warn">
+    <b>Prices disagree by ${d.gap_pct}%.</b> The signal was priced at
+    ${num(d.signal_price,4)} on CoinDCX; Delta is at ${num(d.venue_price,4)}.
+    The levels do not describe this market, so the order is refused —
+    on a short that gap can put the take profit on the wrong side of the price
+    before the trade even opens.</div>`;
 }
 
 function renderSignal(){
   const s=DATA.signal, p=DATA.plan, el=document.getElementById('signal');
-  if(!s){ el.innerHTML='<div class="empty">No live signal for this symbol in the last 24h. '
+  if(!s){ el.innerHTML='<div class="empty">No live signal for this market in the last 24h. '
     +'The desk only trades what the engine published.</div>'; return; }
   const long=s.direction==='long';
   const move=Math.abs(s.target_price-s.current_price)/s.current_price*100;
   const risk=Math.abs(s.current_price-s.stop_loss)/s.current_price*100;
   el.innerHTML=`
-    <div class="kv"><span>${esc(s.signal_type)} · within ${esc(s.timeframe)}</span>
+    <div class="kv"><span>${esc(s.signal_type)} · within ${esc(s.timeframe)}
+      · ${s.confidence}% confidence</span>
       <b class="${long?'pos':'neg'}">${long?'LONG':'SHORT'}</b></div>
     <div class="levels">
       <div><label>Stop loss</label><b class="neg">${num(s.stop_loss,4)}</b>
-        <span class="muted">&minus;${risk.toFixed(3)}%</span></div>
+        <span class="muted">−${risk.toFixed(3)}%</span></div>
       <div><label>Entry</label><b>${num(s.current_price,4)}</b>
         <span class="muted">signal price</span></div>
       <div><label>Take profit</label><b class="pos">${num(s.target_price,4)}</b>
         <span class="muted">+${move.toFixed(3)}%</span></div>
     </div>
     <div class="kv"><span>Reward : risk</span><b>${(move/risk).toFixed(2)}</b></div>
-    <div class="kv"><span>Confidence</span><b>${s.confidence}%</b></div>
     ${p?`<div class="kv"><span>Trail arms at</span><b>${num(p.arm_price,4)}</b></div>
     <div class="kv"><span>Then stop to</span><b>${num(p.breakeven_stop,4)}</b></div>
-    <div class="kv"><span>Riding behind</span><b>${num(p.trail_distance,4)}</b></div>`:''}
-    <div class="note">The trail is sent with the order as
-      <code>bracket_trail_amount</code>, so the venue ratchets it server-side —
-      it keeps working while this instance is asleep.</div>`;
+    <div class="kv"><span>Riding behind</span><b>${num(p.trail_distance,4)}</b></div>
+    <div class="note">Sent as <code>bracket_trail_amount</code>, so the venue ratchets it
+      server-side and it keeps working while this instance is asleep.</div>`:''}`;
 }
 
 function renderSizing(){
   const c=DATA.contract, b=DATA.book, r=DATA.rails, el=document.getElementById('sizing');
-  if(!c){ el.innerHTML='<div class="empty">No contract spec — the venue does not list this '
-    +'symbol, or credentials are missing.</div>'; return; }
+  if(!c){ el.innerHTML='<div class="empty">No contract spec — add API keys, or the venue '
+    +'does not list this market.</div>'; return; }
   const meas=b&&b.measured_execution_pct!=null;
   el.innerHTML=`
-    <div class="kv"><span>Contracts affordable</span>
-      <b class="${c.contracts_affordable?'':'neg'}">${c.contracts_affordable}</b></div>
-    <div class="kv"><span>One contract</span><b>${c.contract_value} ${esc(DATA.symbol.replace('usdt','').toUpperCase())}</b></div>
-    <div class="kv"><span>Notional</span><b>&#8377;${num(c.notional_inr,0)}</b></div>
-    <div class="kv"><span>Spread (measured)</span>
-      <b>${b?b.spread_pct+'%':'&mdash;'}</b></div>
+    <div class="kv"><span>Contracts</span>
+      <b class="${c.contracts_affordable?'':'neg'}" id="live-n">${c.contracts_affordable}</b></div>
+    <div class="kv"><span>One contract</span>
+      <b>${c.contract_value} ${esc(SYMBOL.replace('usdt','').toUpperCase())}
+        ≈ ₹${num(c.notional_inr/Math.max(c.contracts_affordable,1),0)}</b></div>
+    <div class="kv"><span>Position notional</span><b>₹${num(c.notional_inr,0)}</b></div>
     <div class="kv"><span>Round trip execution</span>
       <b class="${meas?'acc':''}">${meas?b.measured_execution_pct+'% measured'
         :(b?b.assumed_execution_pct+'% assumed':'&mdash;')}</b></div>
-    ${c.contracts_affordable<1?`<div class="note neg">&#8377;${num(r.margin_inr,0)} at
-      ${r.leverage}&times; buys less than one contract here. Raise the margin or the leverage —
-      the client rounds down and refuses rather than taking more risk than you asked for.</div>`
-      :`<div class="note">Sizing quantises hard at this stake: one contract is the whole
-      position, so there is no finer adjustment than on or off.</div>`}`;
+    ${c.contracts_affordable<1?`<div class="note neg">This margin buys less than one
+      contract. Raise it — the client rounds down and refuses rather than taking more
+      risk than you asked for.</div>`:''}`;
 }
 
 function renderBook(){
   const b=DATA.book, el=document.getElementById('book');
-  if(!b){ el.innerHTML='<div class="empty">No book from the venue.</div>'; return; }
-  const all=[...b.bids.map(x=>x[1]),...b.asks.map(x=>x[1])];
-  const max=Math.max(1,...all);
-  const row=(lvl,side)=>`<div class="lrow ${side}">
-    <i style="width:${lvl[1]/max*100}%"></i>
-    <span class="p">${num(lvl[0],4)}</span><span>${num(lvl[1],3)}</span></div>`;
+  if(!b){ el.innerHTML='<div class="empty" style="padding:0 14px">No book from the venue.</div>';
+    return; }
+  const max=Math.max(1,...[...b.bids,...b.asks].map(x=>x[1]));
+  const dp=b.mid>100?2:4;
+  const row=(l,side)=>`<div class="lrow ${side}"><i style="width:${l[1]/max*100}%"></i>
+    <span class="p">${num(l[0],dp)}</span><span>${num(l[1],3)}</span></div>`;
   el.innerHTML=b.asks.slice(0,8).reverse().map(l=>row(l,'ask')).join('')
-    +`<div class="lmid">mid ${num(b.mid,4)} · spread ${b.spread_pct}%
-       · imbalance ${b.imbalance==null?'—':(b.imbalance*100).toFixed(0)+'%'}</div>`
+    +`<div class="lmid">mid ${num(b.mid,dp)} · spread ${b.spread_pct}%
+      · imbalance ${b.imbalance==null?'—':(b.imbalance*100).toFixed(0)+'%'}</div>`
     +b.bids.slice(0,8).map(l=>row(l,'bid')).join('');
 }
 
 function renderAccount(){
   const a=DATA.account, el=document.getElementById('account');
   if(a.error){ el.innerHTML=`<div class="empty">${esc(a.error)}</div>`; return; }
-  if(!a.balances.length && !a.positions.length)
-    { el.innerHTML='<div class="empty">No balances or positions returned. '
-      +'Add API keys to see the account.</div>'; return; }
-  const bal=a.balances.map(w=>`<div class="kv"><span>${esc(w.asset_symbol||w.asset_id)}</span>
-    <b>${num(w.available_balance||w.balance,4)}</b></div>`).join('');
-  const pos=a.positions.length? a.positions.map(p=>`<div class="kv">
-      <span>${esc(p.product_symbol||p.product_id)} · size ${esc(p.size)}</span>
-      <b class="${Number(p.unrealized_pnl||0)>=0?'pos':'neg'}">${num(p.unrealized_pnl,2)}</b></div>`).join('')
-    : '<div class="kv"><span>Positions</span><b>flat</b></div>';
-  el.innerHTML=bal+pos+`<div class="kv"><span>Resting orders</span><b>${a.open_orders}</b></div>`;
+  if(!a.balances.length && !a.positions.length){
+    el.innerHTML='<div class="empty">Nothing returned. Add API keys, and check the '
+      +'account is funded — Delta shows available margin on the Futures screen.</div>'; return; }
+  el.innerHTML=a.balances.map(w=>`<div class="kv">
+      <span>${esc(w.asset_symbol||w.asset_id)}</span>
+      <b>${num(w.available_balance||w.balance,4)}</b></div>`).join('')
+    +(a.positions.length?a.positions.map(p=>`<div class="kv">
+        <span>${esc(p.product_symbol||p.product_id)} · ${esc(p.size)}</span>
+        <b class="${Number(p.unrealized_pnl||0)>=0?'pos':'neg'}">${num(p.unrealized_pnl,2)}</b>
+        </div>`).join('')
+      :'<div class="kv"><span>Positions</span><b>flat</b></div>')
+    +`<div class="kv"><span>Resting orders</span><b>${a.open_orders}</b></div>`;
 }
 
 async function execute(rehearse){
-  const out=document.getElementById('out');
-  if(!rehearse){
-    const c=DATA.contract;
-    if(!confirm(`Place a REAL order?\n\n${DATA.symbol.toUpperCase()} `
-      +`${DATA.signal? DATA.signal.direction.toUpperCase():''}\n`
-      +`${c?c.contracts_affordable:'?'} contract(s), notional ₹${c?c.notional_inr:'?'}\n\n`
+  const out=document.getElementById('out'), c=DATA.contract;
+  if(!rehearse && !confirm(`Place a REAL order?\n\n${SYMBOL.toUpperCase()} `
+      +`${DATA.signal?DATA.signal.direction.toUpperCase():''}\n`
+      +`${c?c.contracts_affordable:'?'} contract(s) · notional ₹${c?c.notional_inr:'?'}\n\n`
       +`This spends money.`)) return;
-  }
   out.textContent='sending…';
   try{
     const r=await fetch('/api/trade/execute',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({symbol:DATA.symbol})});
+      body:JSON.stringify({symbol:SYMBOL, margin_inr:marginInr()})});
     out.textContent=JSON.stringify(await r.json(),null,2);
   }catch(e){ out.textContent='failed — '+e; }
   load();
 }
-
 async function flatten(){
   if(!confirm('Cancel every resting order and close every position?')) return;
   const out=document.getElementById('out');
@@ -5171,12 +5355,11 @@ async function flatten(){
   load();
 }
 
-initSyms(); load(); setInterval(load, 20000);
+initMarkets(); load(); setInterval(load, 20000);
 </script>
 </body>
 </html>
 """
-
 
 _THEME_SNIPPET = """
 <style>
