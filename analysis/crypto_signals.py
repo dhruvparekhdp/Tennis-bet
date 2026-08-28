@@ -45,6 +45,49 @@ def _format_timeframe(horizon_minutes: float, fallback: str = "30m") -> str:
     return fallback
 
 
+def _trade_quantity(state: CryptoState, price: float) -> float:
+    """
+    The size a signal would actually be traded in, in coin.
+
+    Depth is only meaningful against a size. Asking "what does the book cost"
+    without saying how much is being bought has no answer, and the natural
+    size here is the one the paper engine would open.
+    """
+    if price <= 0:
+        return 0.0
+    notional_inr = settings.paper_starting_wallet * settings.crypto_max_stake_pct \
+        * settings.paper_leverage
+    return notional_inr / settings.paper_usdt_inr / price
+
+
+def _measured_execution_pct(state: CryptoState, price: float) -> float | None:
+    """Round-trip spread and slippage from the live book, or None."""
+    book = getattr(state, "order_book", None)
+    if book is None:
+        return None
+    try:
+        from analysis.orderbook import round_trip_execution_pct
+        qty = _trade_quantity(state, price)
+        if qty <= 0:
+            return None
+        return round_trip_execution_pct(book, qty)
+    except Exception:                                   # pragma: no cover
+        return None
+
+
+def _wall_between(state: CryptoState, entry: float, target: float) -> float | None:
+    """Price of resting size large enough to stop the move, or None."""
+    book = getattr(state, "order_book", None)
+    if book is None:
+        return None
+    try:
+        from analysis.orderbook import wall_before
+        return wall_before(book, entry, target,
+                           quantity=_trade_quantity(state, entry))
+    except Exception:                                   # pragma: no cover
+        return None
+
+
 def _emit(
     state: CryptoState,
     *,
@@ -80,6 +123,14 @@ def _emit(
     # holding both to the same floor would refuse profitable gold scalps.
     cfg = SCALP.for_symbol(state.symbol)
 
+    # And per-book, when there is one. Walking the resting orders for the size
+    # actually being traded replaces two guesses that between them make up two
+    # thirds of the floor deciding every trade. Absent or unusable book, the
+    # assumptions stand — a missing measurement must not be read as free.
+    measured = _measured_execution_pct(state, price)
+    if measured is not None:
+        cfg = cfg.with_measured_execution(measured)
+
     # Offer the setup the shortest horizon first. A move reachable in ten
     # minutes is a better setup than one needing thirty, and recording which
     # window it qualified under makes the two directly comparable in the feed
@@ -109,6 +160,15 @@ def _emit(
     if isinstance(levels, NoTrade):
         log.debug("scalp.refused", symbol=state.symbol,
                   signal_type=signal_type, reason=levels.value)
+        return None
+
+    # A target with a wall in front of it is not that target. Price stops at
+    # the resting size, the horizon expires, and the trade books an expiry that
+    # reads as bad luck and was arithmetic.
+    wall = _wall_between(state, levels.entry, levels.target)
+    if wall is not None:
+        log.debug("scalp.refused", symbol=state.symbol, signal_type=signal_type,
+                  reason=NoTrade.WALL_IN_THE_WAY.value, wall=wall)
         return None
 
     # Edge is what survives the round trip, not the raw move. Sizing off the

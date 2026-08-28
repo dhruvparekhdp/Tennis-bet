@@ -40,6 +40,7 @@ class NoTrade(StrEnum):
     TARGET_TOO_SMALL = "target_small"  # move cannot cover the round trip
     TICK_TOO_COARSE = "tick_coarse"    # rounding error is a large share of the edge
     POOR_REWARD = "poor_reward"        # reward-to-risk below the floor
+    WALL_IN_THE_WAY = "wall"           # resting size sits between entry and target
     STOP_INSIDE_NOISE = "stop_noise"   # stop sits inside one bar's ordinary range
     FUNDING_WINDOW = "funding_window"  # settlement too close to open a short hold
 
@@ -49,6 +50,7 @@ REASON_TEXT = {
     NoTrade.TARGET_TOO_SMALL: "target does not clear the round-trip cost",
     NoTrade.TICK_TOO_COARSE: "price steps are too coarse for a move this small",
     NoTrade.POOR_REWARD: "risking more than the trade can win",
+    NoTrade.WALL_IN_THE_WAY: "a large resting order sits between entry and target",
     NoTrade.STOP_INSIDE_NOISE: "stop sits inside one bar's normal range — noise would take it out",
     NoTrade.FUNDING_WINDOW: "funding settles too soon for a short hold",
 }
@@ -179,6 +181,22 @@ class ScalpConfig:
         below which the fee starts owning the outcome.
         """
         return cls(min_edge_multiple=5.0, min_reward_risk=1.0)
+
+    def with_measured_execution(self, execution_pct: float) -> ScalpConfig:
+        """
+        Replace the assumed spread and slippage with a reading from the book.
+
+        Two thirds of the cost floor were guesses: a flat 0.020% spread and a
+        flat 0.030% slippage, the same for every market at every size. Those
+        two numbers decide whether a setup is taken, so guessing them is
+        guessing the answer.
+
+        The measurement is folded into `spread_pct` and the buffer zeroed,
+        because walking both sides of the book already includes the spread —
+        keeping the old buffer on top would double-count it.
+        """
+        return replace(self, spread_pct=max(0.0, execution_pct),
+                       slippage_buffer_pct=0.0)
 
     def for_symbol(self, symbol: str) -> ScalpConfig:
         """

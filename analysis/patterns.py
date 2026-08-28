@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from analysis.crypto_state import OHLCVCandle
-from analysis.indicators import swing_pivots
+from analysis.indicators import relative_volume, swing_pivots
 
 
 @dataclass(frozen=True)
@@ -182,11 +182,90 @@ def double_top_bottom(candles: list[OHLCVCandle], tolerance: float = 0.003,
     return None
 
 
+def liquidity_sweep(candles: list[OHLCVCandle], lookback: int = 20,
+                    min_pivot_gap: int = 3, reject_ratio: float = 0.5,
+                    volume_confirm: float = 1.2) -> Pattern | None:
+    """
+    Price ran the stops above a prior high, then came straight back.
+
+    The mechanism, in order: a swing high is where stop orders rest, because
+    everyone short from below put theirs just above it. Price pushes through,
+    those stops fire as market buys, the move accelerates — and then, with the
+    resting orders consumed, there is nothing left to buy and price falls back
+    inside the range. The people who were stopped out were not wrong about
+    direction; they were wrong about where they put the stop.
+
+    That is the exact way a 0.43% stop dies on a setup that was correct, which
+    is why this is worth detecting rather than being one more pattern.
+
+    A sweep is three conditions on one bar, all required:
+
+      * its high exceeds a CONFIRMED pivot high (not merely the running max —
+        an unconfirmed high is just the current bar being the highest so far)
+      * it closes back below that pivot, so the break did not hold
+      * the give-back from high to close is most of the bar's range
+
+    The third test measures the REJECTION, not how far above the pivot price
+    poked. How far it poked says how many stops were resting there, which
+    varies with the level; how much of the move was handed back in the same bar
+    says whether anyone defended it, which is the part that predicts.
+
+    Volume above its recent average is scored as extra strength rather than
+    required, since the feed does not always carry usable per-bar volume and a
+    hard requirement would silence this everywhere at once.
+
+    Direction is the REVERSE of the break: a sweep of highs is a short.
+    """
+    if len(candles) < lookback + min_pivot_gap + 2:
+        return None
+
+    bar = candles[-1]
+    rng = _range(bar)
+    if rng <= 0:
+        return None
+
+    # Confirmed pivots only, and never the sweeping bar's own neighbourhood —
+    # a pivot two bars back has not been confirmed on the right yet, so it
+    # would just be re-detecting the current push.
+    window = candles[-(lookback + min_pivot_gap + 1):-min_pivot_gap]
+    if len(window) < 5:
+        return None
+    highs = [c.high for c in window]
+    lows = [c.low for c in window]
+    hi_idx = swing_pivots(highs, find_highs=True)
+    lo_idx = swing_pivots(lows, find_highs=False)
+
+    volumes = [c.volume for c in candles]
+    rel = relative_volume(volumes)
+    vol_bonus = 0.0
+    if rel is not None and rel >= volume_confirm:
+        vol_bonus = min(0.25, (rel - volume_confirm) * 0.15)
+
+    if hi_idx:
+        pivot = max(highs[i] for i in hi_idx)
+        rejection = (bar.high - bar.close) / rng
+        if bar.high > pivot and bar.close < pivot and rejection > reject_ratio:
+            strength = min(1.0, 0.45 + rejection * 0.45 + vol_bonus)
+            return Pattern("liquidity_sweep", -1, strength,
+                           f"swept the stops above {pivot:.4f} and closed back below")
+
+    if lo_idx:
+        pivot = min(lows[i] for i in lo_idx)
+        rejection = (bar.close - bar.low) / rng
+        if bar.low < pivot and bar.close > pivot and rejection > reject_ratio:
+            strength = min(1.0, 0.45 + rejection * 0.45 + vol_bonus)
+            return Pattern("liquidity_sweep", 1, strength,
+                           f"swept the stops below {pivot:.4f} and closed back above")
+
+    return None
+
+
 def detect_all(candles: list[OHLCVCandle], atr_value: float = 0.0) -> list[Pattern]:
     """Every pattern present on the latest bar. Direction 0 entries are kept —
     a compression reading is information even though it picks no side."""
     found = []
-    for fn in (engulfing, pin_bar, inside_bar, three_bar_reversal, double_top_bottom):
+    for fn in (engulfing, pin_bar, inside_bar, three_bar_reversal, double_top_bottom,
+               liquidity_sweep):
         p = fn(candles)
         if p is not None:
             found.append(p)

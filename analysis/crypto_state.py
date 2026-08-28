@@ -106,6 +106,13 @@ class CryptoState:
     # which is a real reading of "nobody is paying anybody".
     funding_rate_per_8h: float | None = None
 
+    # Latest L2 snapshot, when a venue publishes one. Typed loosely to keep
+    # this module free of the analysis imports; it is an analysis.orderbook
+    # OrderBook. None means "not measured", which is distinct from "the book
+    # is empty" — the first falls back to the assumed costs, the second is a
+    # reason to stand aside.
+    order_book: object | None = None
+
     # Sentiment (FinBERT / VADER / CryptoPanic)
     sentiment_score: float = 0.0                                   # -1.0 (bearish) to +1.0 (bullish)
     sentiment_news_count: int = 0

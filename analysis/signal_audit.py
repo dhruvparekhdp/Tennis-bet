@@ -395,6 +395,7 @@ STAGES: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("analysis.patterns", "three_bar_reversal"),
             ("analysis.patterns", "range_breakout"),
             ("analysis.patterns", "double_top_bottom"),
+            ("analysis.patterns", "liquidity_sweep"),
             ("analysis.patterns", "detect_all"),
         ),
     ),
@@ -412,6 +413,21 @@ STAGES: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("analysis.confluence", "thin_volume_veto"),
             ("analysis.confluence", "evaluate"),
             ("analysis.confluence", "ConvictionGate"),
+        ),
+    ),
+    (
+        "4b. Order book",
+        "Resting size — the only input here that is not a transformation of "
+        "past prices. Prices the cost floor and vetoes a blocked target; it "
+        "never elects a direction.",
+        (
+            ("analysis.orderbook", "OrderBook"),
+            ("analysis.orderbook", "walk_book"),
+            ("analysis.orderbook", "slippage_pct"),
+            ("analysis.orderbook", "round_trip_execution_pct"),
+            ("analysis.orderbook", "depth_within"),
+            ("analysis.orderbook", "imbalance"),
+            ("analysis.orderbook", "wall_before"),
         ),
     ),
     (

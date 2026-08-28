@@ -545,6 +545,242 @@ async def _api_signal_accuracy(runner, request: web.Request) -> web.Response:
     })
 
 
+async def _api_trade_state(runner, request: web.Request) -> web.Response:
+    """
+    Everything the trading desk needs in one call: rails, account, book, plan.
+
+    One endpoint rather than five because the page has to show a consistent
+    picture — a balance from one moment beside a book from another is how a
+    size gets computed against a price that has moved.
+    """
+    from analysis.orderbook import imbalance, round_trip_execution_pct
+    from analysis.scalp_levels import ScalpConfig, trailing_plan
+    from collectors.delta_trading import contracts_for
+
+    symbol = (request.query.get("symbol") or "ethusdt").lower()
+    trader = getattr(runner, "delta_trader", None) if runner else None
+    out: dict = {
+        "symbol": symbol,
+        "rails": {
+            "trading_enabled": _SETTINGS.delta_trading_enabled,
+            "dry_run": _SETTINGS.delta_dry_run,
+            "credentials": bool(_SETTINGS.delta_api_key and _SETTINGS.delta_api_secret),
+            "max_notional_inr": _SETTINGS.delta_max_notional_inr,
+            "margin_inr": _SETTINGS.delta_margin_inr,
+            "leverage": _SETTINGS.delta_leverage,
+            "usdt_inr": _SETTINGS.paper_usdt_inr,
+        },
+        "account": {"balances": [], "positions": [], "open_orders": 0},
+        "book": None, "plan": None, "signal": None,
+    }
+    if runner is None:
+        return web.json_response(out)
+
+    if trader is not None and trader.has_credentials:
+        try:
+            if not trader.spec_for(symbol):
+                await trader.load_specs()
+            out["account"] = {
+                "balances": await trader.balances(),
+                "positions": await trader.positions(),
+                "open_orders": len(await trader.live_orders()),
+            }
+        except Exception as exc:
+            out["account"]["error"] = str(exc)
+
+    state = await runner.crypto_store.get(symbol)
+    price = state.current_price if state else 0.0
+    book = getattr(state, "order_book", None) if state else None
+    if book is None:
+        book = await runner.delta.fetch_orderbook(symbol)
+    if book is not None and price <= 0:
+        price = book.mid
+
+    spec = trader.spec_for(symbol) if trader else None
+    contracts = 0
+    if spec and price > 0:
+        contracts = contracts_for(_SETTINGS.delta_margin_inr, _SETTINGS.delta_leverage,
+                                  price, spec, _SETTINGS.paper_usdt_inr)
+        out["contract"] = {
+            "product_id": spec.product_id, "venue_symbol": spec.symbol,
+            "contract_value": spec.contract_value, "tick_size": spec.tick_size,
+            "contracts_affordable": contracts,
+            "notional_inr": round(spec.notional_usdt(price, max(contracts, 1))
+                                  * _SETTINGS.paper_usdt_inr, 2),
+        }
+
+    qty = contracts * spec.contract_value if (spec and contracts) else 0.0
+    if book is not None:
+        execution = round_trip_execution_pct(book, qty) if qty > 0 else None
+        out["book"] = {
+            "best_bid": book.best_bid, "best_ask": book.best_ask, "mid": book.mid,
+            "spread_pct": round(book.spread_pct * 100, 5),
+            "levels": [len(book.bids), len(book.asks)],
+            "imbalance": imbalance(book),
+            "measured_execution_pct": (round(execution * 100, 5)
+                                       if execution is not None else None),
+            "assumed_execution_pct": round(
+                (_SCALP.spread_pct + _SCALP.slippage_buffer_pct) * 100, 5),
+            "bids": book.bids[:12], "asks": book.asks[:12],
+        }
+
+    # The most recent live signal for this symbol, and the plan that goes with
+    # it. The desk exists to act on a signal, not to invent a trade.
+    from storage.database import AsyncSessionFactory
+    from storage.repository import Repository
+    async with AsyncSessionFactory() as session:
+        rows = await Repository(session).crypto_signals_between(1, limit=200)
+    latest = next((r for r in rows if r.symbol.lower() == symbol), None)
+    if latest is not None:
+        cfg = ScalpConfig().for_symbol(symbol)
+        plan = trailing_plan(latest.current_price, latest.stop_loss, cfg)
+        out["signal"] = _signal_row(latest)
+        if plan:
+            out["plan"] = {
+                "risk": round(plan.risk, 6),
+                "arm_price": round(plan.arm_price, 6),
+                "breakeven_stop": round(plan.breakeven_stop, 6),
+                "trail_distance": round(plan.trail_distance, 6),
+            }
+    return web.json_response(out)
+
+
+async def _api_trade_execute(runner, request: web.Request) -> web.Response:
+    """
+    Place the current signal, or rehearse it.
+
+    Deliberately takes no prices from the browser. A desk that accepts an
+    entry, a stop and a size over the wire is one crafted request away from a
+    position nobody chose; this one re-reads the signal server-side and will
+    only trade what the engine actually published.
+    """
+    from collectors.delta_trading import OrderRefused, contracts_for
+    from storage.database import AsyncSessionFactory
+    from storage.repository import Repository
+
+    body = await request.json() if request.can_read_body else {}
+    symbol = (body.get("symbol") or "").lower()
+    trader = getattr(runner, "delta_trader", None) if runner else None
+    if not symbol or trader is None:
+        return web.json_response({"error": "symbol required"}, status=400)
+
+    async with AsyncSessionFactory() as session:
+        rows = await Repository(session).crypto_signals_between(1, limit=200)
+    sig = next((r for r in rows if r.symbol.lower() == symbol), None)
+    if sig is None:
+        return web.json_response(
+            {"error": "no live signal for this symbol — the desk only trades "
+                      "what the engine published"}, status=409)
+
+    try:
+        if not trader.spec_for(symbol):
+            await trader.load_specs()
+        spec = trader.spec_for(symbol)
+        if spec is None:
+            return web.json_response({"error": f"{symbol} not listed"}, status=409)
+        contracts = contracts_for(_SETTINGS.delta_margin_inr, _SETTINGS.delta_leverage,
+                                  sig.current_price, spec, _SETTINGS.paper_usdt_inr)
+        trail = abs(sig.current_price - sig.stop_loss)
+        result = await trader.place(
+            symbol=symbol, is_long=sig.direction == "long",
+            price=sig.current_price, contracts=contracts,
+            stop_price=sig.stop_loss, target_price=sig.target_price,
+            trail_amount=trail)
+        return web.json_response(result)
+    except OrderRefused as exc:
+        return web.json_response({"refused": str(exc)}, status=409)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+async def _api_trade_flatten(runner, request: web.Request) -> web.Response:
+    """Kill switch: cancel resting orders and close positions."""
+    from collectors.delta_trading import OrderRefused
+
+    trader = getattr(runner, "delta_trader", None) if runner else None
+    if trader is None:
+        return web.json_response({"error": "no trading client"}, status=503)
+    try:
+        return web.json_response({
+            "cancelled": await trader.cancel_all(),
+            "closed": await trader.close(),
+        })
+    except OrderRefused as exc:
+        return web.json_response({"refused": str(exc)}, status=409)
+
+
+async def _api_debug_delta(runner, request: web.Request) -> web.Response:
+    """
+    What the venue actually returns, and what the book says a trade costs.
+
+    Written because this integration could not be tested against the live API
+    from the build sandbox: the parsers tolerate the field names moving, so a
+    changed shape shows up as "no data" rather than an error. This prints the
+    raw response so the shape can be read rather than guessed at.
+
+    Read-only. It cannot place an order, and it never prints a key or secret.
+    """
+    from analysis.orderbook import (
+        imbalance, round_trip_execution_pct, wall_before,
+    )
+
+    symbol = (request.query.get("symbol") or "ethusdt").lower()
+    out: dict = {
+        "symbol": symbol,
+        "trading": {
+            "market_data_enabled": _SETTINGS.delta_enabled,
+            "trading_enabled": _SETTINGS.delta_trading_enabled,
+            "dry_run": _SETTINGS.delta_dry_run,
+            "credentials_present": bool(_SETTINGS.delta_api_key
+                                        and _SETTINGS.delta_api_secret),
+            "max_notional_inr": _SETTINGS.delta_max_notional_inr,
+            "margin_inr": _SETTINGS.delta_margin_inr,
+            "leverage": _SETTINGS.delta_leverage,
+        },
+    }
+    if runner is None:
+        return web.json_response(out)
+
+    raw = await runner.delta.fetch_candles_raw(symbol, limit=3)
+    if raw:
+        vs, payload = raw
+        rows = payload if isinstance(payload, list) else payload
+        out["candles"] = {"venue_symbol": vs, "raw": str(rows)[:900]}
+    else:
+        out["candles"] = {"error": "no candle response"}
+
+    book = await runner.delta.fetch_orderbook(symbol)
+    if book is None:
+        out["book"] = {"error": "no order book response"}
+        return web.json_response(out)
+
+    state = await runner.crypto_store.get(symbol)
+    price = state.current_price if state else book.mid
+    qty = 0.0
+    if price > 0:
+        qty = (_SETTINGS.delta_margin_inr * _SETTINGS.delta_leverage
+               / _SETTINGS.paper_usdt_inr / price)
+    execution = round_trip_execution_pct(book, qty) if qty > 0 else None
+    out["book"] = {
+        "best_bid": book.best_bid, "best_ask": book.best_ask, "mid": book.mid,
+        "levels": [len(book.bids), len(book.asks)],
+        "spread_pct": round(book.spread_pct * 100, 5),
+        "sized_for_coin": round(qty, 6),
+        "measured_execution_pct": (round(execution * 100, 5)
+                                   if execution is not None else None),
+        "assumed_execution_pct": round(
+            (_SCALP.spread_pct + _SCALP.slippage_buffer_pct) * 100, 5),
+        "imbalance": imbalance(book),
+        "wall_before_1pct_up": wall_before(book, book.mid, book.mid * 1.01,
+                                           quantity=qty),
+    }
+    out["note"] = ("measured_execution_pct replaces assumed_execution_pct in the "
+                   "cost floor when a book is present. null means the book "
+                   "cannot fill this size — a reason to stand aside, not a "
+                   "reason to assume it is free.")
+    return web.json_response(out)
+
+
 async def _api_debug_volume(runner, request: web.Request) -> web.Response:
     """
     Whether each watchlist symbol has usable per-bar volume, and what the
@@ -1719,6 +1955,7 @@ section h2{color:var(--accent-soft)}
   <div class="side-item side-secondary" data-tab="watchlist" onclick="switchTab('watchlist')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.2l5.9-.9z"/></svg><span>Watchlist</span></div>
   <div class="side-group">Other</div>
   <a class="side-item side-secondary" data-tab="sports" href="/sports"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18M3 12h18"/></svg><span>Sports</span></a>
+  <a class="side-item side-secondary" data-tab="trade" href="/trade"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg><span>Live Desk</span></a>
   <a class="side-item side-secondary" data-tab="audit" href="/audit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6v5l4 9a2 2 0 01-1.8 3H6.8A2 2 0 015 16l4-9z"/><path d="M9 8h6"/></svg><span>Signal Audit</span></a>
   <a class="side-item side-secondary" data-tab="diag" href="/api/debug/collectors"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4"/></svg><span>Diagnostics</span></a>
   <a class="side-item side-secondary" data-tab="settings" href="/settings"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 00-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 00-1.7-1L14.5 3h-4l-.4 2.6a7 7 0 00-1.7 1l-2.4-1-2 3.4L6 11a7 7 0 000 2l-2 1.6 2 3.4 2.4-1a7 7 0 001.7 1l.4 2.6h4l.4-2.6a7 7 0 001.7-1l2.4 1 2-3.4-2-1.6a7 7 0 00.1-1z"/></svg><span>Settings</span></a>
@@ -2787,7 +3024,7 @@ function initView(){
   // refresh could run, so the whole page loaded empty with "Error — retrying".
   // Everything here is null-safe for that reason.
   const sportsOnly = ['tennis','scalping','football'];
-  const cryptoOnly = ['dashboard','crypto','paper','guard','accuracy','historic','watchlist','audit'];
+  const cryptoOnly = ['dashboard','crypto','paper','guard','accuracy','historic','watchlist','audit','trade'];
   (IS_SPORTS ? cryptoOnly : sportsOnly).forEach(t => {
     const el = document.getElementById('tab-' + t);
     if(el) el.classList.remove('active');
@@ -4651,6 +4888,296 @@ reload();
 """
 
 
+async def _trade_page(request: web.Request) -> web.Response:
+    return web.Response(text=_TRADE_HTML, content_type="text/html")
+
+
+# The live desk. Its own route because it is the one page where a mis-click
+# spends money — it should not share a tab bar with anything you browse idly,
+# and the rail state has to be the first thing on screen, not a setting
+# somewhere else.
+_TRADE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Desk — Delta India</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:60px;font-size:13px}
+header{background:var(--panel);border-bottom:1px solid var(--line);padding:11px 16px;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:30}
+header h1{font-size:16px;font-weight:700;color:var(--text-strong);display:flex;gap:8px;align-items:center}
+a.nav-btn{background:var(--acc-t);border:1px solid var(--acc-t2);color:var(--accent);font-size:12px;
+  font-weight:600;padding:5px 12px;border-radius:8px;text-decoration:none;white-space:nowrap}
+.spacer{margin-left:auto}
+main{padding:14px 16px;max-width:1240px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+
+/* the rail banner is the loudest thing on the page, by design */
+.rails{border-radius:10px;padding:11px 14px;display:flex;gap:10px;align-items:center;
+  flex-wrap:wrap;font-weight:600;font-size:13px;border:1px solid}
+.rails.safe{background:var(--pos-t);border-color:var(--pos-t2);color:var(--pos)}
+.rails.armed{background:var(--neg-t);border-color:var(--neg-t2);color:var(--neg)}
+.rails .sub{font-weight:400;color:var(--muted);font-size:12px}
+.rails .dot{width:9px;height:9px;border-radius:50%;background:currentColor;flex:none}
+
+h2{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted2);
+  font-weight:700;margin-bottom:7px}
+.cols{display:grid;grid-template-columns:1.15fr .85fr;gap:14px;align-items:start}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 15px}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:5px 0;
+  border-bottom:1px solid var(--line2);font-size:12.5px}
+.kv:last-child{border-bottom:none}
+.kv span:first-child{color:var(--muted)}
+.kv b{color:var(--text-strong);font-variant-numeric:tabular-nums;font-weight:600}
+.pos{color:var(--pos)}.neg{color:var(--neg)}.acc{color:var(--accent)}
+.muted{color:var(--muted)}
+
+.levels{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:10px 0}
+.levels div{background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:9px 10px}
+.levels label{display:block;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--muted2);margin-bottom:3px}
+.levels b{font-size:16px;font-variant-numeric:tabular-nums}
+
+/* order book ladder */
+.ladder{font-variant-numeric:tabular-nums;font-size:12px}
+.lrow{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:2px 6px;position:relative}
+.lrow i{position:absolute;top:0;bottom:0;right:0;display:block;opacity:.16}
+.lrow.bid i{background:var(--pos)}
+.lrow.ask i{background:var(--neg)}
+.lrow span{position:relative}
+.lrow .p{font-weight:600}
+.lrow.bid .p{color:var(--pos)}
+.lrow.ask .p{color:var(--neg)}
+.lmid{text-align:center;padding:6px;color:var(--muted);font-size:11.5px;
+  border-top:1px dashed var(--line);border-bottom:1px dashed var(--line);margin:4px 0}
+
+.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:12px}
+button{font-family:inherit;font-size:13.5px;font-weight:700;border-radius:9px;padding:11px 18px;
+  cursor:pointer;border:1px solid transparent;min-height:44px}
+button:disabled{opacity:.45;cursor:not-allowed}
+.btn-go{background:var(--pos-btn);color:#fff}
+.btn-dry{background:var(--acc-t);border-color:var(--acc-t2);color:var(--accent)}
+.btn-kill{background:var(--neg-btn);color:#fff;margin-left:auto}
+.out{margin-top:11px;background:var(--sunk);border:1px solid var(--line2);border-radius:8px;
+  padding:10px 12px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;
+  white-space:pre-wrap;word-break:break-word;max-height:280px;overflow:auto;color:var(--muted)}
+.empty{color:var(--muted2);font-size:12.5px;padding:10px 0}
+.note{font-size:11.5px;color:var(--muted2);line-height:1.55;margin-top:8px}
+select{background:var(--sunk);border:1px solid var(--line);color:var(--text);border-radius:7px;
+  padding:6px 9px;font-size:13px;font-family:inherit;min-height:36px}
+@media(max-width:820px){
+  .cols{grid-template-columns:1fr}
+  main{padding:12px}
+  .levels{grid-template-columns:1fr}
+  button{width:100%}
+  .btn-kill{margin-left:0}
+  select{font-size:16px;min-height:42px}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>&#9889; Live Desk</h1>
+  <span class="muted" id="venue">Delta Exchange India</span>
+  <select id="sym" onchange="load()"></select>
+  <span class="spacer"></span>
+  <a class="nav-btn" href="/">&larr; Dashboard</a>
+  <a class="nav-btn" href="/audit">Audit</a>
+</header>
+<main>
+  <div class="rails safe" id="rails"><span class="dot"></span><span>checking&hellip;</span></div>
+
+  <div class="cols">
+    <div>
+      <div class="panel">
+        <h2>The signal</h2>
+        <div id="signal"><div class="empty">loading&hellip;</div></div>
+      </div>
+
+      <div class="panel" style="margin-top:14px">
+        <h2>Size and cost</h2>
+        <div id="sizing"><div class="empty">loading&hellip;</div></div>
+        <div class="actions">
+          <button class="btn-dry" id="btn-dry" onclick="execute(true)">Rehearse (dry run)</button>
+          <button class="btn-go" id="btn-go" onclick="execute(false)">Place order</button>
+          <button class="btn-kill" onclick="flatten()">Flatten everything</button>
+        </div>
+        <div class="out" id="out">No order sent this session.</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h2>Order book</h2>
+        <div class="ladder" id="book"><div class="empty">loading&hellip;</div></div>
+      </div>
+      <div class="panel" style="margin-top:14px">
+        <h2>Account</h2>
+        <div id="account"><div class="empty">loading&hellip;</div></div>
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let DATA=null;
+const SYMS=['ethusdt','btcusdt','solusdt','xrpusdt','ltcusdt','bchusdt'];
+
+function num(v,d){ return v==null?'&mdash;':Number(v).toLocaleString('en-IN',
+  {minimumFractionDigits:d==null?2:d,maximumFractionDigits:d==null?2:d}); }
+
+function initSyms(){
+  const el=document.getElementById('sym');
+  el.innerHTML=SYMS.map(s=>`<option value="${s}">${s.toUpperCase()}</option>`).join('');
+  const q=new URLSearchParams(location.search).get('symbol');
+  if(q&&SYMS.includes(q)) el.value=q;
+}
+
+async function load(){
+  const sym=document.getElementById('sym').value;
+  history.replaceState(null,'','?symbol='+sym);
+  try{
+    DATA=await fetch('/api/trade/state?symbol='+sym).then(r=>r.json());
+  }catch(e){ document.getElementById('rails').innerHTML='failed to load — '+esc(e); return; }
+  renderRails(); renderSignal(); renderSizing(); renderBook(); renderAccount();
+}
+
+// The rails banner is the first thing on the page because it answers the only
+// question that matters before clicking: can this spend money right now.
+function renderRails(){
+  const r=DATA.rails, el=document.getElementById('rails');
+  const live = r.trading_enabled && !r.dry_run && r.credentials;
+  el.className='rails '+(live?'armed':'safe');
+  const bits=[];
+  if(!r.credentials) bits.push('no API key configured');
+  if(!r.trading_enabled) bits.push('trading switch off');
+  if(r.dry_run) bits.push('dry run');
+  el.innerHTML=`<span class="dot"></span>
+    <span>${live?'ARMED — orders will reach the market':'SAFE — nothing will be sent'}</span>
+    <span class="sub">${bits.length?bits.join(' · '):'all rails open'}</span>
+    <span class="sub" style="margin-left:auto">cap &#8377;${num(r.max_notional_inr,0)}
+      · margin &#8377;${num(r.margin_inr,0)} · ${r.leverage}&times;</span>`;
+  document.getElementById('btn-go').disabled = !live;
+}
+
+function renderSignal(){
+  const s=DATA.signal, p=DATA.plan, el=document.getElementById('signal');
+  if(!s){ el.innerHTML='<div class="empty">No live signal for this symbol in the last 24h. '
+    +'The desk only trades what the engine published.</div>'; return; }
+  const long=s.direction==='long';
+  const move=Math.abs(s.target_price-s.current_price)/s.current_price*100;
+  const risk=Math.abs(s.current_price-s.stop_loss)/s.current_price*100;
+  el.innerHTML=`
+    <div class="kv"><span>${esc(s.signal_type)} · within ${esc(s.timeframe)}</span>
+      <b class="${long?'pos':'neg'}">${long?'LONG':'SHORT'}</b></div>
+    <div class="levels">
+      <div><label>Stop loss</label><b class="neg">${num(s.stop_loss,4)}</b>
+        <span class="muted">&minus;${risk.toFixed(3)}%</span></div>
+      <div><label>Entry</label><b>${num(s.current_price,4)}</b>
+        <span class="muted">signal price</span></div>
+      <div><label>Take profit</label><b class="pos">${num(s.target_price,4)}</b>
+        <span class="muted">+${move.toFixed(3)}%</span></div>
+    </div>
+    <div class="kv"><span>Reward : risk</span><b>${(move/risk).toFixed(2)}</b></div>
+    <div class="kv"><span>Confidence</span><b>${s.confidence}%</b></div>
+    ${p?`<div class="kv"><span>Trail arms at</span><b>${num(p.arm_price,4)}</b></div>
+    <div class="kv"><span>Then stop to</span><b>${num(p.breakeven_stop,4)}</b></div>
+    <div class="kv"><span>Riding behind</span><b>${num(p.trail_distance,4)}</b></div>`:''}
+    <div class="note">The trail is sent with the order as
+      <code>bracket_trail_amount</code>, so the venue ratchets it server-side —
+      it keeps working while this instance is asleep.</div>`;
+}
+
+function renderSizing(){
+  const c=DATA.contract, b=DATA.book, r=DATA.rails, el=document.getElementById('sizing');
+  if(!c){ el.innerHTML='<div class="empty">No contract spec — the venue does not list this '
+    +'symbol, or credentials are missing.</div>'; return; }
+  const meas=b&&b.measured_execution_pct!=null;
+  el.innerHTML=`
+    <div class="kv"><span>Contracts affordable</span>
+      <b class="${c.contracts_affordable?'':'neg'}">${c.contracts_affordable}</b></div>
+    <div class="kv"><span>One contract</span><b>${c.contract_value} ${esc(DATA.symbol.replace('usdt','').toUpperCase())}</b></div>
+    <div class="kv"><span>Notional</span><b>&#8377;${num(c.notional_inr,0)}</b></div>
+    <div class="kv"><span>Spread (measured)</span>
+      <b>${b?b.spread_pct+'%':'&mdash;'}</b></div>
+    <div class="kv"><span>Round trip execution</span>
+      <b class="${meas?'acc':''}">${meas?b.measured_execution_pct+'% measured'
+        :(b?b.assumed_execution_pct+'% assumed':'&mdash;')}</b></div>
+    ${c.contracts_affordable<1?`<div class="note neg">&#8377;${num(r.margin_inr,0)} at
+      ${r.leverage}&times; buys less than one contract here. Raise the margin or the leverage —
+      the client rounds down and refuses rather than taking more risk than you asked for.</div>`
+      :`<div class="note">Sizing quantises hard at this stake: one contract is the whole
+      position, so there is no finer adjustment than on or off.</div>`}`;
+}
+
+function renderBook(){
+  const b=DATA.book, el=document.getElementById('book');
+  if(!b){ el.innerHTML='<div class="empty">No book from the venue.</div>'; return; }
+  const all=[...b.bids.map(x=>x[1]),...b.asks.map(x=>x[1])];
+  const max=Math.max(1,...all);
+  const row=(lvl,side)=>`<div class="lrow ${side}">
+    <i style="width:${lvl[1]/max*100}%"></i>
+    <span class="p">${num(lvl[0],4)}</span><span>${num(lvl[1],3)}</span></div>`;
+  el.innerHTML=b.asks.slice(0,8).reverse().map(l=>row(l,'ask')).join('')
+    +`<div class="lmid">mid ${num(b.mid,4)} · spread ${b.spread_pct}%
+       · imbalance ${b.imbalance==null?'—':(b.imbalance*100).toFixed(0)+'%'}</div>`
+    +b.bids.slice(0,8).map(l=>row(l,'bid')).join('');
+}
+
+function renderAccount(){
+  const a=DATA.account, el=document.getElementById('account');
+  if(a.error){ el.innerHTML=`<div class="empty">${esc(a.error)}</div>`; return; }
+  if(!a.balances.length && !a.positions.length)
+    { el.innerHTML='<div class="empty">No balances or positions returned. '
+      +'Add API keys to see the account.</div>'; return; }
+  const bal=a.balances.map(w=>`<div class="kv"><span>${esc(w.asset_symbol||w.asset_id)}</span>
+    <b>${num(w.available_balance||w.balance,4)}</b></div>`).join('');
+  const pos=a.positions.length? a.positions.map(p=>`<div class="kv">
+      <span>${esc(p.product_symbol||p.product_id)} · size ${esc(p.size)}</span>
+      <b class="${Number(p.unrealized_pnl||0)>=0?'pos':'neg'}">${num(p.unrealized_pnl,2)}</b></div>`).join('')
+    : '<div class="kv"><span>Positions</span><b>flat</b></div>';
+  el.innerHTML=bal+pos+`<div class="kv"><span>Resting orders</span><b>${a.open_orders}</b></div>`;
+}
+
+async function execute(rehearse){
+  const out=document.getElementById('out');
+  if(!rehearse){
+    const c=DATA.contract;
+    if(!confirm(`Place a REAL order?\n\n${DATA.symbol.toUpperCase()} `
+      +`${DATA.signal? DATA.signal.direction.toUpperCase():''}\n`
+      +`${c?c.contracts_affordable:'?'} contract(s), notional ₹${c?c.notional_inr:'?'}\n\n`
+      +`This spends money.`)) return;
+  }
+  out.textContent='sending…';
+  try{
+    const r=await fetch('/api/trade/execute',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({symbol:DATA.symbol})});
+    out.textContent=JSON.stringify(await r.json(),null,2);
+  }catch(e){ out.textContent='failed — '+e; }
+  load();
+}
+
+async function flatten(){
+  if(!confirm('Cancel every resting order and close every position?')) return;
+  const out=document.getElementById('out');
+  out.textContent='flattening…';
+  try{
+    const r=await fetch('/api/trade/flatten',{method:'POST'});
+    out.textContent=JSON.stringify(await r.json(),null,2);
+  }catch(e){ out.textContent='failed — '+e; }
+  load();
+}
+
+initSyms(); load(); setInterval(load, 20000);
+</script>
+</body>
+</html>
+"""
+
+
 _THEME_SNIPPET = """
 <style>
 /* Theme palettes */
@@ -4789,6 +5316,7 @@ _HTML = _HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _DATA_HTML = _DATA_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _SETTINGS_HTML = _SETTINGS_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _AUDIT_HTML = _AUDIT_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
+_TRADE_HTML = _TRADE_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 
 
 async def make_app(runner) -> web.Application:
@@ -4827,6 +5355,11 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/audit", lambda req: _api_audit(runner, req))
     app.router.add_get("/api/audit/methods", lambda req: _api_audit_methods(runner, req))
     app.router.add_get("/api/debug/volume", lambda req: _api_debug_volume(runner, req))
+    app.router.add_get("/api/debug/delta", lambda req: _api_debug_delta(runner, req))
+    app.router.add_get("/trade", lambda req: _trade_page(req))
+    app.router.add_get("/api/trade/state", lambda req: _api_trade_state(runner, req))
+    app.router.add_post("/api/trade/execute", lambda req: _api_trade_execute(runner, req))
+    app.router.add_post("/api/trade/flatten", lambda req: _api_trade_flatten(runner, req))
     app.router.add_post("/api/crypto/watchlist/add", lambda req: _api_crypto_watchlist_add(runner, req))
     app.router.add_post("/api/crypto/watchlist/remove", lambda req: _api_crypto_watchlist_remove(runner, req))
     app.router.add_get("/api/commodities", lambda req: _api_commodities(runner, req))
