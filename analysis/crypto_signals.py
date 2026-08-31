@@ -185,7 +185,8 @@ def _emit(
     edge_pct = round(levels.edge_after_costs_pct * 100.0, 3)
     # Participation is recorded on every signal, not just the volume ones, so
     # the audit page can ask whether the wrong calls share a thin tape.
-    rel = ind.relative_volume([c.volume for c in state.candles_1m])
+    rel = ind.relative_volume(
+        [c.volume for c in state.candles_1m if c.is_closed])
     vol_part = f"Vol {rel:.1f}x" if rel is not None else "Vol n/a"
     summary = (f"RSI {state.rsi_14:.1f} | ATR {state.atr_14 / price * 100:.2f}% | "
                f"{vol_part} | 24h {state.price_change_24h_pct:+.1f}%")
@@ -260,7 +261,7 @@ class VolumeSpikeAnalyzer:
         # 24-hour figure, in the alert — two different numbers presented as
         # one, so a message could claim 3.4x while the thing that triggered
         # was something else entirely.
-        volumes = [c.volume for c in state.candles_1m]
+        volumes = [c.volume for c in state.candles_1m if c.is_closed]
         rel = ind.relative_volume(volumes)
         if rel is not None:
             ratio, basis = rel, "its recent average"

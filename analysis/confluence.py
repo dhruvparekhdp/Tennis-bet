@@ -385,13 +385,27 @@ def evaluate(candles: list[OHLCVCandle], min_atr_pct: float = 0.00168,
     highs = [c.high for c in candles]
     lows = [c.low for c in candles]
     closes = [c.close for c in candles]
-    volumes = [c.volume for c in candles]
     atr_value = ind.atr(highs, lows, closes) or 0.0
+
+    # Volume gets CLOSED bars only, and this is not a detail.
+    #
+    # The last kline is the minute currently in progress. Its high, low and
+    # close are real — they are what has happened so far — so the price
+    # families keep it. Its volume is not comparable to anything: a bar three
+    # seconds old has traded almost nothing, so relative volume comes out at
+    # 0.00x and the thin-tape veto fires on every symbol at once. That is
+    # exactly what the live board showed — five coins refused for "0.00x its
+    # recent average" while the venue was trading normally.
+    closed = [c for c in candles if c.is_closed]
+    v_highs = [c.high for c in closed]
+    v_lows = [c.low for c in closed]
+    v_closes = [c.close for c in closed]
+    volumes = [c.volume for c in closed]
 
     votes = [
         trend_vote(highs, lows, closes),
         momentum_vote(highs, lows, closes),
-        volume_vote(highs, lows, closes, volumes),
+        volume_vote(v_highs, v_lows, v_closes, volumes),
         structure_vote(highs, lows),
         pattern_vote(candles, atr_value),
     ]

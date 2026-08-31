@@ -18,6 +18,9 @@ from analysis.confluence import (
     thin_volume_veto,
     volume_vote,
 )
+from analysis.crypto_state import OHLCVCandle
+
+T0 = datetime(2026, 8, 31, 10, 0, tzinfo=UTC)
 
 
 def series(n=40, base=100.0, step=0.0):
@@ -221,10 +224,31 @@ class TestHorizons(unittest.TestCase):
                            cfg.minutes_to_move(0.01, 0.0018))
 
     def test_a_market_that_cannot_get_there_in_time_is_refused(self):
+        """
+        BTC's real 0.059% bar range puts its target 268 minutes out, which the
+        six-hour hold accepts. A market a third as lively does not get there
+        inside any hold worth calling short.
+        """
         from analysis.scalp_levels import NoTrade, ScalpConfig, scalp_levels
-        got = scalp_levels(78566.0, True, 0.0006,
+        got = scalp_levels(78566.0, True, 0.0002,
                            ScalpConfig().for_symbol("btcusdt"), symbol="btcusdt")
         self.assertIs(got, NoTrade.TOO_SLOW)
+
+    def test_the_largest_markets_are_slow_but_not_refused(self):
+        """
+        At a four-hour cap BTC and BNB were permanently refused. Their real bar
+        ranges put a cost-clearing target four to five hours out — a long
+        forecast, not a bad one.
+        """
+        from analysis.scalp_levels import ScalpConfig, ScalpLevels, scalp_levels
+        cfg = ScalpConfig()
+        for sym, px, atr in (("btcusdt", 78586.0, 0.000587),
+                             ("bnbusdt", 688.29, 0.000559)):
+            got = scalp_levels(px, True, atr, cfg.for_symbol(sym), symbol=sym)
+            with self.subTest(symbol=sym):
+                self.assertIsInstance(got, ScalpLevels)
+                self.assertGreater(got.horizon_minutes, 240)
+                self.assertLessEqual(got.horizon_minutes, cfg.max_hold_minutes)
 
     def test_a_lively_market_gets_a_short_hold_and_a_quiet_one_a_long_hold(self):
         from analysis.scalp_levels import ScalpConfig, ScalpLevels, scalp_levels
@@ -236,3 +260,46 @@ class TestHorizons(unittest.TestCase):
         self.assertIsInstance(fast, ScalpLevels)
         self.assertIsInstance(slow, ScalpLevels)
         self.assertLess(fast.horizon_minutes, slow.horizon_minutes)
+
+
+class TestTheFormingBarIsNotCountedAsVolume(unittest.TestCase):
+    """
+    The last kline is the minute in progress. Its high, low and close are real
+    — that is what has happened so far — but its volume is not comparable to a
+    completed bar's, and comparing them is what took the live board out: five
+    symbols refused for "volume is 0.00x its recent average" while the venue
+    was trading perfectly normally.
+    """
+
+    def candles(self, n=60, last_volume=0.4):
+        out = []
+        for i in range(n):
+            price = 100.0 + math.sin(i / 5.0) * 0.4
+            out.append(OHLCVCandle(price, price + 0.15, price - 0.15, price,
+                                   100.0 + (i % 7) * 9,
+                                   T0 + timedelta(minutes=i), is_closed=True))
+        out.append(OHLCVCandle(100.0, 100.1, 99.9, 100.0, last_volume,
+                               T0 + timedelta(minutes=n), is_closed=False))
+        return out
+
+    def test_the_forming_bar_alone_reads_as_a_dead_tape(self):
+        """The bug, stated as a fact about the data."""
+        all_bars = [c.volume for c in self.candles()]
+        self.assertLess(ind.relative_volume(all_bars), 0.05)
+
+    def test_excluding_it_reads_as_a_normal_one(self):
+        closed = [c.volume for c in self.candles() if c.is_closed]
+        self.assertAlmostEqual(ind.relative_volume(closed), 1.0, delta=0.25)
+
+    def test_the_vote_no_longer_vetoes_a_normally_trading_market(self):
+        from analysis.confluence import evaluate
+        v = evaluate(self.candles(200), min_atr_pct=0.0001)
+        self.assertFalse(any("0.00x" in reason for reason in v.vetoes), v.vetoes)
+
+    def test_a_genuinely_thin_tape_still_vetoes(self):
+        """The guard must still work on real drying-up, not just be switched off."""
+        bars = self.candles(200)
+        for c in bars[-6:]:
+            c.volume = 4.0
+        volumes = [c.volume for c in bars if c.is_closed]
+        self.assertLess(ind.relative_volume(volumes), MIN_RELATIVE_VOLUME)

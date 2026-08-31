@@ -456,14 +456,25 @@ async def _api_debug_signals(runner, request: web.Request) -> web.Response:
         row["reward_risk"] = round(levels.reward_risk, 2)
         bar = ind.median_bar_minutes([c.timestamp for c in st.candles_1m])
         row["bar_minutes"] = round(bar, 2)
-        vols = [c.volume for c in st.candles_1m]
+        # Closed bars only — the minute in progress has traded almost nothing,
+        # so including it reports a normally trading market as having no volume.
+        vols = [c.volume for c in st.candles_1m if c.is_closed]
         row["per_bar_volume"] = ind.has_usable_volume(vols)
+        rel = ind.relative_volume(vols)
+        row["relative_volume"] = round(rel, 2) if rel is not None else None
 
         v = evaluate(st.candles_1m, min_atr_pct=cfg.cost_floor_pct,
                      min_agreeing=GATE.min_agreeing, max_dissent=GATE.max_dissent)
         row["votes"] = {x.family.value: x.direction for x in v.votes}
-        row["agreeing"] = v.agreeing_families
-        row["dissenting"] = v.dissenting_families
+        # Counted from the votes rather than read off the verdict. A vetoed
+        # verdict has no direction, so the verdict's own tally reports 0 for
+        # both sides — which hid that ETH had three families agreeing and was
+        # refused by a volume reading taken from a three-second-old bar.
+        longs = sum(1 for x in v.votes if x.direction > 0)
+        shorts = sum(1 for x in v.votes if x.direction < 0)
+        row["agreeing"] = max(longs, shorts)
+        row["dissenting"] = min(longs, shorts)
+        row["leaning"] = "long" if longs > shorts else ("short" if shorts > longs else "split")
         if v.direction is None:
             row["verdict"] = v.vetoes[0] if v.vetoes else "no majority"
             row["gate"] = "confluence"

@@ -45,6 +45,19 @@ KLINE_HOSTS = (
 )
 COINDCX_CANDLES = "https://public.coindcx.com/market_data/candles"
 
+# Our symbol to the venue's, where they differ. Binance does not list
+# XAUUSDT — gold trades there as PAX Gold, and asking for the name we use
+# internally returns nothing, which is why the board showed gold warming up
+# on two candles forever.
+VENUE_SYMBOL = {
+    "xauusdt": "PAXGUSDT",
+    "xagusdt": "PAXGUSDT",
+}
+
+
+def venue_symbol(symbol: str) -> str:
+    return VENUE_SYMBOL.get(symbol.lower(), symbol.upper())
+
 
 def parse_klines(rows) -> list[dict]:
     """
@@ -154,7 +167,8 @@ class BinanceKlines:
     async def fetch_candles(self, symbol: str, interval: str = "1m",
                             limit: int = 200) -> list[dict]:
         rows = await self._get("/api/v3/klines", {
-            "symbol": symbol.upper(), "interval": interval, "limit": min(limit, 1000)})
+            "symbol": venue_symbol(symbol), "interval": interval,
+            "limit": min(limit, 1000)})
         if rows is not None:
             bars = parse_klines(rows)
             if bars:
@@ -195,7 +209,7 @@ class BinanceKlines:
 
     async def fetch_depth(self, symbol: str, limit: int = 50):
         payload = await self._get("/api/v3/depth",
-                                  {"symbol": symbol.upper(), "limit": limit})
+                                  {"symbol": venue_symbol(symbol), "limit": limit})
         if payload is None:
             return None
         book = parse_depth(symbol, payload)

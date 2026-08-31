@@ -170,11 +170,17 @@ class ScalpConfig:
 
     min_reward_risk: float = 1.0
 
-    # How long we are prepared to hold. Raised from 30: a target that clears
-    # its own costs is roughly 1% away, and at ETH's real one-minute range that
-    # is an hour and a half, not half an hour. Refusing everything slower than
-    # 30 minutes refused every trade that could actually pay.
-    max_hold_minutes: int = 240
+    # How long we are prepared to hold. Was 30, which refused every trade that
+    # could actually pay: a target clearing its own costs is roughly 1% away,
+    # and at ETH's real one-minute range that is an hour and a half.
+    #
+    # Six hours, not four, on live evidence. At a 240-minute cap the two
+    # largest markets were permanently refused as too slow — BTC's real bar
+    # range of 0.059% puts a 0.96% target 265 minutes out, BNB's 0.056% puts
+    # it at 295. Those are honest forecasts, not bad setups, and the cost of
+    # holding them is trivial: funding at 0.0066% per 8 hours is under 0.005%
+    # across the whole window, against a 0.168% round trip.
+    max_hold_minutes: int = 360
     funding_blackout_minutes: int = 15
     max_signal_age_seconds: int = 90
 

@@ -235,8 +235,9 @@ def liquidity_sweep(candles: list[OHLCVCandle], lookback: int = 20,
     hi_idx = swing_pivots(highs, find_highs=True)
     lo_idx = swing_pivots(lows, find_highs=False)
 
-    volumes = [c.volume for c in candles]
-    rel = relative_volume(volumes)
+    # Closed bars only: the bar in progress has traded almost nothing yet, so
+    # including it reports every sweep as happening on no volume.
+    rel = relative_volume([c.volume for c in candles if c.is_closed])
     vol_bonus = 0.0
     if rel is not None and rel >= volume_confirm:
         vol_bonus = min(0.25, (rel - volume_confirm) * 0.15)
