@@ -189,22 +189,13 @@ class Settings(BaseSettings):
     # gross instead of 50%, and no indicator family may argue the other way.
     high_conviction_only: bool = False
 
-    # ── Delta Exchange India ──────────────────────────────────────────────
-    # Market data is public and harmless; trading is not, so they are separate
-    # switches and the trading one is off with a dry run behind it.
-    delta_enabled: bool = True                   # candles + L2 order book
-    delta_poll_seconds: int = 60
-    # Live orders. BOTH of these must be changed to trade for real, and the
-    # client refuses regardless if no key is set.
-    delta_trading_enabled: bool = False
-    delta_dry_run: bool = True                   # build and log, send nothing
-    delta_api_key: str = ""
-    delta_api_secret: str = ""
-    # The hard cap, clamped in the client rather than trusted here. Rs3,000 is
-    # Rs300 of margin at 10x — the agreed size of the live test.
-    delta_max_notional_inr: float = 3000.0
-    delta_margin_inr: float = 300.0
-    delta_leverage: float = 10.0
+    # ── Market data ───────────────────────────────────────────────────────
+    # Real 1-minute klines and depth from Binance's public mirror. This is the
+    # default candle source: the ticker poller can only sample twice a minute,
+    # so its bars miss the true high and low and collapse every range-derived
+    # number with them.
+    binance_klines_enabled: bool = True
+    binance_klines_seconds: int = 60
 
     # Public URL to ping so the free instance is never idle for 15 minutes.
     # Render injects RENDER_EXTERNAL_URL itself; this is the manual override.

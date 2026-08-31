@@ -49,10 +49,18 @@ class TestTargetIsFurtherThanTheStop(unittest.TestCase):
                               reward_risk=self.cfg.target_reward_risk)
         self.assertEqual(auto, pinned)
 
-    def test_an_explicit_ratio_still_wins(self):
+    def test_an_explicit_ratio_is_honoured_as_a_floor(self):
+        """
+        Asking for 1.0 gets at least 1.0, and sometimes a little more: the
+        target can never sit below the cost floor, so on a stop that is itself
+        near the floor the delivered ratio is nudged up rather than the target
+        being cut into a losing one.
+        """
         got = scalp_levels(2522.0, True, 0.0022, self.cfg, symbol="ethusdt",
                            reward_risk=1.0)
-        self.assertAlmostEqual(got.reward_risk, 1.0, delta=0.02)
+        self.assertGreaterEqual(got.reward_risk, 1.0)
+        self.assertLess(got.reward_risk, 1.2)
+        self.assertGreaterEqual(got.target_pct, self.cfg.min_target_pct)
 
     def test_shorts_are_mirror_images_at_the_new_ratio(self):
         lo = scalp_levels(2522.0, True, 0.0022, self.cfg, symbol="ethusdt")
@@ -71,30 +79,45 @@ class TestTargetIsFurtherThanTheStop(unittest.TestCase):
                     self.assertGreaterEqual(got.target_pct, self.cfg.min_target_pct)
 
 
-class TestStopCannotHideInTheNoise(unittest.TestCase):
+class TestStopIsAnchoredNotDerived(unittest.TestCase):
     """
-    Deriving the stop as target/R means a higher R pulls it toward entry. Past
-    a point it sits inside a single bar's range, where it is taken out by noise
-    rather than by the setup being wrong — a new way to lose that raising the
-    ratio would otherwise have introduced silently.
+    The stop used to be target/R, so raising the ratio tightened it until the
+    fixed round trip was most of the money at risk — 66% of it on the live
+    board. It is now anchored: outside one bar's range, and wide enough that
+    the fee is a minor share of it. The target follows from the stop.
     """
 
-    def test_a_stop_inside_one_bar_is_refused(self):
-        cfg = ScalpConfig(target_reward_risk=8.0)
-        got = scalp_levels(2522.0, True, 0.0022, cfg.for_symbol("ethusdt"),
-                           symbol="ethusdt", horizon_minutes=15)
-        self.assertIs(got, NoTrade.STOP_INSIDE_NOISE)
+    def test_the_fee_can_never_dominate_the_risk(self):
+        cfg = ScalpConfig().for_symbol("ethusdt")
+        for atr in (0.0004, 0.001, 0.002, 0.004):
+            got = scalp_levels(2451.0, True, atr, cfg, symbol="ethusdt")
+            if isinstance(got, ScalpLevels):
+                with self.subTest(atr=atr):
+                    self.assertLessEqual(got.cost_pct / got.stop_pct,
+                                         cfg.max_cost_share_of_risk + 1e-6)
 
-    def test_a_stop_outside_the_noise_is_allowed(self):
-        cfg = ScalpConfig()
-        got = scalp_levels(2522.0, True, 0.0022, cfg.for_symbol("ethusdt"),
-                           symbol="ethusdt", horizon_minutes=15)
-        self.assertIsInstance(got, ScalpLevels)
-        self.assertGreater(got.stop_pct, 0.0022 * cfg.min_stop_atr_multiple)
+    def test_the_stop_clears_one_bar_of_noise(self):
+        cfg = ScalpConfig().for_symbol("ethusdt")
+        for atr in (0.001, 0.002, 0.004):
+            got = scalp_levels(2451.0, True, atr, cfg, symbol="ethusdt")
+            if isinstance(got, ScalpLevels):
+                with self.subTest(atr=atr):
+                    self.assertGreaterEqual(got.stop_pct, atr)
+
+    def test_raising_the_ratio_widens_the_target_not_the_risk(self):
+        """The inversion. At R:R 3 the stop is unchanged and the target moves."""
+        cfg = ScalpConfig().for_symbol("ethusdt")
+        two = scalp_levels(2451.0, True, 0.002, cfg, symbol="ethusdt",
+                           reward_risk=2.0)
+        three = scalp_levels(2451.0, True, 0.002, cfg, symbol="ethusdt",
+                             reward_risk=3.0)
+        self.assertAlmostEqual(two.stop_pct, three.stop_pct, places=4)
+        self.assertGreater(three.target_pct, two.target_pct)
 
     def test_the_refusal_has_words_a_person_can_read(self):
         from analysis.scalp_levels import REASON_TEXT
         self.assertIn(NoTrade.STOP_INSIDE_NOISE, REASON_TEXT)
+        self.assertIn(NoTrade.TOO_SLOW, REASON_TEXT)
 
 
 class TestTheTrailCanNowActuallyFire(unittest.TestCase):

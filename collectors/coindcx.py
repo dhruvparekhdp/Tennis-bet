@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import structlog
@@ -119,7 +119,7 @@ def _parse_candles(payload) -> list[dict]:
             if ts > 1e11:
                 ts /= 1000.0
             out.append({
-                "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc),
+                "timestamp": datetime.fromtimestamp(ts, tz=UTC),
                 "open": float(o), "high": float(h), "low": float(low),
                 "close": float(c), "volume": max(0.0, float(v or 0.0)),
             })
@@ -177,7 +177,7 @@ class CoinDCXCollector:
             rows = resp.json()
             by_market = {r.get("market", "").upper(): r for r in rows if r.get("market")}
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             matched: set[str] = set()
             for sym in symbols:
                 base = _base_symbol(sym).upper()

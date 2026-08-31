@@ -128,9 +128,18 @@ class CryptoState:
 
     @property
     def volume_ratio(self) -> float:
-        """Ratio of recent volume to average volume (values > 2.0 indicate volume surges)."""
-        if self.volume_24h_avg <= 0:
-            return 1.0
+        """
+        24-hour volume against its own average. 0.0 means unknown.
+
+        It used to return 1.0 when the baseline was missing, and the baseline
+        is never populated by anything — so every coin on the board read
+        "Vol x1.0" forever, which looked like a measurement of a perfectly
+        ordinary session and was the absence of any measurement at all.
+        Per-bar participation comes from `indicators.relative_volume` now;
+        this stays for the 24-hour view and says so when it cannot answer.
+        """
+        if self.volume_24h_avg <= 0 or self.volume_24h <= 0:
+            return 0.0
         return self.volume_24h / self.volume_24h_avg
 
     def rsi_divergence(self, lookback: int = 40) -> str | None:

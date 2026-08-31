@@ -11,7 +11,6 @@ from analysis.crypto_signal import CryptoSignal, compute_crypto_stake
 from analysis.crypto_state import CryptoState
 from analysis.patterns import range_breakout
 from analysis.scalp_levels import (
-    HORIZONS_MINUTES,
     NoTrade,
     ScalpConfig,
     scalp_levels,
@@ -43,6 +42,21 @@ def _format_timeframe(horizon_minutes: float, fallback: str = "30m") -> str:
     elif h > 0:
         return f"{h}m"
     return fallback
+
+
+def _horizon_label(minutes: float) -> str:
+    """
+    The expected time to target, in words a person reads at a glance.
+
+    Minutes below an hour, hours above it. "within 92m" is arithmetic;
+    "within 1h 32m" is a decision about whether to watch the screen.
+    """
+    if minutes <= 0 or minutes != minutes:          # zero, or NaN
+        return "n/a"
+    if minutes < 60:
+        return f"{minutes:.0f}m"
+    hours, rest = divmod(int(round(minutes)), 60)
+    return f"{hours}h" if rest == 0 else f"{hours}h {rest}m"
 
 
 def _trade_quantity(state: CryptoState, price: float) -> float:
@@ -131,31 +145,26 @@ def _emit(
     if measured is not None:
         cfg = cfg.with_measured_execution(measured)
 
-    # Offer the setup the shortest horizon first. A move reachable in ten
-    # minutes is a better setup than one needing thirty, and recording which
-    # window it qualified under makes the two directly comparable in the feed
-    # rather than being a silent internal assumption.
-    # How long a bar actually is, measured rather than assumed. The ATR is
-    # per BAR, and the projection scales it by sqrt(horizon / bar) — so a feed
-    # returning five-minute candles, or a history with gaps from an instance
-    # that slept, makes "within 15m" mean something else entirely.
+    # How long a bar actually is, measured rather than assumed. The ATR is per
+    # BAR and the time estimate is in bars, so a five-minute candle read as a
+    # one-minute one makes every published time wrong by a factor of five.
     bar_minutes = ind.median_bar_minutes([c.timestamp for c in state.candles_1m])
 
-    levels: object = NoTrade.TOO_QUIET
-    for horizon in HORIZONS_MINUTES:
-        levels = scalp_levels(
-            entry=price,
-            is_long=direction == "long",
-            atr_pct=state.atr_14 / price,
-            cfg=cfg,
-            symbol=state.symbol,
-            reward_risk=reward_risk,
-            atr_target_multiple=atr_target_multiple,
-            horizon_minutes=horizon,
-            bar_minutes=bar_minutes,
-        )
-        if not isinstance(levels, NoTrade):
-            break
+    # One call. There is no horizon to choose any more: the stop comes from
+    # volatility and cost, the target from the stop, and the time the move
+    # should need is derived from the two. Picking a window and then asking
+    # whether the market fits it was backwards — and since the cost floor won
+    # every comparison, it produced the same 0.505% target on every coin.
+    levels = scalp_levels(
+        entry=price,
+        is_long=direction == "long",
+        atr_pct=state.atr_14 / price,
+        cfg=cfg,
+        symbol=state.symbol,
+        reward_risk=reward_risk,
+        atr_target_multiple=atr_target_multiple,
+        bar_minutes=bar_minutes,
+    )
 
     if isinstance(levels, NoTrade):
         log.debug("scalp.refused", symbol=state.symbol,
@@ -372,14 +381,11 @@ class ConfluenceAnalyzer:
             return None
 
         cfg = SCALP.for_symbol(state.symbol)
-        # The longest horizon on offer, spelled out rather than left to a
-        # default. This veto is a coarse "is a trade possible at all" filter;
-        # the per-horizon test that actually decides the levels happens in
-        # _emit, which tries the short window first. Vetoing at the short
-        # window here would refuse setups that are perfectly good at the long
-        # one before they were ever offered it.
+        # A coarse "is a trade possible here at all" filter, measured over the
+        # longest hold we would accept. The real test is in _emit, which
+        # derives the time the move actually needs.
         verdict = evaluate(state.candles_1m, min_atr_pct=cfg.cost_floor_pct,
-                           horizon_minutes=HORIZONS_MINUTES[-1],
+                           horizon_minutes=cfg.max_hold_minutes,
                            min_agreeing=GATE.min_agreeing,
                            max_dissent=GATE.max_dissent)
         if verdict.direction is None:

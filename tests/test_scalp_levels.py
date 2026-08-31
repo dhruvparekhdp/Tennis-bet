@@ -74,12 +74,20 @@ class TestScalpLevels(unittest.TestCase):
         self.cfg = ScalpConfig()
 
     def test_the_screenshot_setup_is_refused(self):
-        """XRP at 1.0023 with the ATR the flat feed produced: no trade."""
+        """
+        XRP at 1.0023 with the ATR the flat feed produced: no trade.
+
+        The reason is now TOO_SLOW rather than TOO_QUIET, and it is the more
+        useful answer. The stop no longer collapses with the volatility — it is
+        floored so the round trip cannot dominate it — so the question becomes
+        whether this market can travel the resulting target inside the hold. At
+        a 0.019% bar range it cannot, by a wide margin.
+        """
         got = scalp_levels(1.0023, True, 0.00019, self.cfg)
-        self.assertIs(got, NoTrade.TOO_QUIET)
+        self.assertIs(got, NoTrade.TOO_SLOW)
 
     def test_the_same_coin_trades_once_volatility_is_real(self):
-        got = scalp_levels(1.0023, True, 0.005, self.cfg)
+        got = scalp_levels(1.0023, True, 0.003, self.cfg)
         self.assertIsInstance(got, ScalpLevels)
         self.assertGreater(got.target_pct, self.cfg.min_target_pct)
         self.assertGreater(got.edge_after_costs_pct, 0)
@@ -91,11 +99,12 @@ class TestScalpLevels(unittest.TestCase):
         # projects to less than the round trip over thirty minutes.
         for atr in (0.00001, 0.00005, 0.0001, 0.00015):
             with self.subTest(atr=atr):
-                self.assertIs(scalp_levels(1906.5, True, atr, self.cfg), NoTrade.TOO_QUIET)
+                self.assertIs(scalp_levels(1906.5, True, atr, self.cfg),
+                              NoTrade.TOO_SLOW)
 
     def test_target_never_lands_below_the_minimum(self):
         for price in (0.5, 1.0023, 150.0, 1906.5, 62000.0):
-            for atr in (0.002, 0.005, 0.01, 0.03):
+            for atr in (0.002, 0.003, 0.004):
                 got = scalp_levels(price, True, atr, self.cfg)
                 if isinstance(got, ScalpLevels):
                     with self.subTest(price=price, atr=atr):
@@ -103,14 +112,14 @@ class TestScalpLevels(unittest.TestCase):
                         self.assertGreater(got.edge_after_costs_pct, 0)
 
     def test_edge_is_net_of_costs_not_the_raw_move(self):
-        got = scalp_levels(1906.5, True, 0.005, self.cfg)
+        got = scalp_levels(1906.5, True, 0.003, self.cfg)
         self.assertAlmostEqual(got.edge_after_costs_pct,
                                got.target_pct - self.cfg.cost_floor_pct, places=9)
         self.assertLess(got.edge_after_costs_pct, got.target_pct)
 
     def test_long_and_short_are_mirror_images(self):
-        lo = scalp_levels(1906.5, True, 0.005, self.cfg)
-        sh = scalp_levels(1906.5, False, 0.005, self.cfg)
+        lo = scalp_levels(1906.5, True, 0.003, self.cfg)
+        sh = scalp_levels(1906.5, False, 0.003, self.cfg)
         self.assertGreater(lo.target, lo.entry)
         self.assertLess(lo.stop, lo.entry)
         self.assertLess(sh.target, sh.entry)
@@ -118,17 +127,17 @@ class TestScalpLevels(unittest.TestCase):
         self.assertAlmostEqual(lo.target_pct, sh.target_pct, delta=0.0002)
 
     def test_reward_risk_is_enforced_by_construction(self):
-        got = scalp_levels(1906.5, True, 0.005, self.cfg, reward_risk=2.0)
+        got = scalp_levels(1906.5, True, 0.003, self.cfg, reward_risk=2.0)
         self.assertAlmostEqual(got.reward_risk, 2.0, delta=0.05)
 
     def test_funding_window_blocks_a_short_hold(self):
-        got = scalp_levels(1906.5, True, 0.005, self.cfg, minutes_to_funding=5)
+        got = scalp_levels(1906.5, True, 0.003, self.cfg, minutes_to_funding=5)
         self.assertIs(got, NoTrade.FUNDING_WINDOW)
-        ok = scalp_levels(1906.5, True, 0.005, self.cfg, minutes_to_funding=60)
+        ok = scalp_levels(1906.5, True, 0.003, self.cfg, minutes_to_funding=60)
         self.assertIsInstance(ok, ScalpLevels)
 
     def test_levels_land_on_real_ticks(self):
-        got = scalp_levels(1906.5, True, 0.005, self.cfg)
+        got = scalp_levels(1906.5, True, 0.003, self.cfg)
         for level in (got.target, got.stop):
             self.assertAlmostEqual(level / got.tick, round(level / got.tick), places=6)
 
@@ -330,30 +339,44 @@ class TestCostFrameIsPerMarket(unittest.TestCase):
         self.assertLess(xau.min_target_pct, eth.min_target_pct)
 
     def test_a_gold_move_refused_as_crypto_is_accepted_as_gold(self):
-        """The concrete consequence: same move, different verdict."""
+        """
+        The concrete consequence: same market, same volatility, different
+        verdict. Gold's round trip is a fifth of ether's, so its stop can be a
+        fifth as wide before the fee dominates it, so its target is closer and
+        reachable in a fraction of the time.
+        """
         base = ScalpConfig()
-        # ATR is compared over the holding window now. These call scalp_levels
-        # directly at its 30-minute default (x5.477), so the value that lands
-        # between the two floors is 0.02%: reachable 0.110%, over gold's
-        # 0.0736% and under crypto's 0.168%.
-        atr = 0.0002
+        atr = 0.0004
         as_crypto = scalp_levels(4365.91, True, atr, base.for_symbol("ethusdt"),
                                  symbol="ethusdt")
         as_gold = scalp_levels(4365.91, True, atr, base.for_symbol("xauusdt"),
                                symbol="xauusdt")
-        self.assertIs(as_crypto, NoTrade.TOO_QUIET)
+        self.assertIs(as_crypto, NoTrade.TOO_SLOW)
         self.assertIsInstance(as_gold, ScalpLevels)
 
-    def test_a_quiet_market_stretches_the_target_to_the_floor(self):
-        """Above the floor but below the minimum, the target is raised — not shrunk."""
-        base = ScalpConfig()
-        # 0.05% x 5.477 = 0.274% reachable: over the 0.168% floor, under the
-        # 0.504% minimum target, so the target is stretched up to it.
-        got = scalp_levels(4365.91, True, 0.0005, base.for_symbol("ethusdt"),
-                           symbol="ethusdt")
-        self.assertAlmostEqual(got.target_pct, base.for_symbol("ethusdt").min_target_pct,
-                               delta=0.00002)
-        self.assertGreater(got.target_pct, 0.0005)
+    def test_the_stop_is_floored_so_the_fee_cannot_dominate_the_risk(self):
+        """
+        The gate that was missing. On the live board the target sat at the
+        0.504% floor, the stop was derived as target/2 = 0.252%, and the
+        0.168% round trip was 66% of the money at risk — a structure needing
+        55.6% accuracy against a measured 44.7%.
+        """
+        cfg = ScalpConfig().for_symbol("ethusdt")
+        for atr in (0.0002, 0.0005, 0.001, 0.002):
+            got = scalp_levels(2451.0, True, atr, cfg, symbol="ethusdt")
+            if isinstance(got, ScalpLevels):
+                with self.subTest(atr=atr):
+                    self.assertLessEqual(got.cost_pct / got.stop_pct,
+                                         cfg.max_cost_share_of_risk + 1e-6)
+
+    def test_a_quiet_market_needs_longer_and_says_so(self):
+        """The target no longer shrinks to fit a window; the window is derived."""
+        cfg = ScalpConfig().for_symbol("ethusdt")
+        quiet = scalp_levels(2451.0, True, 0.0008, cfg, symbol="ethusdt")
+        lively = scalp_levels(2451.0, True, 0.0020, cfg, symbol="ethusdt")
+        self.assertIsInstance(quiet, ScalpLevels)
+        self.assertIsInstance(lively, ScalpLevels)
+        self.assertGreater(quiet.horizon_minutes, lively.horizon_minutes)
 
     def test_your_three_winning_trades_all_clear_the_floor(self):
         """
@@ -413,8 +436,12 @@ class TestTickRoundingCannotRefuseAValidSetup(unittest.TestCase):
             atr = i * 0.0001
             got = scalp_levels(1.14, True, atr, cfg, symbol="xrpusdt")
             if isinstance(got, ScalpLevels):
-                reachable = cfg.reachable_move_pct(atr, 30.0)
-                wanted = max(reachable, cfg.min_target_pct) * 1.14
+                # The target is now R times the stop, and the stop is the
+                # larger of the volatility distance and the cost floor.
+                stop = max(atr * cfg.stop_atr_multiple,
+                           cfg.cost_floor_pct / cfg.max_cost_share_of_risk)
+                wanted = max(stop * cfg.target_reward_risk,
+                             cfg.min_target_pct) * 1.14
                 with self.subTest(atr=atr):
                     self.assertLessEqual(abs(got.target - 1.14) - wanted,
                                          4 * got.tick)

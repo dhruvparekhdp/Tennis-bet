@@ -53,9 +53,8 @@ from analysis.state_store import MatchStateStore
 from analysis.win_probability import compute_win_probability
 from collectors.api_tennis import ApiTennisCollector
 from collectors.bets_api import BetsAPICollector
+from collectors.binance_klines import BinanceKlines
 from collectors.binance_ws import BinanceWSCollector
-from collectors.delta_exchange import DeltaMarketData
-from collectors.delta_trading import DeltaTradingClient
 from collectors.coindcx import CoinDCXCollector
 from collectors.coingecko import CoinGeckoCollector
 from collectors.cryptopanic import CryptoPanicCollector
@@ -145,15 +144,9 @@ class AppRunner:
         self.coindcx = CoinDCXCollector(self.crypto_store)
         self.coingecko = CoinGeckoCollector(self.crypto_store)
         self.binance_ws = BinanceWSCollector(self.crypto_store)
-        # Delta India: real per-bar volume and a public L2 book — the only
-        # input here that is not a transformation of past prices.
-        self.delta = DeltaMarketData(self.crypto_store)
-        self.delta_trader = DeltaTradingClient(
-            settings.delta_api_key, settings.delta_api_secret,
-            enabled=settings.delta_trading_enabled,
-            dry_run=settings.delta_dry_run,
-            max_notional_inr=settings.delta_max_notional_inr,
-            usdt_inr=settings.paper_usdt_inr)
+        # Real klines and depth over REST. The websocket is geo-blocked from
+        # this region; the REST mirror generally is not.
+        self.klines = BinanceKlines(self.crypto_store)
         self.twelvedata_ws = TwelveDataWSCollector(self.commodity_store)
         self.cryptopanic = CryptoPanicCollector()
         self.sentiment = SentimentAnalyzer()
@@ -441,41 +434,22 @@ class AppRunner:
         except Exception:
             log.exception("coindcx_job_failed")
 
-    async def _coindcx_candles_job(self) -> None:
+    async def _klines_job(self) -> None:
         """
-        Pull real OHLCV bars over the poll-aggregated estimate.
+        Pull real 1-minute bars and depth, replacing the poll-aggregated ones.
 
-        Runs less often than the price poll: candles are a correction to the
-        history, not the live price, and refetching 120 bars every 30 seconds
-        to change the last one is wasted. Five minutes keeps the true high,
-        low and volume close to current while the ticker keeps the price
-        itself fresh in between.
+        This is the job that decides whether any signal means anything. With
+        sampled bars the ATR came out roughly a third of the real figure, the
+        cost floor beat the volatility term every time, and every card on the
+        board showed the same 0.505% target — a constant wearing the costume
+        of a forecast.
         """
-        if not self.collector_enabled.get("coindcx", True):
+        if not settings.binance_klines_enabled:
             return
         try:
-            await self.coindcx.fetch_candles()
+            await self.klines.fetch()
         except Exception:
-            log.exception("coindcx_candles_job_failed")
-
-    async def _delta_job(self) -> None:
-        """
-        Refresh candles and the L2 book from Delta India.
-
-        Public endpoints only — this job cannot place an order. It also parks
-        the latest book on each CryptoState so the level policy can price a
-        setup against real resting size instead of two flat assumptions.
-        """
-        if not settings.delta_enabled:
-            return
-        try:
-            await self.delta.fetch()
-            for sym, book in self.delta.last_books.items():
-                state = await self.crypto_store.get(sym)
-                if state is not None:
-                    state.order_book = book
-        except Exception:
-            log.exception("delta_job_failed")
+            log.exception("klines_job_failed")
 
     async def _coingecko_job(self) -> None:
         if not self.collector_enabled.get("coingecko", True):
@@ -1021,18 +995,10 @@ class AppRunner:
             next_run_time=datetime.now(timezone.utc),
         )
         self.scheduler.add_job(
-            self._delta_job,
+            self._klines_job,
             "interval",
-            seconds=settings.delta_poll_seconds,
-            id="delta_market_data",
-            max_instances=1,
-            next_run_time=datetime.now(timezone.utc),
-        )
-        self.scheduler.add_job(
-            self._coindcx_candles_job,
-            "interval",
-            seconds=300,
-            id="coindcx_candles",
+            seconds=settings.binance_klines_seconds,
+            id="binance_klines",
             max_instances=1,
             next_run_time=datetime.now(timezone.utc),
         )

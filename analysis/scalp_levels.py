@@ -42,6 +42,7 @@ class NoTrade(StrEnum):
     POOR_REWARD = "poor_reward"        # reward-to-risk below the floor
     WALL_IN_THE_WAY = "wall"           # resting size sits between entry and target
     STOP_INSIDE_NOISE = "stop_noise"   # stop sits inside one bar's ordinary range
+    TOO_SLOW = "too_slow"              # the move needs longer than we will hold
     FUNDING_WINDOW = "funding_window"  # settlement too close to open a short hold
 
 
@@ -52,6 +53,7 @@ REASON_TEXT = {
     NoTrade.POOR_REWARD: "risking more than the trade can win",
     NoTrade.WALL_IN_THE_WAY: "a large resting order sits between entry and target",
     NoTrade.STOP_INSIDE_NOISE: "stop sits inside one bar's normal range — noise would take it out",
+    NoTrade.TOO_SLOW: "this market is too quiet to travel that far in the time we would hold it",
     NoTrade.FUNDING_WINDOW: "funding settles too soon for a short hold",
 }
 
@@ -147,14 +149,32 @@ class ScalpConfig:
     # absurd.
     target_reward_risk: float = 2.0
 
-    # A stop must sit outside one bar's ordinary range. Deriving the stop as
-    # target/R means raising R tightens the stop, and a stop inside the noise
-    # is not a risk control — it is a way of paying the round trip to be shaken
-    # out of trades that were never wrong.
-    min_stop_atr_multiple: float = 1.0
+    # Where the setup is wrong, in multiples of one bar's average range. Under
+    # two, ordinary noise reaches it.
+    stop_atr_multiple: float = 2.0
+
+    # The cost of a round trip, as a share of what the trade risks.
+    #
+    # This is the gate the system was missing, and its absence is the whole
+    # story of the live board. Deriving the stop as target/R meant that with
+    # the target pinned at the 0.504% floor the stop came out at 0.252% — so
+    # the 0.168% round trip was SIXTY-SIX PERCENT of the money at risk. A win
+    # returned +0.337% and a loss cost -0.422%, which needs 55.6% accuracy to
+    # break even; the measured rate was 44.7%.
+    #
+    # At 0.35 the stop must be at least 0.48% and, at a reward:risk of 2, the
+    # target at least 0.96%. That is a much bigger trade than "scalping"
+    # suggests — and that is the finding, not a problem with the setting. At a
+    # 0.168% round trip there is no such thing as a profitable 0.25% stop.
+    max_cost_share_of_risk: float = 0.35
 
     min_reward_risk: float = 1.0
-    max_hold_minutes: int = 30
+
+    # How long we are prepared to hold. Raised from 30: a target that clears
+    # its own costs is roughly 1% away, and at ETH's real one-minute range that
+    # is an hour and a half, not half an hour. Refusing everything slower than
+    # 30 minutes refused every trade that could actually pay.
+    max_hold_minutes: int = 240
     funding_blackout_minutes: int = 15
     max_signal_age_seconds: int = 90
 
@@ -217,6 +237,31 @@ class ScalpConfig:
     def min_target_pct(self) -> float:
         """The smallest target worth executing."""
         return self.cost_floor_pct * self.min_edge_multiple
+
+    def minutes_to_move(self, move_pct: float, atr_pct: float,
+                        bar_minutes: float = 1.0) -> float:
+        """
+        How long a move of this size should take, in minutes.
+
+        The inverse of the square-root-of-time rule the projection already
+        uses: if N bars are expected to cover sqrt(N) times the per-bar range,
+        then covering M times the per-bar range is expected to take M squared
+        bars.
+
+        This is what turns a level into a forecast. "ETH 2451 to 2475" says
+        nothing useful without "and that should take about ninety minutes" —
+        and the answer varies enormously by market, which is exactly the
+        information a fixed 15-minute label was throwing away:
+
+            1.0% move at BTC's 0.06% bar range  ->  278 minutes
+            1.0% move at SOL's 0.18% bar range  ->   31 minutes
+
+        An estimate, not a promise. Real series trend, so moves arrive sooner
+        than this as often as later.
+        """
+        if move_pct <= 0 or atr_pct <= 0 or bar_minutes <= 0:
+            return float("inf")
+        return (move_pct / atr_pct) ** 2 * bar_minutes
 
     def reachable_move_pct(self, atr_pct: float, horizon_minutes: float,
                            bar_minutes: float = 1.0) -> float:
@@ -342,30 +387,6 @@ def trailing_plan(entry: float, stop: float, cfg: ScalpConfig,
     )
 
 
-# Horizons offered to a setup, shortest first. A move reachable in the short
-# window is a stronger setup than one needing the long one, so the label
-# records which window the signal qualified under and both can be compared
-# live.
-#
-# The short window was ten minutes and is now fifteen, because ten produced
-# a lot of wrong calls. The fault was not the setups but the deadline. Nothing
-# about the entry changes between the two: the target is set by whichever is
-# larger, the projected move or the cost floor, and for every symbol except
-# the most volatile the cost floor binds — so at ten minutes and at fifteen
-# the SAME target was being asked for, with half again less time to reach it.
-# A signal that was right about direction still resolved as a loss, because
-# the stop or the clock arrived before the move did.
-#
-# Where the projection does bind, fifteen bars also asks for more: sqrt(15) is
-# 3.87 against sqrt(10)'s 3.16, so BCH's target grows from 0.605% to 0.738%
-# and its edge over the round trip from 3.6x to 4.4x.
-#
-# Note the direction of the volatility gate, which is easy to get backwards:
-# a longer window projects further, so it admits QUIETER markets, not fewer.
-# Ten minutes needed a 0.053% one-minute ATR to clear the floor, fifteen needs
-# 0.043%, thirty needs 0.031%. Fifteen is not a stricter filter — it is the
-# same filter with a realistic deadline attached.
-HORIZONS_MINUTES: tuple[int, ...] = (15, 30)
 
 
 @dataclass(frozen=True)
@@ -377,7 +398,7 @@ class ScalpLevels:
     target_pct: float
     stop_pct: float
     cost_pct: float
-    horizon_minutes: float = 30.0
+    horizon_minutes: float = 30.0     # expected time to target, derived
 
     @property
     def reward_risk(self) -> float:
@@ -398,39 +419,50 @@ def scalp_levels(
     atr_target_multiple: float = 1.0,
     minutes_to_funding: float | None = None,
     symbol: str = "",
-    horizon_minutes: float = 30.0,
+    horizon_minutes: float | None = None,
     bar_minutes: float = 1.0,
 ) -> ScalpLevels | NoTrade:
     """
-    Build target and stop for a short hold, or explain why there is no trade.
+    Build target, stop and an expected time, or explain why there is no trade.
 
-    `atr_pct` is ATR as a fraction of price. The target is the larger of what
-    volatility offers and what cost demands, so a quiet market cannot produce a
-    tiny target — it produces no trade. That inversion is the whole point: the
-    old code let volatility set the target and never consulted cost.
+    The construction changed direction. It used to set the target from
+    volatility-or-cost and then divide by the reward:risk to get the stop,
+    which meant raising the ratio TIGHTENED the stop until the fixed round
+    trip was most of the money at risk — 66% of it on the live board.
+
+    Now the stop comes first, because the stop is the question the market
+    answers: where is this setup wrong. Two things bound it. It must sit
+    outside one bar's ordinary range, or noise takes it. And the round trip
+    must be a minor share of it, or the fee decides the outcome. The target
+    is then a multiple of that risk, and the time is derived rather than
+    assumed — which is the difference between a level and a forecast.
+
+    `horizon_minutes` is ignored and kept only so existing callers do not
+    break; the hold is now computed, not chosen.
     """
     if entry <= 0 or atr_pct <= 0:
         return NoTrade.TOO_QUIET
     if minutes_to_funding is not None and minutes_to_funding < cfg.funding_blackout_minutes:
         return NoTrade.FUNDING_WINDOW
-    # Like for like: what the instrument can travel in the time we hold it,
-    # against what a round trip costs.
-    reachable = cfg.reachable_move_pct(atr_pct, horizon_minutes, bar_minutes)
-    if reachable < cfg.cost_floor_pct * cfg.atr_floor_multiple:
-        return NoTrade.TOO_QUIET
 
-    # None means "whatever this cost frame aims for", so the ratio lives in one
-    # place instead of being repeated as a literal in five analyzers.
     rr = cfg.target_reward_risk if reward_risk is None else reward_risk
+    if rr <= 0:
+        rr = 1.0
 
-    target_pct = max(reachable * atr_target_multiple, cfg.min_target_pct)
-    stop_pct = target_pct / rr if rr > 0 else target_pct
+    # Where the setup is wrong, by volatility...
+    vol_stop = atr_pct * cfg.stop_atr_multiple
+    # ...and the smallest risk that does not let the round trip dominate it.
+    cost_stop = (cfg.cost_floor_pct / cfg.max_cost_share_of_risk
+                 if cfg.max_cost_share_of_risk > 0 else cfg.cost_floor_pct)
+    stop_pct = max(vol_stop, cost_stop)
 
-    # The stop is derived from the target, so a higher R pulls it closer to
-    # entry. Past a point it lands inside the range a single bar covers, where
-    # it is taken out by noise rather than by being wrong.
-    if stop_pct < atr_pct * cfg.min_stop_atr_multiple:
-        return NoTrade.STOP_INSIDE_NOISE
+    target_pct = max(stop_pct * rr * atr_target_multiple, cfg.min_target_pct)
+
+    # How long the market should need to travel that far. A target the market
+    # cannot reach inside the hold is not a target, it is an expiry.
+    minutes = cfg.minutes_to_move(target_pct, atr_pct, bar_minutes)
+    if minutes > cfg.max_hold_minutes:
+        return NoTrade.TOO_SLOW
 
     tick = tick_for_price(entry, symbol)
     if tick > 0 and tick / entry > target_pct * cfg.max_tick_share_of_target:
@@ -448,6 +480,8 @@ def scalp_levels(
         return NoTrade.TARGET_TOO_SMALL
     if actual_stop_pct <= 0:
         return NoTrade.TICK_TOO_COARSE
+    if actual_stop_pct < atr_pct * cfg.stop_atr_multiple * 0.9:
+        return NoTrade.STOP_INSIDE_NOISE
 
     # Rounding both levels away from entry can widen the stop by more than it
     # widens the target, leaving reward-to-risk a fraction under the floor —
@@ -468,5 +502,8 @@ def scalp_levels(
     return ScalpLevels(
         entry=entry, target=target, stop=stop, tick=tick,
         target_pct=actual_target_pct, stop_pct=actual_stop_pct,
-        cost_pct=cfg.cost_floor_pct, horizon_minutes=horizon_minutes,
+        cost_pct=cfg.cost_floor_pct,
+        # Recomputed from the level that survived rounding, not the one we
+        # asked for — the published time has to describe the published target.
+        horizon_minutes=cfg.minutes_to_move(actual_target_pct, atr_pct, bar_minutes),
     )

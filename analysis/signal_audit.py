@@ -462,7 +462,6 @@ STAGES: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("analysis.paper_trading", "FeeModel"),
             ("analysis.paper_trading", "SlippageModel"),
             ("analysis.paper_trading", "TrailingStop"),
-            ("analysis.paper_trading", "Position"),
             ("analysis.paper_trading", "ProfitLadder"),
             ("analysis.paper_trading", "liquidation_price"),
             ("analysis.paper_trading", "resolve_candle"),

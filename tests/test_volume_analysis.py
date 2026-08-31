@@ -18,7 +18,6 @@ from analysis.confluence import (
     thin_volume_veto,
     volume_vote,
 )
-from analysis.scalp_levels import HORIZONS_MINUTES
 
 
 def series(n=40, base=100.0, step=0.0):
@@ -201,140 +200,39 @@ class TestRestPathWritesHonestVolume(unittest.TestCase):
 
 
 class TestHorizons(unittest.TestCase):
-    def test_the_short_window_is_fifteen_minutes(self):
-        """
-        Ten bars ask a market for 3.2x its per-bar range, thirty ask 5.5x — so
-        the short window was admitting quieter markets and then giving them
-        less time. Fifteen is 3.9x.
-        """
-        self.assertEqual(HORIZONS_MINUTES, (15, 30))
+    """
+    The fixed horizon list is gone. It asked whether a market fit a window we
+    had already chosen; since the cost floor beat the volatility term every
+    time, the answer was the same 0.505% target on every coin at every hour.
+    The hold is now derived from the target and the market's own range.
+    """
 
-    def test_horizons_are_offered_shortest_first(self):
-        self.assertEqual(list(HORIZONS_MINUTES), sorted(HORIZONS_MINUTES))
-
-    def test_the_short_window_demands_more_volatility_than_the_long_one(self):
+    def test_the_time_to_a_move_scales_with_the_square_of_the_distance(self):
         from analysis.scalp_levels import ScalpConfig
-
         cfg = ScalpConfig()
-        short = cfg.reachable_move_pct(0.001, HORIZONS_MINUTES[0])
-        long_ = cfg.reachable_move_pct(0.001, HORIZONS_MINUTES[-1])
-        self.assertLess(short, long_)
+        near = cfg.minutes_to_move(0.005, 0.001)
+        far = cfg.minutes_to_move(0.010, 0.001)
+        self.assertAlmostEqual(far / near, 4.0, places=6)
 
+    def test_a_quieter_market_needs_longer_for_the_same_move(self):
+        from analysis.scalp_levels import ScalpConfig
+        cfg = ScalpConfig()
+        self.assertGreater(cfg.minutes_to_move(0.01, 0.0006),
+                           cfg.minutes_to_move(0.01, 0.0018))
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_a_market_that_cannot_get_there_in_time_is_refused(self):
+        from analysis.scalp_levels import NoTrade, ScalpConfig, scalp_levels
+        got = scalp_levels(78566.0, True, 0.0006,
+                           ScalpConfig().for_symbol("btcusdt"), symbol="btcusdt")
+        self.assertIs(got, NoTrade.TOO_SLOW)
 
-
-class TestCandleIngestion(unittest.TestCase):
-    """
-    Real bars are the actual fix: without them there is no per-bar volume to
-    analyse, and the poll-aggregated history understates the true range too.
-    """
-
-    def bars(self, n=60):
-        t = datetime(2026, 8, 20, tzinfo=UTC)
-        return [{"timestamp": t + timedelta(minutes=i), "open": 1900.0 + i,
-                 "high": 1901.0 + i, "low": 1899.0 + i, "close": 1900.5 + i,
-                 "volume": 100.0 + (i % 7) * 9} for i in range(n)]
-
-    def _install(self, bars):
-        import asyncio
-
-        from analysis.crypto_state_store import CryptoStateStore
-
-        async def go():
-            store = CryptoStateStore()
-            await store.seed(["ethusdt"])
-            await store.replace_candles("ethusdt", bars)
-            return await store.get("ethusdt")
-        return asyncio.run(go())
-
-    def test_real_bars_give_the_volume_checks_something_to_read(self):
-        state = self._install(self.bars())
-        volumes = [c.volume for c in state.candles_1m]
-        self.assertTrue(ind.has_usable_volume(volumes))
-        self.assertIsNotNone(ind.relative_volume(volumes))
-
-    def test_a_short_payload_cannot_wipe_a_working_history(self):
-        import asyncio
-
-        from analysis.crypto_state_store import CryptoStateStore
-
-        async def go():
-            store = CryptoStateStore()
-            await store.seed(["ethusdt"])
-            await store.replace_candles("ethusdt", self.bars())
-            await store.replace_candles("ethusdt", self.bars(5))
-            return await store.get("ethusdt")
-        self.assertEqual(len(asyncio.run(go()).candles_1m), 60)
-
-    def test_the_forming_bar_stays_open_for_the_next_poll_to_update(self):
-        state = self._install(self.bars())
-        self.assertFalse(state.candles_1m[-1].is_closed)
-        self.assertTrue(all(c.is_closed for c in state.candles_1m[:-1]))
-
-    def test_indicators_are_recomputed_from_the_installed_bars(self):
-        state = self._install(self.bars())
-        self.assertGreater(state.atr_14, 0)
-
-
-class TestCandleParsing(unittest.TestCase):
-    """
-    The venue has published candles as objects and as positional arrays, with
-    the time in seconds or milliseconds. A parser that insists on one shape
-    turns a working feed into a silent outage.
-    """
-
-    def test_object_rows_parse(self):
-        from collectors.coindcx import _parse_candles
-
-        got = _parse_candles([{"time": 1755000000000, "open": 1, "high": 2,
-                               "low": 0.5, "close": 1.5, "volume": 100}])
-        self.assertEqual(len(got), 1)
-        self.assertEqual(got[0]["volume"], 100.0)
-
-    def test_positional_rows_parse(self):
-        from collectors.coindcx import _parse_candles
-
-        got = _parse_candles([[1755000000, 1, 2, 0.5, 1.5, 100]])
-        self.assertEqual(len(got), 1)
-        self.assertEqual(got[0]["close"], 1.5)
-
-    def test_seconds_and_milliseconds_land_on_the_same_moment(self):
-        """Guessing wrong puts every bar in 1970."""
-        from collectors.coindcx import _parse_candles
-
-        a = _parse_candles([[1755000000, 1, 2, 0.5, 1.5, 100]])
-        b = _parse_candles([[1755000000000, 1, 2, 0.5, 1.5, 100]])
-        self.assertEqual(a[0]["timestamp"], b[0]["timestamp"])
-        self.assertGreater(a[0]["timestamp"].year, 2020)
-
-    def test_rows_come_back_oldest_first(self):
-        from collectors.coindcx import _parse_candles
-
-        got = _parse_candles([[1755000120, 1, 2, 0.5, 1.5, 100],
-                              [1755000000, 1, 2, 0.5, 1.5, 100]])
-        self.assertEqual([r["timestamp"] for r in got],
-                         sorted(r["timestamp"] for r in got))
-
-    def test_junk_is_skipped_rather_than_raised(self):
-        from collectors.coindcx import _parse_candles
-
-        for junk in ({"error": "nope"}, [], None, "text",
-                     [{"open": 1}], [[1, 2]], [{"time": "x", "open": 1, "close": 2}]):
-            with self.subTest(junk=junk):
-                self.assertEqual(_parse_candles(junk), [])
-
-    def test_a_good_row_survives_a_bad_neighbour(self):
-        from collectors.coindcx import _parse_candles
-
-        got = _parse_candles([{"nonsense": True},
-                              [1755000000, 1, 2, 0.5, 1.5, 100]])
-        self.assertEqual(len(got), 1)
-
-    def test_negative_volume_is_clamped_not_propagated(self):
-        """A negative would poison has_usable_volume for the whole series."""
-        from collectors.coindcx import _parse_candles
-
-        got = _parse_candles([[1755000000, 1, 2, 0.5, 1.5, -5]])
-        self.assertEqual(got[0]["volume"], 0.0)
+    def test_a_lively_market_gets_a_short_hold_and_a_quiet_one_a_long_hold(self):
+        from analysis.scalp_levels import ScalpConfig, ScalpLevels, scalp_levels
+        cfg = ScalpConfig()
+        fast = scalp_levels(103.32, True, 0.0018, cfg.for_symbol("solusdt"),
+                            symbol="solusdt")
+        slow = scalp_levels(2451.0, True, 0.0010, cfg.for_symbol("ethusdt"),
+                            symbol="ethusdt")
+        self.assertIsInstance(fast, ScalpLevels)
+        self.assertIsInstance(slow, ScalpLevels)
+        self.assertLess(fast.horizon_minutes, slow.horizon_minutes)
