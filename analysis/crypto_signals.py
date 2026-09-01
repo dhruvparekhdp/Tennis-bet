@@ -272,10 +272,29 @@ class VolumeSpikeAnalyzer:
         if ratio < self.MIN_VOLUME_RATIO:
             return None
 
-        # Direction from the candle body: a volume surge confirms whichever way
-        # the bar closed, it does not pick the direction itself.
+        # Direction from the candle body — but only where the market's own
+        # structure does not say otherwise.
+        #
+        # The comment above this used to claim a surge "confirms whichever way
+        # the bar closed, it does not pick the direction itself", while the
+        # code did exactly the thing the comment disclaimed: one bar's body,
+        # against anything. On the live feed that produced a LONG on ETH seven
+        # minutes after a confluence SHORT backed by three independent
+        # families, off the same volume event. One candle is not evidence
+        # enough to contradict swing structure.
+        #
+        # So the surge still cannot elect a direction on its own: it confirms
+        # the bar, and stands aside when the sequence of highs and lows points
+        # the other way. Neutral structure is not disagreement, so a surge in
+        # a range still fires.
         last_candle = state.candles_1m[-1]
         is_bullish = last_candle.close >= last_candle.open
+        structure = ind.trend_structure([c.high for c in state.candles_1m],
+                                        [c.low for c in state.candles_1m])
+        if structure and structure != (1 if is_bullish else -1):
+            log.debug("volume_spike_contradicts_structure", symbol=state.symbol,
+                      bar="up" if is_bullish else "down", structure=structure)
+            return None
 
         return _emit(
             state,

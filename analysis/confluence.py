@@ -265,8 +265,12 @@ def volume_vote(highs, lows, closes, volumes) -> Vote:
     vt = ind.volume_trend(closes, volumes)
     if vt is not None and abs(vt) > 0.25:
         score += 0.5 if vt > 0 else -0.5
+        # vt is an imbalance in -1..+1, not a share. At -0.44 sellers do not
+        # own 44% of the volume, they own 72% — (1 + 0.44) / 2 — and the
+        # alert was understating the very thing it was citing as evidence.
+        share = (1 + abs(vt)) / 2
         reasons.append(f"{'buyers' if vt > 0 else 'sellers'} own "
-                       f"{abs(vt) * 100:.0f}% of the volume")
+                       f"{share * 100:.0f}% of the volume")
 
     # Participation does not pick a side, so it scales the family's weight
     # rather than adding to the score. A correct read on a dead tape is still

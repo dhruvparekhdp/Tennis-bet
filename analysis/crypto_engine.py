@@ -68,6 +68,13 @@ class CryptoEngine:
                           direction=sig.direction)
                 continue
 
+            opposing = self._opposing_live(sig, state.current_price)
+            if opposing is not None:
+                log.info("crypto_signal_contradicts_live", symbol=sig.symbol,
+                         rejected=sig.direction, rejected_by=sig.signal_type,
+                         live=opposing.direction, live_from=opposing.signal_type)
+                continue
+
             self._set_cooldown(sig.symbol, sig.signal_type, now)
             self._live[(sig.symbol, sig.direction)] = sig
             fired.append(sig)
@@ -123,6 +130,45 @@ class CryptoEngine:
             self._live.pop((sig.symbol, sig.direction), None)
             return False
         return True
+
+    def _opposing_live(self, sig: CryptoSignal, price: float,
+                       now: datetime | None = None) -> CryptoSignal | None:
+        """
+        A live call for this symbol pointing the other way, or None.
+
+        Observed on the live feed: a confluence SHORT on ETH at 11:17 backed by
+        three independent families, then a volume-spike LONG on the same coin
+        at 11:24 — two open, contradictory views on one market, seven minutes
+        apart. Acting on both means paying two round trips to hold nothing.
+
+        Neither existing guard could see it. `_live` is keyed by
+        (symbol, direction), so a running short does not look at longs at all;
+        the cooldown is keyed by (symbol, signal_type), so one analyzer firing
+        never quiets another. Both are duplicate suppressors. This is the
+        contradiction check, and it is deliberately strict: while a call is
+        open, the reversal that matters is its own stop being hit. That is the
+        position saying it was wrong, and until it does, a second opinion in
+        the other direction is not new information — it is churn.
+        """
+        other = "short" if sig.direction == "long" else "long"
+        prev = self._live.get((sig.symbol, other))
+        if prev is None:
+            return None
+
+        cur_now = now or datetime.now(UTC)
+        if (cur_now - prev.timestamp) >= self._get_signal_ttl(prev):
+            self._live.pop((sig.symbol, other), None)
+            return None
+
+        if price > 0:
+            prev_long = prev.direction == "long"
+            resolved = (price >= prev.target_price or price <= prev.stop_loss) \
+                if prev_long else \
+                (price <= prev.target_price or price >= prev.stop_loss)
+            if resolved:
+                self._live.pop((sig.symbol, other), None)
+                return None
+        return prev
 
     def _is_on_cooldown(self, symbol: str, signal_type: str) -> bool:
         key = (symbol.lower(), signal_type)
