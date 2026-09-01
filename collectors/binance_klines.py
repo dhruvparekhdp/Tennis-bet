@@ -134,6 +134,12 @@ class BinanceKlines:
         self.last_error: str = ""
         self.last_books: dict[str, object] = {}
         self.refreshed: set[str] = set()
+        # Per-symbol outcome of the last sweep, and when the last one worked.
+        # Without this a failing feed is invisible: the store keeps whatever
+        # it had, the board renders it, and nothing anywhere says the numbers
+        # stopped being current.
+        self.status: dict[str, str] = {}
+        self.last_success: datetime | None = None
 
     def _hosts(self) -> tuple[str, ...]:
         if self.host:
@@ -229,19 +235,29 @@ class BinanceKlines:
             return 0
         symbols = await self.store.get_symbols()
         self.refreshed = set()
+        self.status = {}
         for sym in symbols:
             try:
                 bars = await self.fetch_candles(sym)
-                if bars:
-                    await self.store.replace_candles(sym, bars)
-                    self.refreshed.add(sym)
+                if not bars:
+                    self.status[sym] = f"no candles ({self.last_error or 'empty'})"
+                    continue
+                if len(bars) < 20:
+                    self.status[sym] = f"only {len(bars)} bars — too few to install"
+                    continue
+                await self.store.replace_candles(sym, bars)
+                self.refreshed.add(sym)
+                self.status[sym] = f"{len(bars)} bars via {self.host or 'fallback'}"
                 book = await self.fetch_depth(sym)
                 if book is not None:
                     state = await self.store.get(sym)
                     if state is not None:
                         state.order_book = book
             except Exception as exc:
+                self.status[sym] = f"{type(exc).__name__}: {exc}"
                 log.debug("binance_klines_symbol_failed", symbol=sym, error=str(exc))
+        if self.refreshed:
+            self.last_success = datetime.now(timezone.utc)
         log.info("binance_klines_done", refreshed=len(self.refreshed),
                  requested=len(symbols), host=self.host, error=self.last_error)
         return len(self.refreshed)

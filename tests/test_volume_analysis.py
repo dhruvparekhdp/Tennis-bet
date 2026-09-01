@@ -303,3 +303,120 @@ class TestTheFormingBarIsNotCountedAsVolume(unittest.TestCase):
             c.volume = 4.0
         volumes = [c.volume for c in bars if c.is_closed]
         self.assertLess(ind.relative_volume(volumes), MIN_RELATIVE_VOLUME)
+
+
+class TestForecast(unittest.TestCase):
+    """
+    A band with a direction, not a point estimate. Nobody can say ETH will be
+    2474.86 in four hours; what can be defended is how far it usually travels
+    in four hours and which way the evidence leans.
+    """
+
+    def state(self, price=2453.0, atr=0.001, n=240, seed=3, drift=0.0):
+        import random
+
+        from analysis.crypto_state import CryptoState
+        rng = random.Random(seed)
+        st = CryptoState(symbol="ethusdt", base_asset="ETH", current_price=price)
+        p = price
+        for i in range(n):
+            o = p
+            c = o * (1 + rng.gauss(drift, atr))
+            hi = max(o, c) * (1 + abs(rng.gauss(0, atr * 0.5)))
+            lo = min(o, c) * (1 - abs(rng.gauss(0, atr * 0.5)))
+            st.candles_1m.append(OHLCVCandle(
+                o, hi, lo, c, 100.0 + (i % 9) * 7,
+                T0 + timedelta(minutes=i), is_closed=True))
+            p = c
+        st.current_price = p
+        return st
+
+    def test_a_longer_horizon_gives_a_wider_band(self):
+        from analysis.forecast import forecast_symbol
+        fc = forecast_symbol(self.state())
+        widths = [f.high - f.low for f in fc]
+        self.assertEqual(widths, sorted(widths))
+
+    def test_the_band_grows_with_the_square_root_of_time(self):
+        from analysis.forecast import forecast_symbol
+        fc = {f.horizon_minutes: f for f in forecast_symbol(self.state())}
+        one, four = fc[60], fc[240]
+        self.assertAlmostEqual((four.high - four.low) / (one.high - one.low),
+                               2.0, delta=0.05)
+
+    def test_a_livelier_market_gets_a_wider_band(self):
+        from analysis.forecast import forecast_symbol
+        quiet = forecast_symbol(self.state(atr=0.0005))[0]
+        lively = forecast_symbol(self.state(atr=0.002))[0]
+        self.assertGreater(lively.typical_move_pct, quiet.typical_move_pct)
+
+    def test_the_lean_can_never_claim_the_whole_band(self):
+        """
+        The guard against a confident-looking forecast. No indicator set earns
+        a full standard deviation of drift, so the centre may move at most a
+        third of the band however unanimous the read.
+        """
+        from analysis.forecast import MAX_DRIFT_SHARE, forecast_symbol
+        for drift in (-0.002, 0.0, 0.002):
+            for f in forecast_symbol(self.state(drift=drift)):
+                with self.subTest(drift=drift, horizon=f.label):
+                    shift = abs(f.centre - f.price) / f.price * 100
+                    self.assertLessEqual(shift,
+                                         f.typical_move_pct * MAX_DRIFT_SHARE + 1e-9)
+
+    def test_the_current_price_sits_inside_every_band(self):
+        from analysis.forecast import forecast_symbol
+        for f in forecast_symbol(self.state(drift=0.003)):
+            with self.subTest(horizon=f.label):
+                self.assertLess(f.low, f.price)
+                self.assertGreater(f.high, f.price)
+
+    def test_no_history_produces_no_forecast_rather_than_a_flat_one(self):
+        """'No change' would be a claim we have not earned."""
+        from analysis.crypto_state import CryptoState
+        from analysis.forecast import forecast_symbol
+        self.assertEqual(forecast_symbol(CryptoState(symbol="x", base_asset="X")), [])
+
+
+class TestSurgeDetection(unittest.TestCase):
+    def state(self, surge=False, seed=5):
+        import random
+
+        from analysis.crypto_state import CryptoState
+        rng = random.Random(seed)
+        st = CryptoState(symbol="solusdt", base_asset="SOL", current_price=104.0)
+        p, atr, n = 104.0, 0.001, 240
+        for i in range(n):
+            o = p
+            c = o * (1 + (atr * 8 if surge and i == n - 1 else rng.gauss(0, atr)))
+            v = 100.0 * max(0.2, rng.lognormvariate(0, 0.4))
+            if surge and i == n - 1:
+                v *= 8
+            st.candles_1m.append(OHLCVCandle(
+                o, max(o, c) * 1.0005, min(o, c) * 0.9995, c, v,
+                T0 + timedelta(minutes=i), is_closed=True))
+            p = c
+        st.current_price = p
+        return st
+
+    def test_an_ordinary_session_is_not_a_surge(self):
+        from analysis.forecast import detect_surge
+        self.assertIsNone(detect_surge(self.state()))
+
+    def test_volume_and_price_together_are_reported_as_both(self):
+        from analysis.forecast import detect_surge
+        got = detect_surge(self.state(surge=True))
+        self.assertIsNotNone(got)
+        self.assertEqual(got.kind, "both")
+        self.assertEqual(got.direction, 1)
+
+    def test_thresholds_are_relative_to_the_instrument(self):
+        """
+        An absolute threshold fires constantly on the lively coins and never
+        on the quiet ones — the same mistake as holding a one-minute range
+        against a fixed cost.
+        """
+        from analysis.forecast import detect_surge
+        for seed in range(4):
+            with self.subTest(seed=seed):
+                self.assertIsNone(detect_surge(self.state(seed=seed)))

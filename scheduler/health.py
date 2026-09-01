@@ -392,6 +392,69 @@ def _signal_row(r) -> dict:
     }
 
 
+async def _api_predict(runner, request: web.Request) -> web.Response:
+    """
+    A band and a lean for every watchlist market, at three horizons.
+
+    Separate from the signal feed on purpose. Signals answer "is there a trade
+    worth its costs right now", and the honest answer is usually no — which
+    leaves the board empty and says nothing about the market. This says
+    something about every market, all the time.
+    """
+    from analysis import indicators as ind
+    from analysis.forecast import detect_surge, forecast_symbol
+
+    rows, surges = [], []
+    for st in sorted(await runner.crypto_store.get_all(), key=lambda x: x.symbol):
+        fc = forecast_symbol(st)
+        candles = st.candles_1m or []
+        closed = [c for c in candles if c.is_closed]
+        rel = ind.relative_volume([c.volume for c in closed]) if closed else None
+        newest = candles[-1].timestamp if candles else None
+        lag = (None if newest is None else
+               round((datetime.now(UTC) - newest.replace(tzinfo=UTC)).total_seconds() / 60, 1))
+        row = {
+            "symbol": st.symbol.upper(),
+            "price": st.current_price,
+            "change_24h_pct": round(st.price_change_24h_pct, 2),
+            "rsi": round(st.rsi_14, 1),
+            "atr_pct": (round(st.atr_14 / st.current_price * 100, 4)
+                        if st.current_price > 0 else None),
+            "relative_volume": round(rel, 2) if rel is not None else None,
+            "candles": len(candles),
+            "data_age_minutes": lag,
+            # Anything older than half an hour is not a current view of the
+            # market, and a page that renders it identically to a live one is
+            # how a stale board gets traded.
+            "stale": lag is not None and lag > 30,
+            "forecasts": [f.as_dict() for f in fc],
+        }
+        if fc:
+            row["direction"] = fc[0].direction
+            row["confidence"] = fc[0].confidence
+        rows.append(row)
+
+        surge = detect_surge(st)
+        if surge is not None:
+            surges.append({
+                "symbol": surge.symbol.upper(), "kind": surge.kind,
+                "detail": surge.detail, "magnitude": surge.magnitude,
+                "direction": surge.direction,
+            })
+
+    surges.sort(key=lambda x: -x["magnitude"])
+    return web.json_response({
+        "generated_at": _iso(datetime.now(UTC)),
+        "note": ("The band is roughly one standard deviation of this market's "
+                 "own recent range projected over the horizon: price should "
+                 "land inside it about two times in three. The centre is "
+                 "shifted from spot by where the evidence leans, capped at a "
+                 "third of the band — no indicator set earns more than that."),
+        "markets": rows,
+        "surges": surges,
+    })
+
+
 async def _api_debug_signals(runner, request: web.Request) -> web.Response:
     """
     Why each watchlist symbol did or did not produce a signal, right now.
@@ -405,6 +468,25 @@ async def _api_debug_signals(runner, request: web.Request) -> web.Response:
     from analysis.confluence import ConvictionGate, evaluate
     from analysis.crypto_signals import GATE, SCALP
     from analysis.scalp_levels import NoTrade, REASON_TEXT, scalp_levels
+
+    # The feed's own state, first. Every number below is downstream of it, and
+    # a stale feed renders exactly like a live one.
+    kl = getattr(runner, "klines", None)
+    feed = {"source": "binance klines (REST)"}
+    if kl is not None:
+        age = (None if kl.last_success is None else
+               round((datetime.now(UTC) - kl.last_success).total_seconds() / 60, 1))
+        feed.update({
+            "host": kl.host or "none answered",
+            "last_success_minutes_ago": age,
+            "refreshed_last_sweep": sorted(kl.refreshed),
+            "per_symbol": kl.status,
+            "last_error": kl.last_error or None,
+        })
+        if age is None:
+            feed["warning"] = ("this feed has never succeeded — every candle "
+                               "below is preloaded archive data or poll "
+                               "aggregation, not live market data")
 
     out = []
     for st in sorted(await runner.crypto_store.get_all(), key=lambda x: x.symbol):
@@ -456,6 +538,20 @@ async def _api_debug_signals(runner, request: web.Request) -> web.Response:
         row["reward_risk"] = round(levels.reward_risk, 2)
         bar = ind.median_bar_minutes([c.timestamp for c in st.candles_1m])
         row["bar_minutes"] = round(bar, 2)
+        # A one-minute series whose bars are not a minute apart is not a
+        # one-minute series, and every time estimate built on it is wrong by
+        # that factor.
+        if bar > 1.5:
+            row["bar_warning"] = (f"bars are {bar:.0f} minutes apart, not 1 — "
+                                  f"ATR and every time estimate are wrong by "
+                                  f"about {bar:.0f}x")
+        last = st.candles_1m[-1].timestamp if st.candles_1m else None
+        if last is not None:
+            lag = (datetime.now(UTC) - last.replace(tzinfo=UTC)).total_seconds() / 60
+            row["newest_candle_minutes_ago"] = round(lag, 1)
+            if lag > 30:
+                row["stale_warning"] = ("newest candle is "
+                                        f"{lag / 60:.1f} hours old")
         # Closed bars only — the minute in progress has traded almost nothing,
         # so including it reports a normally trading market as having no volume.
         vols = [c.volume for c in st.candles_1m if c.is_closed]
@@ -489,6 +585,7 @@ async def _api_debug_signals(runner, request: web.Request) -> web.Response:
         "would_fire": len(fired),
         "gate_profile": GATE.label,
         "edge_multiple": SCALP.min_edge_multiple,
+        "feed": feed,
         "symbols": out,
     }, dumps=lambda o: json.dumps(o, indent=2, default=str))
 
@@ -1747,6 +1844,7 @@ section h2{color:var(--accent-soft)}
   </div>
   <div class="side-group">Live</div>
   <div class="side-item" data-tab="dashboard" onclick="switchTab('dashboard')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h7V3H3zM14 21h7v-9h-7zM14 9h7V3h-7zM3 21h7v-6H3z"/></svg><span>Dashboard</span></div>
+  <a class="side-item" data-tab="predict" href="/predict"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Price Outlook</span></a>
   <div class="side-item" data-tab="crypto" onclick="switchTab('crypto')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M17 7h4v4"/></svg><span>Signals</span></div>
   <div class="side-item" data-tab="paper" onclick="switchTab('paper')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h12"/></svg><span>Paper Trading</span></div>
   <div class="side-item" data-tab="guard" onclick="switchTab('guard')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V7z"/></svg><span>Session Guard</span></div>
@@ -1793,6 +1891,12 @@ section h2{color:var(--accent-soft)}
 
 
 <div id="tab-dashboard" class="tab-content active">
+  <a class="desk-link" href="/predict">
+    <span class="desk-ico">&#128200;</span>
+    <span class="desk-txt"><b>Price Outlook</b>
+      <span>Where every watchlist market is likely to be in 1, 4 and 24 hours</span></span>
+    <span class="desk-go">Open &rarr;</span>
+  </a>
   <div class="cards" id="dash-cards"></div>
   <section>
     <h2>Predictions &middot; last 7 days</h2>
@@ -2824,7 +2928,7 @@ function initView(){
   // refresh could run, so the whole page loaded empty with "Error — retrying".
   // Everything here is null-safe for that reason.
   const sportsOnly = ['tennis','scalping','football'];
-  const cryptoOnly = ['dashboard','crypto','paper','guard','accuracy','historic','watchlist','audit'];
+  const cryptoOnly = ['dashboard','crypto','paper','guard','accuracy','historic','watchlist','audit','predict'];
   (IS_SPORTS ? cryptoOnly : sportsOnly).forEach(t => {
     const el = document.getElementById('tab-' + t);
     if(el) el.classList.remove('active');
@@ -4690,6 +4794,176 @@ reload();
 """
 
 
+async def _predict_page(request: web.Request) -> web.Response:
+    return web.Response(text=_PREDICT_HTML, content_type="text/html")
+
+
+# The board. Its own route because it answers a different question from the
+# signal feed: signals say "is there a trade worth its costs right now", and
+# the honest answer is usually no. This says something about every market all
+# the time, and is explicit about how much of it is knowable.
+_PREDICT_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Price Outlook</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:60px;font-size:13px}
+header{background:var(--panel);border-bottom:1px solid var(--line);padding:11px 18px;
+  display:flex;align-items:center;gap:13px;flex-wrap:wrap;position:sticky;top:0;z-index:30}
+header h1{font-size:16px;font-weight:700;color:var(--text-strong);display:flex;gap:8px;align-items:center}
+a.nav-btn{background:var(--acc-t);border:1px solid var(--acc-t2);color:var(--accent);font-size:12px;
+  font-weight:600;padding:5px 12px;border-radius:8px;text-decoration:none;white-space:nowrap}
+.spacer{margin-left:auto}
+.tick{font-size:11.5px;color:var(--muted)}
+main{padding:16px 18px;max-width:1400px;margin:0 auto}
+
+.surges{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
+.surge{display:flex;align-items:center;gap:11px;background:var(--acc-t);
+  border:1px solid var(--acc-t2);border-radius:10px;padding:10px 14px;font-size:13px}
+.surge.up{background:var(--pos-t);border-color:var(--pos-t2)}
+.surge.down{background:var(--neg-t);border-color:var(--neg-t2)}
+.surge b{color:var(--text-strong)}
+.surge .tag{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;font-weight:700;
+  padding:3px 8px;border-radius:4px;background:var(--panel);color:var(--accent);white-space:nowrap}
+.surge.up .tag{color:var(--pos)} .surge.down .tag{color:var(--neg)}
+
+.note{font-size:12px;color:var(--muted2);line-height:1.6;margin-bottom:14px;max-width:88ch}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:13px;white-space:nowrap}
+th,td{padding:11px 14px;text-align:left;border-bottom:1px solid var(--line2)}
+th{background:var(--panel2);color:var(--muted2);font-size:10px;letter-spacing:.09em;
+  text-transform:uppercase;font-weight:700;position:sticky;top:0}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:var(--panel2)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.sym{font-weight:700;color:var(--text-strong);font-size:14px}
+.sub{font-size:11px;color:var(--muted2)}
+.pos{color:var(--pos)}.neg{color:var(--neg)}.muted{color:var(--muted)}
+
+/* the forecast cell: a band with the centre marked */
+.fc{min-width:160px}
+.fc .mid{font-variant-numeric:tabular-nums;font-weight:600;color:var(--text-strong)}
+.fc .rng{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.bar{position:relative;height:6px;border-radius:3px;background:var(--sunk);margin-top:5px}
+.bar i{position:absolute;top:0;bottom:0;border-radius:3px;opacity:.5}
+.bar .now{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text-strong)}
+.bar i.up{background:var(--pos)} .bar i.down{background:var(--neg)} .bar i.flat{background:var(--muted2)}
+
+.pill{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:10.5px;font-weight:700}
+.pill.up{background:var(--pos-t);color:var(--pos)}
+.pill.down{background:var(--neg-t);color:var(--neg)}
+.pill.flat{background:var(--mut-t);color:var(--muted)}
+.pill.stale{background:var(--neg-t);color:var(--neg)}
+.empty{color:var(--muted2);padding:20px;font-size:13px}
+
+@media(max-width:820px){
+  main{padding:12px}
+  th,td{padding:9px 10px}
+  .h-24h{display:none}
+  .fc{min-width:128px}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>&#128200; Price Outlook</h1>
+  <span class="tick" id="tick">loading&hellip;</span>
+  <span class="spacer"></span>
+  <a class="nav-btn" href="/">&larr; Dashboard</a>
+  <a class="nav-btn" href="/audit">Audit</a>
+  <a class="nav-btn" href="/api/debug/signals">Diagnostics</a>
+</header>
+<main>
+  <div class="surges" id="surges"></div>
+  <div class="note" id="note"></div>
+  <div class="scroll"><table>
+    <thead><tr>
+      <th>Market</th>
+      <th class="num">Price</th>
+      <th class="num">24h</th>
+      <th class="num">Range</th>
+      <th class="num">Volume</th>
+      <th>Lean</th>
+      <th>In 1 hour</th>
+      <th>In 4 hours</th>
+      <th class="h-24h">In 24 hours</th>
+    </tr></thead>
+    <tbody id="rows"><tr><td colspan="9" class="empty">loading&hellip;</td></tr></tbody>
+  </table></div>
+</main>
+<script>
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function px(v){
+  if(v==null) return '—';
+  const a=Math.abs(v);
+  return a>=1000?v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
+       : a>=1 ? v.toFixed(2) : v.toFixed(4);
+}
+function signed(v,d){
+  if(v==null) return '<span class="muted">—</span>';
+  const cls=v>0?'pos':(v<0?'neg':'muted');
+  return `<span class="${cls}">${v>0?'+':''}${v.toFixed(d==null?2:d)}%</span>`;
+}
+
+// One cell: the band, the centre, and where price sits inside it right now.
+function cell(f, price){
+  if(!f) return '<td class="muted">—</td>';
+  const span=f.high-f.low;
+  const at=span>0?Math.max(0,Math.min(100,(price-f.low)/span*100)):50;
+  return `<td class="fc">
+    <div class="mid">${px(f.centre)} ${signed(f.change_pct)}</div>
+    <div class="rng">${px(f.low)} – ${px(f.high)}</div>
+    <div class="bar"><i class="${f.direction}" style="left:0;right:0"></i>
+      <span class="now" style="left:${at}%"></span></div></td>`;
+}
+
+async function load(){
+  let d;
+  try{ d=await fetch('/api/predict').then(r=>r.json()); }
+  catch(e){ document.getElementById('tick').textContent='failed — '+e; return; }
+
+  document.getElementById('tick').textContent=
+    'updated '+new Date(d.generated_at).toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata'})
+    +' IST · refreshes every 20s';
+  document.getElementById('note').textContent=d.note;
+
+  document.getElementById('surges').innerHTML=(d.surges||[]).map(s=>{
+    const dir=s.direction>0?'up':(s.direction<0?'down':'');
+    return `<div class="surge ${dir}"><span class="tag">${esc(s.kind)} surge</span>
+      <span><b>${esc(s.symbol)}</b> — ${esc(s.detail)}</span></div>`;
+  }).join('');
+
+  const rows=d.markets||[];
+  document.getElementById('rows').innerHTML = rows.length ? rows.map(m=>{
+    const f=Object.fromEntries((m.forecasts||[]).map(x=>[x.label,x]));
+    const dir=m.direction||'flat';
+    return `<tr>
+      <td><span class="sym">${esc(m.symbol.replace('USDT',''))}</span>
+        <div class="sub">${esc(m.symbol)}${m.stale
+          ? ' <span class="pill stale">stale '+m.data_age_minutes+'m</span>':''}</div></td>
+      <td class="num">${px(m.price)}</td>
+      <td class="num">${signed(m.change_24h_pct)}</td>
+      <td class="num">${m.atr_pct==null?'—':m.atr_pct.toFixed(3)+'%'}
+        <div class="sub">per minute</div></td>
+      <td class="num">${m.relative_volume==null?'—':'×'+m.relative_volume.toFixed(2)}</td>
+      <td><span class="pill ${dir}">${dir.toUpperCase()}</span>
+        <div class="sub">${m.confidence==null?'':Math.round(m.confidence*100)+'% agreement'}</div></td>
+      ${cell(f['1h'],m.price)}${cell(f['4h'],m.price)}
+      <td class="h-24h" style="padding:0">${cell(f['24h'],m.price).replace(/^<td[^>]*>/,'<div class="fc" style="padding:11px 14px">').replace(/<\/td>$/,'</div>')}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="9" class="empty">No markets with enough history yet.</td></tr>';
+}
+load(); setInterval(load, 20000);
+</script>
+</body>
+</html>
+"""
+
+
 _THEME_SNIPPET = """
 <style>
 /* Theme palettes */
@@ -4828,6 +5102,7 @@ _HTML = _HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _DATA_HTML = _DATA_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _SETTINGS_HTML = _SETTINGS_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 _AUDIT_HTML = _AUDIT_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
+_PREDICT_HTML = _PREDICT_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 
 
 async def make_app(runner) -> web.Application:
@@ -4861,6 +5136,8 @@ async def make_app(runner) -> web.Application:
     app.router.add_get("/api/sentiment/recent", lambda req: _api_sentiment_recent(runner, req))
     app.router.add_get("/api/signals/history", lambda req: _api_signal_history(runner, req))
     app.router.add_get("/api/debug/signals", lambda req: _api_debug_signals(runner, req))
+    app.router.add_get("/predict", lambda req: _predict_page(req))
+    app.router.add_get("/api/predict", lambda req: _api_predict(runner, req))
     app.router.add_get("/api/signals/accuracy", lambda req: _api_signal_accuracy(runner, req))
     app.router.add_get("/audit", lambda req: _audit_page(req))
     app.router.add_get("/api/audit", lambda req: _api_audit(runner, req))

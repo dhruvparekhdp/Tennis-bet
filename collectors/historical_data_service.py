@@ -7,11 +7,9 @@ for model training, indicator warm-up, and multi-timeframe analysis.
 """
 from __future__ import annotations
 
-import asyncio
 import csv
 import gzip
 import io
-import os
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,7 +17,7 @@ from pathlib import Path
 import httpx
 import structlog
 
-from analysis.crypto_state import CryptoState, OHLCVCandle
+from analysis.crypto_state import OHLCVCandle
 from analysis.crypto_state_store import CryptoStateStore, append_candle, recalculate_indicators
 
 log = structlog.get_logger()
@@ -90,7 +88,7 @@ class HistoricalDataService:
                             except (ValueError, TypeError, KeyError):
                                 continue
                 else:
-                    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    with open(file_path, encoding="utf-8", errors="replace") as f:
                         reader = csv.DictReader(f)
                         for row in reader:
                             try:
@@ -114,6 +112,11 @@ class HistoricalDataService:
             return candles[-limit:]
         return candles
 
+    # Archive candles older than this are ignored at startup. Six hours is
+    # long enough to survive a redeploy and short enough that no stale close
+    # can ever be presented as a live price.
+    MAX_PRELOAD_AGE_HOURS: float = 6.0
+
     @classmethod
     async def preload_states(cls, store: CryptoStateStore, limit: int = 360) -> int:
         """
@@ -125,14 +128,27 @@ class HistoricalDataService:
             return 0
 
         loaded_count = 0
+        now = datetime.now(UTC)
         for sym in symbols:
+            # ONE-MINUTE BARS ONLY. The fallbacks to 15m and 1h were the bug
+            # that made the live board unreadable: candles_1m is treated as a
+            # one-minute series by everything downstream, so a 15-minute bar
+            # dropped into it multiplies ATR by roughly four and every derived
+            # time estimate by fifteen. The board showed BTC needing 63 minutes
+            # for a move that would take a day.
             candles = cls.load_candles(sym, interval="1m", limit=limit)
             if not candles:
-                candles = cls.load_candles(sym, interval="15m", limit=limit)
-            if not candles:
-                candles = cls.load_candles(sym, interval="1h", limit=limit)
+                continue
 
-            if not candles:
+            # And only if it is still recent. These are archive files; loading
+            # a months-old close as the current price is worse than having no
+            # price at all, because nothing downstream can tell it is wrong.
+            # The board showed BTC at 62,887 while it traded at 78,570.
+            age_hours = (now - candles[-1].timestamp).total_seconds() / 3600
+            if age_hours > cls.MAX_PRELOAD_AGE_HOURS:
+                log.info("historical_preload_skipped_stale", symbol=sym,
+                         age_hours=round(age_hours, 1),
+                         last=candles[-1].timestamp.isoformat())
                 continue
 
             state = await store.get(sym)
@@ -146,8 +162,10 @@ class HistoricalDataService:
             for c in candles:
                 append_candle(state, c)
             if state.candles_1m:
-                state.current_price = state.candles_1m[-1].close
-                state.timestamp = state.candles_1m[-1].timestamp
+                # Never overwrite a price a live collector has already set.
+                if state.current_price <= 0:
+                    state.current_price = state.candles_1m[-1].close
+                    state.timestamp = state.candles_1m[-1].timestamp
                 recalculate_indicators(state)
             loaded_count += 1
 

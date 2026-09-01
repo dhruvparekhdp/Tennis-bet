@@ -346,7 +346,9 @@ class TestCostFrameIsPerMarket(unittest.TestCase):
         reachable in a fraction of the time.
         """
         base = ScalpConfig()
-        atr = 0.0004
+        # Small enough that the crypto target is out of reach inside a day and
+        # the gold one, on a fifth of the cost, is not.
+        atr = 0.00015
         as_crypto = scalp_levels(4365.91, True, atr, base.for_symbol("ethusdt"),
                                  symbol="ethusdt")
         as_gold = scalp_levels(4365.91, True, atr, base.for_symbol("xauusdt"),
