@@ -205,6 +205,26 @@ class Settings(BaseSettings):
     # endpoint outright rather than leaving it open.
     sentiment_ingest_token: str = ""
 
+    # ── API auth & rate limiting ────────────────────────────────────────────
+    # One shared secret for the mutating endpoints (settings toggle,
+    # watchlist edits) and for the iOS app's own calls. Single-operator app,
+    # so one bearer token is the whole auth model — see scheduler/security.py
+    # for why that is the right amount of machinery here. Empty = those
+    # endpoints refuse everything (503) rather than staying open.
+    api_auth_token: str = ""
+
+    # General API traffic: the dashboard polling every ~20s across several
+    # widgets, plus the iOS app checking in. Generous enough for that, not
+    # for a script hammering the endpoint.
+    api_rate_limit_requests: int = 120
+    api_rate_limit_window_seconds: int = 60
+
+    # /api/auth/verify only — the one endpoint whose job is accepting
+    # attempts at the shared secret, so it gets a far tighter bucket than
+    # ordinary reads.
+    api_auth_rate_limit_requests: int = 10
+    api_auth_rate_limit_window_seconds: int = 300
+
     # Free, keyless sentiment inputs that adjust confidence (never fire trades).
     sentiment_feeds_enabled: bool = True
     fear_greed_refresh_minutes: int = 60

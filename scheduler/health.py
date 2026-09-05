@@ -1027,6 +1027,10 @@ async def _api_crypto_forecasts(runner, request: web.Request) -> web.Response:
 
 async def _api_crypto_watchlist_add(runner, request: web.Request) -> web.Response:
     """POST /api/crypto/watchlist/add  body: {"symbol": "dogeusdt"}"""
+    from scheduler.security import check_bearer_auth
+    denied = check_bearer_auth(request, _SETTINGS.api_auth_token)
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
         symbol = str(body.get("symbol", "")).strip().lower()
@@ -1043,6 +1047,10 @@ async def _api_crypto_watchlist_add(runner, request: web.Request) -> web.Respons
 
 async def _api_crypto_watchlist_remove(runner, request: web.Request) -> web.Response:
     """POST /api/crypto/watchlist/remove  body: {"symbol": "dogeusdt"}"""
+    from scheduler.security import check_bearer_auth
+    denied = check_bearer_auth(request, _SETTINGS.api_auth_token)
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
         symbol = str(body.get("symbol", "")).strip().lower()
@@ -3424,12 +3432,12 @@ async function addCryptoSymbol(){
   const inp=document.getElementById('cr-add-input');
   const sym=inp.value.trim().toLowerCase();
   if(!sym) return;
-  await fetch('/api/crypto/watchlist/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym})});
+  await apiFetch('/api/crypto/watchlist/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym})});
   inp.value='';
   refresh();
 }
 async function removeCryptoSymbol(sym){
-  await fetch('/api/crypto/watchlist/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym})});
+  await apiFetch('/api/crypto/watchlist/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:sym})});
   refresh();
 }
 
@@ -3915,8 +3923,30 @@ async def _settings_page(request: web.Request) -> web.Response:
     return web.Response(text=_SETTINGS_HTML, content_type="text/html")
 
 
+async def _api_auth_verify(runner, request: web.Request) -> web.Response:
+    """
+    POST /api/auth/verify — does this token work?
+
+    The whole endpoint. Used exactly once by a new client (the iOS app
+    entering a token for the first time, gated behind Face ID before it is
+    written to Keychain) to confirm the token is right before trusting it for
+    everything else. It carries a far tighter rate limit than the rest of the
+    API (see scheduler/security.py) precisely because its job is accepting
+    attempts at the shared secret.
+    """
+    from scheduler.security import check_bearer_auth
+    denied = check_bearer_auth(request, _SETTINGS.api_auth_token)
+    if denied is not None:
+        return denied
+    return web.json_response({"ok": True})
+
+
 async def _api_collector_toggle(runner, request: web.Request) -> web.Response:
     """POST /api/settings/toggle  body: {"collector": "sportradar", "enabled": true}"""
+    from scheduler.security import check_bearer_auth
+    denied = check_bearer_auth(request, _SETTINGS.api_auth_token)
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
         collector = str(body.get("collector", ""))
@@ -4320,7 +4350,7 @@ async function toggle(id) {
   const cb = document.getElementById('tog-' + id);
   const enabled = cb.checked;
   try {
-    const r = await fetch('/api/settings/toggle', {
+    const r = await apiFetch('/api/settings/toggle', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({collector: id, enabled}),
@@ -5080,6 +5110,30 @@ function setSiteTheme(t){
   document.querySelectorAll('.theme-sw').forEach(function(b){b.classList.toggle('on',b.dataset.t===t);});
   document.querySelectorAll('.side-themes .dot').forEach(function(d){d.classList.toggle('on',d.dataset.t===t);});
 }
+
+// Wrapper around fetch() for the handful of endpoints that now require the
+// API bearer token (settings toggle, watchlist edits — see
+// scheduler/security.py for why those three and not the read endpoints).
+// The token lives in localStorage, entered once via a prompt the first time
+// a call comes back 401, and is retried exactly once with the fresh token —
+// a second failure means the token itself is wrong and is left to surface
+// as an error rather than looping the prompt.
+async function apiFetch(url, opts){
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers);
+  var token = localStorage.getItem('api_token');
+  if(token) opts.headers['Authorization'] = 'Bearer ' + token;
+  var res = await fetch(url, opts);
+  if(res.status === 401){
+    var entered = window.prompt('API token needed for this action (API_AUTH_TOKEN on the server):');
+    if(!entered) return res;
+    localStorage.setItem('api_token', entered);
+    opts.headers['Authorization'] = 'Bearer ' + entered;
+    res = await fetch(url, opts);
+    if(res.status === 401) localStorage.removeItem('api_token');
+  }
+  return res;
+}
 </script>
 """
 
@@ -5106,7 +5160,17 @@ _PREDICT_HTML = _PREDICT_HTML.replace("</head>", _THEME_SNIPPET + "</head>")
 
 
 async def make_app(runner) -> web.Application:
-    app = web.Application()
+    from scheduler.security import rate_limit_middleware, security_headers_middleware
+
+    # Order matters: rate limiting runs first so a limited request never
+    # reaches a handler at all, and both wrap every handler uniformly rather
+    # than being opted into per-route — a cross-cutting concern bolted onto
+    # individual handlers is the one that gets forgotten on the next new
+    # endpoint.
+    app = web.Application(middlewares=[
+        rate_limit_middleware(lambda: _SETTINGS),
+        security_headers_middleware,
+    ])
     app.router.add_get("/", lambda req: _dashboard(req))
     app.router.add_get("/sports", lambda req: _dashboard(req))
     app.router.add_get("/data", lambda req: _data_page(req))
@@ -5125,6 +5189,7 @@ async def make_app(runner) -> web.Application:
     app.router.add_post("/api/ingest", lambda req: _api_ingest(runner, req))
     app.router.add_get("/settings", lambda req: _settings_page(req))
     app.router.add_get("/api/settings", lambda req: _api_collector_states(runner, req))
+    app.router.add_post("/api/auth/verify", lambda req: _api_auth_verify(runner, req))
     app.router.add_post("/api/settings/toggle", lambda req: _api_collector_toggle(runner, req))
     # Crypto & Commodities Routes
     app.router.add_get("/api/crypto/coins", lambda req: _api_crypto_coins(runner, req))
