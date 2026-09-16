@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.backends.legacy:build"
 
 [project]
-name = "tennis-bet"
+name = "crypto-signal-engine"
 version = "0.1.0"
-description = "24/7 live tennis match signal generator with Telegram alerts"
+description = "Real-time crypto market analysis: five signal detectors, a confluence gate, and a paper-trading simulator"
 requires-python = ">=3.11"
 dependencies = [
     "httpx[asyncio]>=0.27",
