@@ -1,5 +1,11 @@
 """
-Entry point for the Tennis Bet prediction monitor.
+Entry point for the crypto signal engine.
+
+Starts the aiohttp web server (dashboard + JSON API) and the APScheduler
+job loop that polls live market data, runs the signal detectors, and drives
+the paper-trading simulator. The original tennis/football betting engine
+also lives in this codebase, dormant behind SPORTS_ENABLED=false; see
+README.md for why it was kept rather than removed.
 
 Usage:
     python main.py
@@ -24,7 +30,7 @@ log = structlog.get_logger()
 
 async def main() -> None:
     configure_logging()
-    log.info("tennis_bet_starting")
+    log.info("crypto_signal_engine_starting")
 
     await init_db()
     log.info("database_initialised")

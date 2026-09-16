@@ -1,12 +1,12 @@
 [Unit]
-Description=Tennis Bet Prediction Monitor
+Description=Crypto Signal Engine
 After=network.target
 
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/tennis-bet
-ExecStart=/home/ubuntu/tennis-bet/.venv/bin/python main.py
+WorkingDirectory=/home/ubuntu/crypto-signal-engine
+ExecStart=/home/ubuntu/crypto-signal-engine/.venv/bin/python main.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
