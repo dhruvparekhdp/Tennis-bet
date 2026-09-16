@@ -9,7 +9,7 @@ from aiohttp import web
 from analysis.scalp_levels import ScalpConfig
 from config.settings import settings as _SETTINGS
 
-_start_time = datetime.utcnow()
+_start_time = datetime.now(UTC)
 
 # One cost model for the page and the engine. The dashboard used to carry its
 # own copy of the fee arithmetic in JavaScript, which drifted the moment the
@@ -18,6 +18,13 @@ _SCALP = ScalpConfig()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _dt_sort_key(dt: datetime | None) -> datetime:
+    if dt is None:
+        return datetime.now(UTC)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 def _reconstruct_sets(
     game_log: list[int],
@@ -60,7 +67,7 @@ def _settings_sports_enabled() -> bool:
 async def _api_status(runner, request: web.Request) -> web.Response:
     status = runner.get_status()
     count = await runner.store.count()
-    uptime = int((datetime.utcnow() - _start_time).total_seconds())
+    uptime = int((datetime.now(UTC) - _start_time).total_seconds())
     return web.Response(
         text=json.dumps({
             "uptime_seconds": uptime,
@@ -79,7 +86,7 @@ async def _api_matches(runner, request: web.Request) -> web.Response:
     live = [s for s in states if not s.is_scheduled]
     soon = sorted(
         [s for s in states if s.is_scheduled],
-        key=lambda s: s.start_time or datetime.utcnow(),
+        key=lambda s: _dt_sort_key(s.start_time),
     )
     matches = []
     for s in live + soon:
@@ -130,7 +137,7 @@ async def _api_football_matches(runner, request: web.Request) -> web.Response:
     live = [s for s in states if not s.is_scheduled]
     soon = sorted(
         [s for s in states if s.is_scheduled],
-        key=lambda s: s.kickoff_time or datetime.utcnow(),
+        key=lambda s: _dt_sort_key(s.kickoff_time),
     )
     matches = []
     for s in live + soon:
@@ -1192,7 +1199,7 @@ async def _api_ingest(runner, request: web.Request) -> web.Response:
     pushed_ids: set[str] = set()
     for m in matches:
         try:
-            ts = datetime.fromisoformat(m["timestamp"]) if m.get("timestamp") else datetime.utcnow()
+            ts = datetime.fromisoformat(m["timestamp"]) if m.get("timestamp") else datetime.now(UTC)
             st = datetime.fromisoformat(m["start_time"]) if m.get("start_time") else None
             sp1 = m.get("serve_stats_p1", {})
             sp2 = m.get("serve_stats_p2", {})
@@ -1251,7 +1258,7 @@ async def _api_debug(runner, request: web.Request) -> web.Response:
     """Diagnostic endpoint — returns collector state, all stored match IDs, and timing."""
     states = await runner.store.get_all()
     fb_states = await runner.football_store.get_all()
-    uptime = int((datetime.utcnow() - _start_time).total_seconds())
+    uptime = int((datetime.now(UTC) - _start_time).total_seconds())
     return web.Response(
         text=json.dumps({
             "uptime_seconds": uptime,
@@ -1284,7 +1291,7 @@ async def _api_debug(runner, request: web.Request) -> web.Response:
 
 async def _health(runner, request: web.Request) -> web.Response:
     count = await runner.store.count()
-    uptime = int((datetime.utcnow() - _start_time).total_seconds())
+    uptime = int((datetime.now(UTC) - _start_time).total_seconds())
     return web.Response(
         text=json.dumps({"status": "ok", "matches_tracked": count, "uptime_seconds": uptime}),
         content_type="application/json",
@@ -3650,7 +3657,7 @@ async def _api_collectors_debug(runner, request: web.Request) -> web.Response:
 
     out: dict = {
         "generated_at_ist": (
-            datetime.utcnow().replace(tzinfo=UTC)
+            datetime.now(UTC)
             .astimezone(__import__("zoneinfo").ZoneInfo("Asia/Kolkata"))
             .strftime("%Y-%m-%d %H:%M:%S IST")
         ),
@@ -3738,7 +3745,7 @@ async def _api_collectors_debug(runner, request: web.Request) -> web.Response:
         import httpx as _httpx
         key = settings.sportradar_api_key
         try:
-            today = datetime.utcnow().strftime("%Y-%m-%d")
+            today = datetime.now(UTC).strftime("%Y-%m-%d")
             async with _httpx.AsyncClient(timeout=12) as c:
                 live_r = await c.get(
                     "https://api.sportradar.com/tennis/trial/v3/en/schedules/live/summaries.json",
@@ -3872,7 +3879,7 @@ async def _api_tables(runner, request: web.Request) -> web.Response:
     except ValueError:
         limit = 100
 
-    out: dict = {"generated_at": datetime.utcnow().isoformat() + "Z", "limit": limit,
+    out: dict = {"generated_at": _iso(datetime.now(UTC)), "limit": limit,
                  "tables": []}
 
     async with engine.connect() as conn:
@@ -5370,7 +5377,7 @@ async function load(){
       <td><span class="pill ${dir}">${dir.toUpperCase()}</span>
         <div class="sub">${m.confidence==null?'':Math.round(m.confidence*100)+'% agreement'}</div></td>
       ${cell(f['1h'],m.price)}${cell(f['4h'],m.price)}
-      <td class="h-24h" style="padding:0">${cell(f['24h'],m.price).replace(/^<td[^>]*>/,'<div class="fc" style="padding:11px 14px">').replace(/<\/td>$/,'</div>')}</td>
+      <td class="h-24h" style="padding:0">${cell(f['24h'],m.price).replace(/^<td[^>]*>/,'<div class="fc" style="padding:11px 14px">').replace(/<\\/td>$/,'</div>')}</td>
     </tr>`;
   }).join('') : '<tr><td colspan="9" class="empty">No markets with enough history yet.</td></tr>';
 }
@@ -5558,54 +5565,60 @@ async def make_app(runner) -> web.Application:
         rate_limit_middleware(lambda: _SETTINGS),
         security_headers_middleware,
     ])
-    app.router.add_get("/", lambda req: _dashboard(req))
-    app.router.add_get("/sports", lambda req: _dashboard(req))
-    app.router.add_get("/data", lambda req: _data_page(req))
-    app.router.add_get("/api/tables", lambda req: _api_tables(runner, req))
-    app.router.add_get("/health", lambda req: _health(runner, req))
-    app.router.add_get("/api/status", lambda req: _api_status(runner, req))
-    app.router.add_get("/api/matches", lambda req: _api_matches(runner, req))
-    app.router.add_get("/api/signals", lambda req: _api_signals(runner, req))
-    app.router.add_get("/api/football/matches", lambda req: _api_football_matches(runner, req))
-    app.router.add_get("/api/football/signals", lambda req: _api_football_signals(runner, req))
+
+    def _bind(handler_fn):
+        async def _bound(req: web.Request) -> web.Response:
+            return await handler_fn(runner, req)
+        return _bound
+
+    app.router.add_get("/", _dashboard)
+    app.router.add_get("/sports", _dashboard)
+    app.router.add_get("/data", _data_page)
+    app.router.add_get("/api/tables", _bind(_api_tables))
+    app.router.add_get("/health", _bind(_health))
+    app.router.add_get("/api/status", _bind(_api_status))
+    app.router.add_get("/api/matches", _bind(_api_matches))
+    app.router.add_get("/api/signals", _bind(_api_signals))
+    app.router.add_get("/api/football/matches", _bind(_api_football_matches))
+    app.router.add_get("/api/football/signals", _bind(_api_football_signals))
     app.router.add_get("/api/football/wc-groups", _api_wc_groups)
-    app.router.add_get("/api/debug", lambda req: _api_debug(runner, req))
-    app.router.add_get("/api/debug/collectors", lambda req: _api_collectors_debug(runner, req))
-    app.router.add_get("/api/h2h", lambda req: _api_h2h(runner, req))
-    app.router.add_get("/api/scalping", lambda req: _api_scalping(runner, req))
-    app.router.add_post("/api/ingest", lambda req: _api_ingest(runner, req))
-    app.router.add_get("/settings", lambda req: _settings_page(req))
-    app.router.add_get("/api/settings", lambda req: _api_collector_states(runner, req))
-    app.router.add_post("/api/auth/verify", lambda req: _api_auth_verify(runner, req))
-    app.router.add_post("/api/settings/auth/login", lambda req: _api_settings_auth_login(runner, req))
-    app.router.add_get("/api/settings/auth/status", lambda req: _api_settings_auth_status(runner, req))
-    app.router.add_post("/api/settings/auth/logout", lambda req: _api_settings_auth_logout(runner, req))
-    app.router.add_get("/api/paper/config", lambda req: _api_paper_config_get(runner, req))
-    app.router.add_post("/api/paper/config", lambda req: _api_paper_config_post(runner, req))
-    app.router.add_get("/api/strategy/config", lambda req: _api_strategy_config_get(runner, req))
-    app.router.add_post("/api/strategy/config", lambda req: _api_strategy_config_post(runner, req))
-    app.router.add_post("/api/settings/toggle", lambda req: _api_collector_toggle(runner, req))
+    app.router.add_get("/api/debug", _bind(_api_debug))
+    app.router.add_get("/api/debug/collectors", _bind(_api_collectors_debug))
+    app.router.add_get("/api/h2h", _bind(_api_h2h))
+    app.router.add_get("/api/scalping", _bind(_api_scalping))
+    app.router.add_post("/api/ingest", _bind(_api_ingest))
+    app.router.add_get("/settings", _settings_page)
+    app.router.add_get("/api/settings", _bind(_api_collector_states))
+    app.router.add_post("/api/auth/verify", _bind(_api_auth_verify))
+    app.router.add_post("/api/settings/auth/login", _bind(_api_settings_auth_login))
+    app.router.add_get("/api/settings/auth/status", _bind(_api_settings_auth_status))
+    app.router.add_post("/api/settings/auth/logout", _bind(_api_settings_auth_logout))
+    app.router.add_get("/api/paper/config", _bind(_api_paper_config_get))
+    app.router.add_post("/api/paper/config", _bind(_api_paper_config_post))
+    app.router.add_get("/api/strategy/config", _bind(_api_strategy_config_get))
+    app.router.add_post("/api/strategy/config", _bind(_api_strategy_config_post))
+    app.router.add_post("/api/settings/toggle", _bind(_api_collector_toggle))
     # Crypto & Commodities Routes
-    app.router.add_get("/api/crypto/coins", lambda req: _api_crypto_coins(runner, req))
-    app.router.add_get("/api/crypto/signals", lambda req: _api_crypto_signals(runner, req))
-    app.router.add_get("/api/crypto/forecasts", lambda req: _api_crypto_forecasts(runner, req))
-    app.router.add_get("/api/paper", lambda req: _api_paper(runner, req))
-    app.router.add_get("/api/debug/coindcx", lambda req: _api_debug_coindcx(runner, req))
-    app.router.add_post("/api/sentiment/ingest", lambda req: _api_sentiment_ingest(runner, req))
-    app.router.add_get("/api/sentiment/recent", lambda req: _api_sentiment_recent(runner, req))
-    app.router.add_get("/api/signals/history", lambda req: _api_signal_history(runner, req))
-    app.router.add_get("/api/debug/signals", lambda req: _api_debug_signals(runner, req))
-    app.router.add_get("/predict", lambda req: _predict_page(req))
-    app.router.add_get("/api/predict", lambda req: _api_predict(runner, req))
-    app.router.add_get("/api/signals/accuracy", lambda req: _api_signal_accuracy(runner, req))
-    app.router.add_get("/audit", lambda req: _audit_page(req))
-    app.router.add_get("/api/audit", lambda req: _api_audit(runner, req))
-    app.router.add_get("/api/audit/methods", lambda req: _api_audit_methods(runner, req))
-    app.router.add_get("/api/debug/volume", lambda req: _api_debug_volume(runner, req))
-    app.router.add_post("/api/crypto/watchlist/add", lambda req: _api_crypto_watchlist_add(runner, req))
-    app.router.add_post("/api/crypto/watchlist/remove", lambda req: _api_crypto_watchlist_remove(runner, req))
-    app.router.add_get("/api/commodities", lambda req: _api_commodities(runner, req))
-    app.router.add_get("/api/debug/binance", lambda req: _api_binance_probe(runner, req))
+    app.router.add_get("/api/crypto/coins", _bind(_api_crypto_coins))
+    app.router.add_get("/api/crypto/signals", _bind(_api_crypto_signals))
+    app.router.add_get("/api/crypto/forecasts", _bind(_api_crypto_forecasts))
+    app.router.add_get("/api/paper", _bind(_api_paper))
+    app.router.add_get("/api/debug/coindcx", _bind(_api_debug_coindcx))
+    app.router.add_post("/api/sentiment/ingest", _bind(_api_sentiment_ingest))
+    app.router.add_get("/api/sentiment/recent", _bind(_api_sentiment_recent))
+    app.router.add_get("/api/signals/history", _bind(_api_signal_history))
+    app.router.add_get("/api/debug/signals", _bind(_api_debug_signals))
+    app.router.add_get("/predict", _predict_page)
+    app.router.add_get("/api/predict", _bind(_api_predict))
+    app.router.add_get("/api/signals/accuracy", _bind(_api_signal_accuracy))
+    app.router.add_get("/audit", _audit_page)
+    app.router.add_get("/api/audit", _bind(_api_audit))
+    app.router.add_get("/api/audit/methods", _bind(_api_audit_methods))
+    app.router.add_get("/api/debug/volume", _bind(_api_debug_volume))
+    app.router.add_post("/api/crypto/watchlist/add", _bind(_api_crypto_watchlist_add))
+    app.router.add_post("/api/crypto/watchlist/remove", _bind(_api_crypto_watchlist_remove))
+    app.router.add_get("/api/commodities", _bind(_api_commodities))
+    app.router.add_get("/api/debug/binance", _bind(_api_binance_probe))
     return app
 
 

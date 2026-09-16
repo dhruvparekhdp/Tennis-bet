@@ -1,9 +1,13 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from storage.database import Base
+
+
+def _now_utc() -> datetime:
+    return datetime.now(UTC)
 
 
 class Match(Base):
@@ -14,8 +18,8 @@ class Match(Base):
     player2: Mapped[str] = mapped_column(String)
     tournament: Mapped[str] = mapped_column(String)
     surface: Mapped[str] = mapped_column(String)
-    first_seen: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    last_updated: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    first_seen: Mapped[datetime] = mapped_column(default=_now_utc)
+    last_updated: Mapped[datetime] = mapped_column(default=_now_utc)
     is_finished: Mapped[bool] = mapped_column(default=False)
 
 
@@ -256,7 +260,7 @@ class MatchResult(Base):
     match_progress: Mapped[float] = mapped_column(Float)
     p1_opening_implied: Mapped[float] = mapped_column(Float)
     winner: Mapped[int] = mapped_column(Integer)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=_now_utc)
 
 
 class CryptoSnapshot(Base):
@@ -334,7 +338,7 @@ class CryptoWatchlistEntry(Base):
     __tablename__ = "crypto_watchlist"
 
     symbol: Mapped[str] = mapped_column(String, primary_key=True)   # e.g. "btcusdt"
-    added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=_now_utc)
 
 
 class PaperCycle(Base):
@@ -415,7 +419,7 @@ class AdminAuth(Base):
     password_hash: Mapped[str] = mapped_column(String)
     salt: Mapped[str] = mapped_column(String)
     session_token: Mapped[str | None] = mapped_column(String, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now_utc)
 
 
 class StrategyConfig(Base):
@@ -550,4 +554,4 @@ class NewsSentiment(Base):
     model: Mapped[str] = mapped_column(String, default="")       # what scored it
 
     published_at: Mapped[datetime] = mapped_column(DateTime, index=True)
-    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=_now_utc)
