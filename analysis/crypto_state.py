@@ -13,6 +13,7 @@ class OHLCVCandle:
     volume: float
     timestamp: datetime
     is_closed: bool = True
+    taker_buy_volume: float = 0.0
 
 
 def resample_candles(candles: list[OHLCVCandle], timeframe_minutes: int) -> list[OHLCVCandle]:
@@ -39,11 +40,12 @@ def resample_candles(candles: list[OHLCVCandle], timeframe_minutes: int) -> list
         low = min(x.low for x in group)
         close = group[-1].close
         vol = sum(x.volume for x in group)
+        tb_vol = sum(x.taker_buy_volume for x in group)
         ts = datetime.fromtimestamp(key, tz=UTC)
         is_closed = len(group) >= timeframe_minutes and group[-1].is_closed
         resampled.append(OHLCVCandle(
             open=o, high=h, low=low, close=close, volume=vol,
-            timestamp=ts, is_closed=is_closed
+            timestamp=ts, is_closed=is_closed, taker_buy_volume=tb_vol
         ))
     return resampled
 
@@ -105,6 +107,11 @@ class CryptoState:
     # instrument has no funding or none was reported — distinct from 0.0,
     # which is a real reading of "nobody is paying anybody".
     funding_rate_per_8h: float | None = None
+
+    # Derivatives Open Interest & Order Flow
+    open_interest: float = 0.0
+    oi_change_1h_pct: float = 0.0
+    cvd_trend: str = "neutral"                                      # "bullish_absorption", "bearish_absorption", "bullish_delta", "bearish_delta", "neutral"
 
     # Latest L2 snapshot, when a venue publishes one. Typed loosely to keep
     # this module free of the analysis imports; it is an analysis.orderbook

@@ -51,6 +51,10 @@ def format_crypto_signal(sig: CryptoSignal) -> str:
             f"then ride <b>${plan.trail_distance:,.4f}</b> behind the high\n"
         )
 
+    ai_review_block = ""
+    if getattr(sig, "ai_review", ""):
+        ai_review_block = f"\n\n🤖 <b>AI Review (Groq Sentinel):</b>\n<i>\"{sig.ai_review}\"</i>"
+
     return (
         f"🪙 <b>{symbol_display}</b> · {dir_emoji}\n"
         # The timeframe is now the window the move is expected to need, and
@@ -65,6 +69,7 @@ def format_crypto_signal(sig: CryptoSignal) -> str:
         + trail_lines +
         f"Confidence <b>{conf_pct}%</b> · Suggested stake <b>₹{stake_amt:,.0f}</b> "
         f"({stake_pct_display}% of bank)"
+        + ai_review_block
     )
 
 

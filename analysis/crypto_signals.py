@@ -296,13 +296,40 @@ class VolumeSpikeAnalyzer:
                       bar="up" if is_bullish else "down", structure=structure)
             return None
 
+        # Rejection of exhaustion wicks:
+        # A huge volume bar with long rejection wicks indicates absorption or blow-off exhaustion,
+        # not a continuation breakout.
+        candle_range = last_candle.high - last_candle.low
+        body = abs(last_candle.close - last_candle.open)
+        if candle_range > 0:
+            if is_bullish:
+                upper_wick = last_candle.high - last_candle.close
+                if upper_wick > 1.8 * max(body, 1e-6) and upper_wick / candle_range > 0.45:
+                    log.debug("volume_spike_rejected_upper_wick", symbol=state.symbol)
+                    return None
+            else:
+                lower_wick = last_candle.close - last_candle.low
+                if lower_wick > 1.8 * max(body, 1e-6) and lower_wick / candle_range > 0.45:
+                    log.debug("volume_spike_rejected_lower_wick", symbol=state.symbol)
+                    return None
+
+        # Earned confidence based on volume ratio and candle solidity
+        confidence = 0.66
+        if ratio >= 4.0:
+            confidence += 0.05
+        if candle_range > 0 and body / candle_range >= 0.50:
+            confidence += 0.03
+        if structure and structure == (1 if is_bullish else -1):
+            confidence += 0.03
+        confidence = min(0.80, confidence)
+
         return _emit(
             state,
             direction="long" if is_bullish else "short",
             signal_type="volume_spike",
             trigger_desc=(f"Trading volume just spiked to {ratio:.1f}x {basis} "
                           "— a surge like this often kicks off a bigger move."),
-            confidence=0.68,
+            confidence=confidence,
             timeframe="30m",
             atr_target_multiple=1.5,
             extra_indicators=f"Vol {ratio:.1f}x",

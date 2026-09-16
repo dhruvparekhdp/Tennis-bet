@@ -22,6 +22,7 @@ class CryptoSignal:
     sentiment_score: float                                         # -1.0 to +1.0
     indicators_summary: str
     timestamp: datetime
+    ai_review: str = ""
 
 
 def compute_crypto_stake(edge_pct: float, confidence: float) -> float:
