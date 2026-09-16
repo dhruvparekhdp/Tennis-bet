@@ -77,11 +77,13 @@ def parse_klines(rows) -> list[dict]:
             ts = float(row[0])
             if ts > 1e11:
                 ts /= 1000.0
+            taker_buy = float(row[9]) if len(row) > 9 else 0.0
             out.append({
                 "timestamp": datetime.fromtimestamp(ts, tz=UTC),
                 "open": float(row[1]), "high": float(row[2]),
                 "low": float(row[3]), "close": float(row[4]),
                 "volume": max(0.0, float(row[5])),
+                "taker_buy_volume": max(0.0, taker_buy),
             })
         except (TypeError, ValueError, OSError, OverflowError):
             continue
@@ -257,7 +259,7 @@ class BinanceKlines:
                 self.status[sym] = f"{type(exc).__name__}: {exc}"
                 log.debug("binance_klines_symbol_failed", symbol=sym, error=str(exc))
         if self.refreshed:
-            self.last_success = datetime.now(timezone.utc)
+            self.last_success = datetime.now(UTC)
         log.info("binance_klines_done", refreshed=len(self.refreshed),
                  requested=len(symbols), host=self.host, error=self.last_error)
         return len(self.refreshed)

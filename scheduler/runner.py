@@ -53,10 +53,12 @@ from analysis.state_store import MatchStateStore
 from analysis.win_probability import compute_win_probability
 from collectors.api_tennis import ApiTennisCollector
 from collectors.bets_api import BetsAPICollector
+from collectors.binance_futures_oi import BinanceFuturesOICollector
 from collectors.binance_klines import BinanceKlines
 from collectors.binance_ws import BinanceWSCollector
 from collectors.coindcx import CoinDCXCollector
 from collectors.coingecko import CoinGeckoCollector
+from collectors.macro_sentinel import GroqSentinel
 from collectors.cryptopanic import CryptoPanicCollector
 from collectors.espn import ESPNCollector
 from collectors.flashscore import FlashscoreCollector
@@ -151,6 +153,8 @@ class AppRunner:
         self.cryptopanic = CryptoPanicCollector()
         self.sentiment = SentimentAnalyzer()
         self.crypto_engine = CryptoEngine()
+        self.groq_sentinel = GroqSentinel()
+        self.oi_collector = BinanceFuturesOICollector(self.crypto_store)
         # Cached because it only updates daily; refreshed by its own job.
         self.fear_greed = None
         self.multi_horizon = MultiHorizonPredictor()
@@ -787,6 +791,13 @@ class AppRunner:
 
                 signals = self.crypto_engine.process(state)
                 for sig in signals:
+                    # Groq AI Pre-Signal Sanity Review (advisory sanity check)
+                    if self.groq_sentinel.is_available and getattr(settings, "groq_signal_review_enabled", True):
+                        delta, ai_summary = await self.groq_sentinel.review_signal_candidate(sig, state)
+                        if ai_summary:
+                            sig.ai_review = ai_summary
+                            sig.confidence = max(0.50, min(0.95, round(sig.confidence + delta, 4)))
+
                     msg = format_crypto_signal(sig)
                     if settings.crypto_alert_telegram:
                         await self.notifier.send_text(msg, parse_mode=ParseMode.HTML)
@@ -886,6 +897,15 @@ class AppRunner:
                         )
         except Exception:
             log.exception("crypto_snapshot_job_failed")
+
+    async def _binance_oi_job(self) -> None:
+        """Poll Binance Futures Open Interest for crypto perpetuals."""
+        if not getattr(settings, "binance_oi_enabled", True):
+            return
+        try:
+            await self.oi_collector.fetch_all()
+        except Exception:
+            log.exception("binance_oi_job_failed")
 
     # ── Crypto watchlist (DB-backed) ────────────────────────────────────────
 
@@ -1033,6 +1053,15 @@ class AppRunner:
             id="crypto_snapshot",
             max_instances=1,
         )
+        if getattr(settings, "binance_oi_enabled", True):
+            self.scheduler.add_job(
+                self._binance_oi_job,
+                "interval",
+                seconds=120,
+                id="binance_oi_poll",
+                max_instances=1,
+                next_run_time=datetime.now(timezone.utc),
+            )
 
     def _setup_sports_jobs(self) -> None:
         """All tennis + football jobs. Only called when settings.sports_enabled."""

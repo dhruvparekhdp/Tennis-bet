@@ -40,10 +40,15 @@ class CryptoEngine:
 
     def process(self, state: CryptoState) -> list[CryptoSignal]:
         """Evaluate all signal strategies against current crypto market state."""
+        if getattr(settings, "orderflow_enabled", True) and state.candles_1m:
+            from analysis.orderflow import compute_cvd_trend
+            state.cvd_trend = compute_cvd_trend(state.candles_1m)
+
+        vol_candidate = self.volume_spike.analyze(state) if settings.crypto_volume_spike_enabled else None
         candidates: list[CryptoSignal | None] = [
             self.confluence.analyze(state),
             self.rsi_divergence.analyze(state),
-            self.volume_spike.analyze(state),
+            vol_candidate,
             self.bollinger_squeeze.analyze(state),
             self.sentiment_shift.analyze(state),
         ]
@@ -55,8 +60,35 @@ class CryptoEngine:
             if sig is None:
                 continue
 
+            # Orderflow / CVD confirmation and absorption checks
+            if getattr(settings, "orderflow_enabled", True) and state.candles_1m:
+                from analysis.orderflow import cvd_alignment, detect_absorption
+                absorption = detect_absorption(state.candles_1m)
+                if absorption == "bullish_absorption":
+                    if sig.direction == "short":
+                        log.info("crypto_signal_vetoed_by_bullish_absorption", symbol=sig.symbol)
+                        continue
+                    elif sig.direction == "long":
+                        sig.confidence = min(0.95, sig.confidence + 0.03)
+                elif absorption == "bearish_absorption":
+                    if sig.direction == "long":
+                        log.info("crypto_signal_vetoed_by_bearish_absorption", symbol=sig.symbol)
+                        continue
+                    elif sig.direction == "short":
+                        sig.confidence = min(0.95, sig.confidence + 0.03)
+
+                aligns, net_delta, reason = cvd_alignment(state.candles_1m, sig.direction, window=15)
+                if not aligns and abs(net_delta) > 0:
+                    sig.confidence = max(0.50, sig.confidence - 0.05)
+                    log.info("crypto_signal_cvd_divergence_penalty", symbol=sig.symbol, delta=net_delta, reason=reason)
+
             if sig.confidence < settings.crypto_min_confidence:
                 log.debug("crypto_signal_below_threshold", symbol=sig.symbol, confidence=sig.confidence)
+                continue
+
+            if self._opposes_htf_trend(sig, state):
+                log.info("crypto_signal_opposes_htf_trend", symbol=sig.symbol,
+                         direction=sig.direction, type=sig.signal_type)
                 continue
 
             if self._is_on_cooldown(sig.symbol, sig.signal_type):
@@ -71,8 +103,8 @@ class CryptoEngine:
             opposing = self._opposing_live(sig, state.current_price)
             if opposing is not None:
                 log.info("crypto_signal_contradicts_live", symbol=sig.symbol,
-                         rejected=sig.direction, rejected_by=sig.signal_type,
-                         live=opposing.direction, live_from=opposing.signal_type)
+                          rejected=sig.direction, rejected_by=sig.signal_type,
+                          live=opposing.direction, live_from=opposing.signal_type)
                 continue
 
             self._set_cooldown(sig.symbol, sig.signal_type, now)
@@ -83,6 +115,43 @@ class CryptoEngine:
                 self._recent_signals = self._recent_signals[-100:]
 
         return fired
+
+    def _opposes_htf_trend(self, sig: CryptoSignal, state: CryptoState) -> bool:
+        """
+        Veto signals fighting the prevailing 1-hour / 15-minute trend.
+
+        RSI divergence is exempt because it specifically hunts pivot reversals.
+        Confluence, breakout, and volume surges must align with the higher timeframe.
+        """
+        if not getattr(settings, "crypto_htf_filter_enabled", True):
+            return False
+        if sig.signal_type == "rsi_divergence":
+            return False
+
+        candles = state.get_candles("1h")
+        if len(candles) < 20:
+            candles = state.get_candles("15m")
+        if len(candles) < 20:
+            return False
+
+        closes = [c.close for c in candles if c.is_closed]
+        if len(closes) < 20:
+            return False
+
+        from analysis import indicators as ind
+        ema_20 = ind.ema(closes, 20)
+        if ema_20 is None or ema_20 <= 0:
+            return False
+
+        price = state.current_price
+        # If long, veto if price is materially below the HTF 20 EMA (downtrend knife-catch)
+        if sig.direction == "long" and price < ema_20 * 0.995:
+            return True
+        # If short, veto if price is materially above the HTF 20 EMA (uptrend short)
+        if sig.direction == "short" and price > ema_20 * 1.005:
+            return True
+
+        return False
 
     def _get_signal_ttl(self, sig: CryptoSignal) -> timedelta:
         """Derive time-to-live from signal timeframe so live tracking does not deadlock."""

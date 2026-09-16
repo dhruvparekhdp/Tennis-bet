@@ -25,7 +25,12 @@ def is_tier1(tournament_name: str) -> bool:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    # Delta Exchange India
+    delta_api_key: str | None = None
+    delta_api_secret: SecretStr | None = None
+    delta_trading_enabled: bool = False
 
     # Telegram — optional so non-notification modules can import without credentials
     telegram_bot_token: SecretStr | None = None
@@ -153,6 +158,15 @@ class Settings(BaseSettings):
     crypto_signal_cooldown_minutes: int = 15
     crypto_snapshot_interval_seconds: int = 120   # 2 minutes snapshot cycle for training
     crypto_alert_telegram: bool = True
+    crypto_volume_spike_enabled: bool = True
+    crypto_htf_filter_enabled: bool = True
+    binance_oi_enabled: bool = True
+    orderflow_enabled: bool = True
+
+    # Groq AI Sentinel & Reviewer
+    groq_api_key: SecretStr | None = None
+    groq_model: str = "qwen/qwen3.8-27b"
+    groq_signal_review_enabled: bool = True
 
     # ── Paper trading simulator ───────────────────────────────────────────
     # Off by default. It places no real orders, but it does write to the

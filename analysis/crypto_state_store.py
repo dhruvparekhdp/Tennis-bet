@@ -233,7 +233,8 @@ class CryptoStateStore:
             state.candles_1m = [
                 OHLCVCandle(open=b["open"], high=b["high"], low=b["low"],
                             close=b["close"], volume=b["volume"],
-                            timestamp=b["timestamp"], is_closed=True)
+                            timestamp=b["timestamp"], is_closed=True,
+                            taker_buy_volume=b.get("taker_buy_volume", 0.0))
                 for b in bars[-CANDLE_WINDOW:]
             ]
             # The last bar is still forming; marking it closed would let the

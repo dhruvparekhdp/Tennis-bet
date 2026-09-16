@@ -189,7 +189,10 @@ class TestGateDiagnostic(unittest.IsolatedAsyncioTestCase):
                 recalculate_indicators(st)
 
         runner = type("R", (), {"crypto_store": store})()
-        resp = await health._api_debug_signals(runner, type("Q", (), {"query": {}})())
+        from unittest.mock import patch
+        from analysis.confluence import ConvictionGate
+        with patch("analysis.crypto_signals.GATE", ConvictionGate()):
+            resp = await health._api_debug_signals(runner, type("Q", (), {"query": {}})())
         import json
         return {r["symbol"]: r for r in json.loads(resp.text)["symbols"]}
 
