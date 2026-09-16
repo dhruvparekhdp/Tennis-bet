@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import secrets
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -8,10 +11,10 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from storage.models import (
-    CommoditySnapshot, CryptoSignalLog, CryptoSnapshot, CryptoWatchlistEntry,
+    AdminAuth, CommoditySnapshot, CryptoSignalLog, CryptoSnapshot, CryptoWatchlistEntry,
     Match, MatchCompletion, MatchResult, MatchSnapshot,
     NewsSentiment, OddsSnapshot, PaperCycle, PaperPosition, PaperTrade,
-    PlayerStats, SignalLog,
+    PaperTradingConfig, PlayerStats, SignalLog, StrategyConfig,
 )
 
 
@@ -714,6 +717,89 @@ class Repository:
             select(PaperCycle).order_by(PaperCycle.id.desc()).limit(limit)
         )
         return list(res.scalars().all())
+
+    async def get_paper_config(self) -> PaperTradingConfig:
+        cfg = await self.session.get(PaperTradingConfig, 1)
+        if cfg is None:
+            cfg = PaperTradingConfig(id=1)
+            self.session.add(cfg)
+            await self.session.commit()
+            await self.session.refresh(cfg)
+        return cfg
+
+    async def update_paper_config(self, **kwargs) -> PaperTradingConfig:
+        cfg = await self.get_paper_config()
+        for k, v in kwargs.items():
+            if hasattr(cfg, k) and v is not None:
+                setattr(cfg, k, v)
+        await self.session.commit()
+        await self.session.refresh(cfg)
+        return cfg
+
+    # ── Strategy & Runtime Config ──────────────────────────────────────────
+
+    async def get_strategy_config(self) -> StrategyConfig:
+        cfg = await self.session.get(StrategyConfig, 1)
+        if cfg is None:
+            cfg = StrategyConfig(id=1)
+            self.session.add(cfg)
+            await self.session.commit()
+            await self.session.refresh(cfg)
+        return cfg
+
+    async def update_strategy_config(self, **kwargs) -> StrategyConfig:
+        cfg = await self.get_strategy_config()
+        for k, v in kwargs.items():
+            if hasattr(cfg, k) and v is not None:
+                setattr(cfg, k, v)
+        await self.session.commit()
+        await self.session.refresh(cfg)
+        return cfg
+
+    # ── Admin Auth ─────────────────────────────────────────────────────────
+
+    async def verify_admin_password(self, candidate: str) -> tuple[bool, str | None]:
+        auth = await self.session.get(AdminAuth, 1)
+        if auth is None:
+            return False, None
+        salt_bytes = bytes.fromhex(auth.salt)
+        computed = hashlib.pbkdf2_hmac("sha256", candidate.encode("utf-8"), salt_bytes, 100_000).hex()
+        if not hmac.compare_digest(computed, auth.password_hash):
+            return False, None
+        token = secrets.token_hex(32)
+        auth.session_token = token
+        auth.updated_at = datetime.utcnow()
+        await self.session.commit()
+        return True, token
+
+    async def validate_session_token(self, token: str) -> bool:
+        if not token or not token.strip():
+            return False
+        auth = await self.session.get(AdminAuth, 1)
+        if auth is None or not auth.session_token:
+            return False
+        return hmac.compare_digest(auth.session_token, token.strip())
+
+    async def invalidate_session_token(self, token: str) -> None:
+        auth = await self.session.get(AdminAuth, 1)
+        if auth and auth.session_token and hmac.compare_digest(auth.session_token, token.strip()):
+            auth.session_token = None
+            await self.session.commit()
+
+    async def set_admin_password(self, new_pwd: str) -> None:
+        salt = secrets.token_hex(16)
+        salt_bytes = bytes.fromhex(salt)
+        p_hash = hashlib.pbkdf2_hmac("sha256", new_pwd.encode("utf-8"), salt_bytes, 100_000).hex()
+        auth = await self.session.get(AdminAuth, 1)
+        if auth is None:
+            auth = AdminAuth(id=1, password_hash=p_hash, salt=salt, session_token=None)
+            self.session.add(auth)
+        else:
+            auth.password_hash = p_hash
+            auth.salt = salt
+            auth.session_token = None
+            auth.updated_at = datetime.utcnow()
+        await self.session.commit()
 
     # ── External news sentiment ───────────────────────────────────────────
 

@@ -267,6 +267,14 @@ class TestRateLimitIntegration(AioHTTPTestCase):
         settings.api_auth_rate_limit_window_seconds = 60
         return await make_app(FakeRunner())
 
+    async def tearDownAsync(self):
+        from config.settings import settings
+        settings.api_rate_limit_requests = 120
+        settings.api_rate_limit_window_seconds = 60
+        settings.api_auth_rate_limit_requests = 5
+        settings.api_auth_rate_limit_window_seconds = 60
+        await super().tearDownAsync()
+
     @unittest_run_loop
     async def test_a_burst_over_the_general_limit_gets_429(self):
         for _ in range(3):

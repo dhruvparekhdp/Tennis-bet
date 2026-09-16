@@ -376,6 +376,70 @@ class PaperCycle(Base):
     note: Mapped[str] = mapped_column(String, default="")
 
 
+class PaperTradingConfig(Base):
+    """
+    User-configurable parameters for the paper trading engine stored in DB.
+    Allows runtime editing from /settings without touching environment files.
+    """
+
+    __tablename__ = "paper_trading_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    starting_wallet: Mapped[float] = mapped_column(Float, default=3000.0)
+    target_wallet: Mapped[float] = mapped_column(Float, default=20000.0)
+    leverage: Mapped[float] = mapped_column(Float, default=10.0)
+    stop_pct_of_margin: Mapped[float] = mapped_column(Float, default=0.20)
+    reward_risk: Mapped[float] = mapped_column(Float, default=2.0)
+    min_confidence: Mapped[float] = mapped_column(Float, default=0.70)
+    max_concurrent: Mapped[int] = mapped_column(Integer, default=3)
+    max_hold_minutes: Mapped[int] = mapped_column(Integer, default=240)
+    scaled_sizing: Mapped[bool] = mapped_column(Boolean, default=True)
+    trailing_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    scaled_leverage: Mapped[bool] = mapped_column(Boolean, default=False)
+    ladder_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    ladder_tight: Mapped[bool] = mapped_column(Boolean, default=False)
+    max_leverage: Mapped[float] = mapped_column(Float, default=25.0)
+    usdt_inr: Mapped[float] = mapped_column(Float, default=102.0)
+    alert_telegram: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class AdminAuth(Base):
+    """
+    Administrator authentication hash and active session token.
+    Stores salted PBKDF2 hash so no plaintext credentials ever exist in DB or code.
+    """
+
+    __tablename__ = "admin_auth"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    password_hash: Mapped[str] = mapped_column(String)
+    salt: Mapped[str] = mapped_column(String)
+    session_token: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class StrategyConfig(Base):
+    """
+    Runtime strategy parameters editable via /settings without redeploying.
+    """
+
+    __tablename__ = "strategy_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    crypto_min_confidence: Mapped[float] = mapped_column(Float, default=0.70)
+    high_conviction_only: Mapped[bool] = mapped_column(Boolean, default=True)
+    crypto_volume_spike_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    crypto_htf_filter_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    binance_klines_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    binance_oi_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    orderflow_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    groq_signal_review_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    groq_model: Mapped[str] = mapped_column(String, default="qwen/qwen3.8-27b")
+    sports_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    bank_size: Mapped[float] = mapped_column(Float, default=10000.0)
+    min_confidence: Mapped[float] = mapped_column(Float, default=0.65)
+
+
 class PaperPosition(Base):
     """
     An open paper position. Deleted on close — the record lives on as a
